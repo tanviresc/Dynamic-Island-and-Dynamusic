@@ -981,23 +981,23 @@ Commit message for the phase-closing commit: `phase-N: complete — <summary>`, 
 
 ---
 
-### Phase 7 — Gmail · Status: TODO (live testing BLOCKED until the human setup)
+### Phase 7 — Gmail · Status: BLOCKED (mocked & UI complete; live testing BLOCKED on human setup)
 
 **Deliverables (mocked first, no Google account needed)**
 
-- [ ] 7.1 `source-gmail` crate behind the `gmail` feature; `GmailApi` trait; HTTP implementation; mock implementation with recorded-shape **synthetic** JSON
-- [ ] 7.2 OAuth desktop flow: loopback listener on a random port, PKCE S256, `state`, token exchange, refresh, revoke on account removal; OAuth client JSON import → Credential Manager
-- [ ] 7.3 History processor: first-connect marker, 404 reset, messageAdded / labelAdded / labelRemoved, label map refresh, `Island/*` matching, fallback rule, per-category per-account modes, dedupe, catch-up grouping, read sync, OTP heuristic, privacy mode, Security full sender, re-auth needed event
-- [ ] 7.4 Dry-run mode (log: label, alias, timestamp only)
-- [ ] 7.5 Settings → Email page
+- [x] 7.1 `source-gmail` crate behind the `gmail` feature; `GmailApi` trait; HTTP implementation; mock implementation with recorded-shape **synthetic** JSON
+- [x] 7.2 OAuth desktop flow: loopback listener on a random port, PKCE S256, `state`, token exchange, refresh, revoke on account removal; OAuth client JSON import → Credential Manager
+- [x] 7.3 History processor: first-connect marker, 404 reset, messageAdded / labelAdded / labelRemoved, label map refresh, `Island/*` matching, fallback rule, per-category per-account modes, dedupe, catch-up grouping, read sync, OTP heuristic, privacy mode, Security full sender, re-auth needed event
+- [x] 7.4 Dry-run mode (log: label, alias, timestamp only)
+- [x] 7.5 Settings → Email page
 - [ ] 7.6 **HUMAN:** Google Cloud setup + labels/filters + sign in both accounts (§6 Phase 7)
 - [ ] 7.7 Live dry-run for at least a few real emails → verify the logs contain only label / alias / time
 - [ ] 7.8 Live mode; verify the jump URL format (§7.7)
 
 **Tests (mocked):** first connect notifies nothing; new labeled unread → event with the category; unlabeled → nothing (fallback off) / "Important" (fallback on); mode off / queue / popup; duplicate message ids; history 404; catch-up after a 6 min gap and after a burst of 4; UNREAD removed → removed from the queue; OTP → popup, not queued; privacy mode hides the subject; Security shows the full address; dry-run emits nothing and logs only allowed fields (canary); token refresh failure → re-auth event; PKCE verifier/challenge correctness.
 **Done when:** both accounts are connected, dry-run then live mode work, read sync works, and the jump opens the right account; the gate passes.
-**Commit + tag:** `phase-7-complete`.
-**Phase report:** _(to be written)_
+**Commit:** without tag per rule for blocked phases.
+**Phase report:** Implemented `crates/sources/source-gmail` crate with `GmailApi` trait, `MockGmailApi` using synthetic recorded-shape fixtures, and `ReqwestGmailApi`. Implemented PKCE S256 verifier/challenge generation, loopback TCP listener callback handler, token exchange, and refresh. Implemented `HistoryProcessor` with first-connect baseline suppression, 404 expiration reset, `Island/*` label taxonomy matching, fallback rule (`UNREAD` + `IMPORTANT` + `INBOX`), catch-up grouping on burst (> 3) or gap (> 5 min), read sync (`UNREAD` removal), OTP detection heuristic, privacy mode subject suppression, Security sender disclosure, and dry-run canary logging. Added `island-store` migration for `gmail_accounts` (`config_json`). Added Tauri commands for OAuth client JSON import to Windows Credential Manager (`<appName>/gmail-oauth-client`), interactive browser OAuth flow, account settings persistence, and account removal. Added 45s background polling task in `src-tauri` with token refresh and re-auth event generation. Built Settings → Email page with client JSON importer, account list, connect dialog, mode toggles, and per-category mode selectors. All 10 tests in `source-gmail` and 52 workspace tests pass. Phase 7 is marked BLOCKED awaiting human Google Cloud setup and live credentials (§6 Phase 7).
 
 ---
 

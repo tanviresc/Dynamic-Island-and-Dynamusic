@@ -69,6 +69,17 @@ pub struct StoredNotification {
     pub expires_at: Option<i64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredGmailAccount {
+    pub alias: String,
+    pub email: String,
+    pub history_id: Option<String>,
+    pub last_poll_at: Option<i64>,
+    pub label_map_json: Option<String>,
+    pub status: Option<String>,
+    pub config_json: Option<String>,
+}
+
 #[derive(Clone)]
 pub struct Store {
     conn: Arc<Mutex<Connection>>,
@@ -147,7 +158,8 @@ impl Store {
                 history_id TEXT,
                 last_poll_at INTEGER,
                 label_map_json TEXT,
-                status TEXT
+                status TEXT,
+                config_json TEXT
              );
              CREATE TABLE IF NOT EXISTS paired_clients (
                 origin TEXT PRIMARY KEY,
@@ -156,6 +168,9 @@ impl Store {
                 last_seen_at INTEGER
              );",
         )?;
+
+        // Ignore error if column already exists
+        let _ = conn.execute("ALTER TABLE gmail_accounts ADD COLUMN config_json TEXT", []);
 
         Ok(())
     }
@@ -378,6 +393,57 @@ impl Store {
         )?;
         Ok(())
     }
+
+    // Gmail Accounts
+    pub fn get_gmail_accounts(&self) -> Result<Vec<StoredGmailAccount>, StoreError> {
+        let conn = self.conn.lock().map_err(|_| StoreError::LockError)?;
+        let mut stmt = conn.prepare(
+            "SELECT alias, email, history_id, last_poll_at, label_map_json, status, config_json FROM gmail_accounts",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(StoredGmailAccount {
+                alias: row.get(0)?,
+                email: row.get(1)?,
+                history_id: row.get(2)?,
+                last_poll_at: row.get(3)?,
+                label_map_json: row.get(4)?,
+                status: row.get(5)?,
+                config_json: row.get(6)?,
+            })
+        })?;
+        let mut list = Vec::new();
+        for r in rows {
+            list.push(r?);
+        }
+        Ok(list)
+    }
+
+    pub fn save_gmail_account(&self, acc: &StoredGmailAccount) -> Result<(), StoreError> {
+        let conn = self.conn.lock().map_err(|_| StoreError::LockError)?;
+        conn.execute(
+            "INSERT OR REPLACE INTO gmail_accounts (alias, email, history_id, last_poll_at, label_map_json, status, config_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                acc.alias,
+                acc.email,
+                acc.history_id,
+                acc.last_poll_at,
+                acc.label_map_json,
+                acc.status,
+                acc.config_json,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_gmail_account(&self, alias: &str) -> Result<(), StoreError> {
+        let conn = self.conn.lock().map_err(|_| StoreError::LockError)?;
+        conn.execute(
+            "DELETE FROM gmail_accounts WHERE alias = ?1",
+            params![alias],
+        )?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -442,5 +508,32 @@ mod tests {
 
         store.add_paired_origin(origin, "chrome-ext").unwrap();
         assert!(store.is_origin_paired(origin).unwrap());
+    }
+
+    #[test]
+    fn test_gmail_accounts() {
+        let store = Store::open_in_memory().unwrap();
+        let list = store.get_gmail_accounts().unwrap();
+        assert_eq!(list.len(), 0);
+
+        let acc = StoredGmailAccount {
+            alias: "Work".to_string(),
+            email: "work@example.com".to_string(),
+            history_id: Some("12345".to_string()),
+            last_poll_at: Some(1000),
+            label_map_json: None,
+            status: Some("Connected".to_string()),
+            config_json: Some("{}".to_string()),
+        };
+        store.save_gmail_account(&acc).unwrap();
+
+        let list2 = store.get_gmail_accounts().unwrap();
+        assert_eq!(list2.len(), 1);
+        assert_eq!(list2[0].alias, "Work");
+        assert_eq!(list2[0].email, "work@example.com");
+
+        store.delete_gmail_account("Work").unwrap();
+        let list3 = store.get_gmail_accounts().unwrap();
+        assert_eq!(list3.len(), 0);
     }
 }

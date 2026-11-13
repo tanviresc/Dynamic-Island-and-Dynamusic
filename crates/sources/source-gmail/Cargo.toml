@@ -1,0 +1,25 @@
+[package]
+name = "source-gmail"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+island-contract = { path = "../../island-contract" }
+island-secrets = { path = "../../island-secrets" }
+island-store = { path = "../../island-store" }
+reqwest = { version = "0.13", default-features = false, features = ["json"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+tokio.workspace = true
+base64 = "0.22"
+sha2 = "0.10"
+rand = "0.8"
+axum = "0.7"
+regex = "1.10"
+async-trait = "0.1"
+serde_urlencoded = "0.7"

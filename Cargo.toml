@@ -9,6 +9,7 @@ members = [
     "crates/island-platform",
     "crates/sources/source-antigravity",
     "crates/sources/source-desktop",
+    "crates/sources/source-gmail",
 ]
 resolver = "2"
 

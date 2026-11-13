@@ -1,4 +1,4 @@
-use island_contract::{Event, Target, WsServerMessage};
+use island_contract::{Event, Kind, Source, Surface, Target, WsServerMessage};
 use island_core::{Effect, Input, IslandCore, Millis};
 use island_platform::{
     calculate_window_position, enumerate_monitors, find_window_by_process_and_title, focus_window,
@@ -7,8 +7,13 @@ use island_platform::{
 };
 use island_secrets::{generate_pairing_token, SecretStore, WindowsSecretStore};
 use island_server::{start_server, ServerState, DEFAULT_PORT};
-use island_store::Store;
+use island_store::{Store, StoredGmailAccount};
 use source_desktop::{default_desktop_apps, DesktopAppConfig};
+use source_gmail::{
+    build_authorization_url, exchange_code_for_tokens, generate_pkce_pair, generate_state,
+    listen_for_oauth_callback, refresh_access_token, AccountConfig, GmailApi, HistoryProcessor,
+    OAuthClientConfig, ReadSyncOp, ReqwestGmailApi,
+};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::menu::{CheckMenuItem, Menu, MenuItem};
@@ -129,6 +134,198 @@ async fn save_desktop_apps(
         .set_setting_json("desktop_apps", &json)
         .map_err(|e| e.to_string())?;
     info!("Saved {} desktop app configurations", apps.len());
+    Ok(())
+}
+
+#[tauri::command]
+async fn import_gmail_oauth_client(
+    json_content: String,
+    state: State<'_, AppState>,
+) -> Result<OAuthClientConfig, String> {
+    let cfg = OAuthClientConfig::parse(&json_content)?;
+    state
+        .secrets
+        .set_secret("gmail-oauth-client", &json_content)
+        .map_err(|e| e.to_string())?;
+    info!("Gmail OAuth client configuration imported successfully");
+    Ok(cfg)
+}
+
+#[tauri::command]
+async fn get_gmail_oauth_client(
+    state: State<'_, AppState>,
+) -> Result<Option<OAuthClientConfig>, String> {
+    if let Ok(Some(json)) = state.secrets.get_secret("gmail-oauth-client") {
+        if let Ok(cfg) = OAuthClientConfig::parse(&json) {
+            return Ok(Some(cfg));
+        }
+    }
+    Ok(None)
+}
+
+#[tauri::command]
+async fn start_gmail_oauth(
+    alias: String,
+    state: State<'_, AppState>,
+) -> Result<AccountConfig, String> {
+    let alias = alias.trim().to_string();
+    if alias.is_empty() {
+        return Err("Account alias cannot be empty".to_string());
+    }
+
+    let oauth_json = state
+        .secrets
+        .get_secret("gmail-oauth-client")
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "OAuth client not configured. Import client JSON first.".to_string())?;
+
+    let client_config = OAuthClientConfig::parse(&oauth_json)?;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(|e| format!("Failed to bind loopback listener: {}", e))?;
+    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+
+    let redirect_uri = format!("http://127.0.0.1:{}", port);
+    let pkce = generate_pkce_pair();
+    let state_param = generate_state();
+
+    let auth_url = build_authorization_url(
+        &client_config.client_id,
+        &redirect_uri,
+        &state_param,
+        &pkce.challenge,
+    );
+
+    // Open browser for OAuth consent
+    open_url(&auth_url);
+
+    // Await callback from browser
+    let code = listen_for_oauth_callback(listener, &state_param)
+        .await
+        .map_err(|e| format!("OAuth flow failed: {}", e))?;
+
+    let http_client = source_gmail::reqwest::Client::new();
+    let tokens = exchange_code_for_tokens(
+        &http_client,
+        &client_config.client_id,
+        &client_config.client_secret,
+        &code,
+        &pkce.verifier,
+        &redirect_uri,
+    )
+    .await
+    .map_err(|e| format!("Token exchange failed: {}", e))?;
+
+    let refresh_token = tokens.refresh_token.ok_or_else(|| {
+        "No refresh token returned by Google (did you prompt consent?)".to_string()
+    })?;
+
+    // Query user email via Gmail API
+    let api = ReqwestGmailApi::new();
+    let profile = api
+        .get_profile(&tokens.access_token)
+        .await
+        .map_err(|e| format!("Failed to get Gmail profile: {}", e))?;
+
+    // Store refresh token securely
+    state
+        .secrets
+        .set_secret(&format!("gmail/{}", alias), &refresh_token)
+        .map_err(|e| e.to_string())?;
+
+    let mut account = AccountConfig::new(alias.clone(), profile.email_address.clone());
+    account.history_id = Some(profile.history_id);
+    account.last_poll_at = Some(current_millis() as i64);
+
+    // Fetch labels
+    if let Ok(labels) = api.list_labels(&tokens.access_token).await {
+        for l in labels {
+            account.label_map.insert(l.id, l.name);
+        }
+    }
+
+    let stored = StoredGmailAccount {
+        alias: alias.clone(),
+        email: profile.email_address,
+        history_id: account.history_id.clone(),
+        last_poll_at: account.last_poll_at,
+        label_map_json: Some(serde_json::to_string(&account.label_map).unwrap_or_default()),
+        status: Some("Connected".to_string()),
+        config_json: Some(serde_json::to_string(&account).unwrap_or_default()),
+    };
+
+    state
+        .store
+        .save_gmail_account(&stored)
+        .map_err(|e| e.to_string())?;
+
+    info!("Gmail account {} connected successfully", alias);
+    Ok(account)
+}
+
+#[tauri::command]
+async fn get_gmail_accounts(state: State<'_, AppState>) -> Result<Vec<AccountConfig>, String> {
+    let stored_list = state
+        .store
+        .get_gmail_accounts()
+        .map_err(|e| e.to_string())?;
+    let mut accounts = Vec::new();
+    for acc in stored_list {
+        let config: AccountConfig = if let Some(ref cj) = acc.config_json {
+            serde_json::from_str(cj).unwrap_or_else(|_| AccountConfig::new(acc.alias, acc.email))
+        } else {
+            AccountConfig::new(acc.alias, acc.email)
+        };
+        accounts.push(config);
+    }
+    Ok(accounts)
+}
+
+#[tauri::command]
+async fn save_gmail_account_settings(
+    account: AccountConfig,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let existing = state
+        .store
+        .get_gmail_accounts()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|a| a.alias == account.alias);
+
+    let (history_id, last_poll_at) = if let Some(ref ex) = existing {
+        (ex.history_id.clone(), ex.last_poll_at)
+    } else {
+        (account.history_id.clone(), account.last_poll_at)
+    };
+
+    let stored = StoredGmailAccount {
+        alias: account.alias.clone(),
+        email: account.email.clone(),
+        history_id,
+        last_poll_at,
+        label_map_json: Some(serde_json::to_string(&account.label_map).unwrap_or_default()),
+        status: Some("Connected".to_string()),
+        config_json: Some(serde_json::to_string(&account).map_err(|e| e.to_string())?),
+    };
+
+    state
+        .store
+        .save_gmail_account(&stored)
+        .map_err(|e| e.to_string())?;
+    info!("Saved settings for Gmail account {}", account.alias);
+    Ok(())
+}
+
+#[tauri::command]
+async fn remove_gmail_account(alias: String, state: State<'_, AppState>) -> Result<(), String> {
+    state
+        .store
+        .delete_gmail_account(&alias)
+        .map_err(|e| e.to_string())?;
+    let _ = state.secrets.delete_secret(&format!("gmail/{}", alias));
+    info!("Removed Gmail account {}", alias);
     Ok(())
 }
 
@@ -411,6 +608,114 @@ pub fn run() {
                 }
             });
 
+            // Background Gmail Poller Task (45s poll interval, §7.3)
+            let poll_store = store.clone();
+            let poll_secrets = secrets.clone();
+            let poll_input_tx = input_tx.clone();
+            tauri::async_runtime::spawn(async move {
+                let client = source_gmail::reqwest::Client::new();
+                let api = ReqwestGmailApi::new();
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                loop {
+                    let accounts = poll_store.get_gmail_accounts().unwrap_or_default();
+                    if !accounts.is_empty() {
+                        if let Ok(Some(oauth_json)) = poll_secrets.get_secret("gmail-oauth-client") {
+                            if let Ok(client_config) = OAuthClientConfig::parse(&oauth_json) {
+                                for mut stored_acc in accounts {
+                                    let alias = stored_acc.alias.clone();
+                                    let refresh_token = match poll_secrets.get_secret(&format!("gmail/{}", alias)) {
+                                        Ok(Some(rt)) => rt,
+                                        _ => continue,
+                                    };
+
+                                    let token_res = refresh_access_token(
+                                        &client,
+                                        &client_config.client_id,
+                                        &client_config.client_secret,
+                                        &refresh_token,
+                                    )
+                                    .await;
+
+                                    let access_token = match token_res {
+                                        Ok(tok) => tok.access_token,
+                                        Err(e) => {
+                                            warn!("Failed to refresh Gmail token for {}: {}", alias, e);
+                                            let reauth_event = Event {
+                                                id: uuid::Uuid::new_v4(),
+                                                source: Source::Gmail,
+                                                surface: Surface::Background,
+                                                kind: Kind::NeedsInput,
+                                                title: format!("Gmail · {}", alias),
+                                                text: "Sign-in expired. Please re-authenticate in Settings.".to_string(),
+                                                category: Some("Security".to_string()),
+                                                account: Some(alias.clone()),
+                                                target: Target::Url {
+                                                    url: "https://mail.google.com".to_string(),
+                                                },
+                                                created_at: chrono::Utc::now(),
+                                                dedupe_key: format!("gmail:{}:reauth", alias),
+                                            };
+                                            let _ = poll_input_tx.send(Input::EventAccepted(Box::new(reauth_event))).await;
+                                            continue;
+                                        }
+                                    };
+
+                                    let mut config: AccountConfig = if let Some(ref cj) = stored_acc.config_json {
+                                        serde_json::from_str(cj).unwrap_or_else(|_| AccountConfig::new(alias.clone(), stored_acc.email.clone()))
+                                    } else {
+                                        AccountConfig::new(alias.clone(), stored_acc.email.clone())
+                                    };
+                                    config.history_id = stored_acc.history_id.clone();
+                                    config.last_poll_at = stored_acc.last_poll_at;
+
+                                    if config.label_map.is_empty() {
+                                        if let Ok(labels) = api.list_labels(&access_token).await {
+                                            for l in labels {
+                                                config.label_map.insert(l.id, l.name);
+                                            }
+                                        }
+                                    }
+
+                                    let now_ms = current_millis();
+                                    let mut processor = HistoryProcessor::new(config);
+                                    match processor.poll(&api, &access_token, now_ms as i64).await {
+                                        Ok((events, sync_ops)) => {
+                                            for ev in events {
+                                                let _ = poll_input_tx.send(Input::EventAccepted(Box::new(ev))).await;
+                                            }
+                                            for op in sync_ops {
+                                                match op {
+                                                    ReadSyncOp::RemoveUnread {
+                                                        alias: ref op_alias,
+                                                        message_id,
+                                                    } => {
+                                                        let _ = poll_input_tx
+                                                            .send(Input::ExternalRead(format!(
+                                                                "gmail:{}:{}",
+                                                                op_alias, message_id
+                                                            )))
+                                                            .await;
+                                                    }
+                                                }
+                                            }
+                                            stored_acc.history_id = processor.account.history_id.clone();
+                                            stored_acc.last_poll_at = Some(now_ms as i64);
+                                            stored_acc.status = Some("Connected".to_string());
+                                            stored_acc.config_json = Some(serde_json::to_string(&processor.account).unwrap_or_default());
+                                            let _ = poll_store.save_gmail_account(&stored_acc);
+                                        }
+                                        Err(e) => {
+                                            warn!("Error polling Gmail for {}: {}", alias, e);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_secs(45)).await;
+                }
+            });
+
             // Register State
             app.manage(AppState {
                 core: core_arc,
@@ -433,7 +738,13 @@ pub fn run() {
             set_monitor_settings,
             set_queue_focus,
             get_desktop_apps,
-            save_desktop_apps
+            save_desktop_apps,
+            import_gmail_oauth_client,
+            get_gmail_oauth_client,
+            start_gmail_oauth,
+            get_gmail_accounts,
+            save_gmail_account_settings,
+            remove_gmail_account
         ])
         .run(tauri::generate_context!())
         .expect("error while running island application");

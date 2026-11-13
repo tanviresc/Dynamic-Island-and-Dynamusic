@@ -1689,6 +1689,7 @@ dependencies = [
 name = "island-app"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "island-contract",
  "island-core",
  "island-platform",
@@ -1698,6 +1699,7 @@ dependencies = [
  "serde",
  "serde_json",
  "source-desktop",
+ "source-gmail",
  "tauri",
  "tauri-build",
  "tauri-plugin-shell",
@@ -3503,6 +3505,30 @@ dependencies = [
  "tracing",
  "uuid",
  "windows 0.58.0",
+]
+
+[[package]]
+name = "source-gmail"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "base64 0.22.1",
+ "chrono",
+ "island-contract",
+ "island-secrets",
+ "island-store",
+ "rand",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "sha2",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

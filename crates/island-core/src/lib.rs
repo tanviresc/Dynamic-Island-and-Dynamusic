@@ -80,6 +80,7 @@ pub enum Input {
     },
     PauseToggled(bool),
     DndToggled(bool),
+    ExternalRead(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -421,10 +422,13 @@ impl IslandCore {
                     category: event.category,
                     account: event.account,
                     target: event.target,
-                    group_key: Some(event.dedupe_key),
+                    group_key: Some(event.dedupe_key.clone()),
                     group_count: 1,
                     state: NotificationState::Pending,
-                    external_ref: None,
+                    external_ref: match event.source {
+                        Source::Gmail => Some(event.dedupe_key),
+                        _ => None,
+                    },
                     created_at: event.created_at.timestamp_millis(),
                     received_at: now as i64,
                     expires_at: None,
@@ -782,6 +786,21 @@ impl IslandCore {
 
             Input::DndToggled(dnd) => {
                 self.is_dnd = dnd;
+            }
+
+            Input::ExternalRead(ext_ref) => {
+                let mut i = 0;
+                while i < self.unread_queue.len() {
+                    let item = &self.unread_queue[i];
+                    let matches = item.external_ref.as_deref() == Some(&ext_ref)
+                        || item.group_key.as_deref() == Some(&ext_ref);
+                    if matches {
+                        let removed = self.unread_queue.remove(i);
+                        effects.push(Effect::PersistRemove(removed.id, "external_read"));
+                    } else {
+                        i += 1;
+                    }
+                }
             }
         }
 

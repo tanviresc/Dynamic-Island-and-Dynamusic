@@ -29,6 +29,24 @@ interface DesktopApp {
   detection: "toast" | "uia";
 }
 
+interface OAuthClientConfig {
+  clientId: string;
+  clientSecret: string;
+}
+
+interface GmailAccountConfig {
+  alias: string;
+  email: string;
+  historyId?: string | null;
+  lastPollAt?: number | null;
+  dryRun: boolean;
+  privacyMode: boolean;
+  fallbackEnabled: boolean;
+  otpPopupOnly: boolean;
+  categoryModes: Record<string, "popup" | "queue_only" | "off">;
+  labelMap: Record<string, string>;
+}
+
 export const SettingsShell: React.FC = () => {
   const [activeTab, setActiveTab] = useState<SettingsTab>("developer");
   const [reduceMotion, setReduceMotion] = useState<boolean>(false);
@@ -49,6 +67,89 @@ export const SettingsShell: React.FC = () => {
   // Desktop Apps State (§6.5 & §6.6)
   const [desktopApps, setDesktopApps] = useState<DesktopApp[]>([]);
   const [appsSaved, setAppsSaved] = useState<boolean>(false);
+
+  // Email Tab State (§7.5)
+  const [oauthClient, setOauthClient] = useState<OAuthClientConfig | null>(null);
+  const [oauthJsonInput, setOauthJsonInput] = useState<string>("");
+  const [showJsonInput, setShowJsonInput] = useState<boolean>(false);
+  const [gmailAccounts, setGmailAccounts] = useState<GmailAccountConfig[]>([]);
+  const [newAccountAlias, setNewAccountAlias] = useState<string>("");
+  const [isAuthenticating, setIsAuthenticating] = useState<boolean>(false);
+  const [emailStatusMsg, setEmailStatusMsg] = useState<string>("");
+
+  useEffect(() => {
+    invoke<OAuthClientConfig | null>("get_gmail_oauth_client")
+      .then((cfg) => setOauthClient(cfg))
+      .catch(() => {});
+    invoke<GmailAccountConfig[]>("get_gmail_accounts")
+      .then((accs) => setGmailAccounts(accs))
+      .catch(() => {});
+  }, []);
+
+  const handleImportClientJson = (rawJson?: string) => {
+    const content = rawJson || oauthJsonInput;
+    if (!content.trim()) return;
+    invoke<OAuthClientConfig>("import_gmail_oauth_client", { jsonContent: content })
+      .then((cfg) => {
+        setOauthClient(cfg);
+        setOauthJsonInput("");
+        setShowJsonInput(false);
+        setEmailStatusMsg("OAuth Client imported successfully!");
+        setTimeout(() => setEmailStatusMsg(""), 3000);
+      })
+      .catch((err) => alert("Failed to import OAuth Client: " + err));
+  };
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const content = event.target?.result as string;
+      if (content) {
+        handleImportClientJson(content);
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  const handleConnectGmail = () => {
+    if (!newAccountAlias.trim()) {
+      alert("Please enter an alias for this account (e.g. 'Personal' or 'Work')");
+      return;
+    }
+    setIsAuthenticating(true);
+    setEmailStatusMsg("Opening browser for Google authorization... Please sign in and approve.");
+    invoke<GmailAccountConfig>("start_gmail_oauth", { alias: newAccountAlias.trim() })
+      .then((newAcc) => {
+        setGmailAccounts((prev) => [...prev.filter((a) => a.alias !== newAcc.alias), newAcc]);
+        setNewAccountAlias("");
+        setIsAuthenticating(false);
+        setEmailStatusMsg("Account connected successfully!");
+        setTimeout(() => setEmailStatusMsg(""), 3000);
+      })
+      .catch((err) => {
+        setIsAuthenticating(false);
+        setEmailStatusMsg("");
+        alert("Authentication error: " + err);
+      });
+  };
+
+  const handleRemoveAccount = (alias: string) => {
+    if (!confirm(`Are you sure you want to disconnect ${alias}?`)) return;
+    invoke("remove_gmail_account", { alias })
+      .then(() => {
+        setGmailAccounts((prev) => prev.filter((a) => a.alias !== alias));
+      })
+      .catch((err) => alert("Failed to remove account: " + err));
+  };
+
+  const handleUpdateAccount = (updated: GmailAccountConfig) => {
+    setGmailAccounts((prev) => prev.map((a) => (a.alias === updated.alias ? updated : a)));
+    invoke("save_gmail_account_settings", { account: updated }).catch((err) =>
+      alert("Failed to save settings: " + err)
+    );
+  };
 
   useEffect(() => {
     invoke<DesktopApp[]>("get_desktop_apps")
@@ -473,11 +574,331 @@ export const SettingsShell: React.FC = () => {
           </div>
         )}
 
+        {activeTab === "email" && (
+          <div>
+            <div style={{ marginBottom: 20 }}>
+              <h2 style={{ fontSize: 18, fontWeight: 600 }}>Gmail Integration</h2>
+              <p style={{ fontSize: 12, color: "rgba(255, 255, 255, 0.5)", marginTop: 2 }}>
+                Receive notifications for important incoming emails across up to 2 accounts via Gmail REST metadata polling.
+              </p>
+            </div>
+
+            {emailStatusMsg && (
+              <div
+                style={{
+                  padding: "10px 14px",
+                  borderRadius: 6,
+                  backgroundColor: "rgba(59, 130, 246, 0.15)",
+                  border: "1px solid rgba(59, 130, 246, 0.4)",
+                  color: "#93c5fd",
+                  fontSize: 13,
+                  marginBottom: 16,
+                }}
+              >
+                {emailStatusMsg}
+              </div>
+            )}
+
+            {/* 1. Google OAuth Client Setup Card */}
+            <div
+              style={{
+                backgroundColor: "rgba(255, 255, 255, 0.04)",
+                border: "1px solid rgba(255, 255, 255, 0.1)",
+                borderRadius: 8,
+                padding: 16,
+                marginBottom: 20,
+              }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                <div>
+                  <div style={{ fontSize: 14, fontWeight: 600 }}>OAuth Client Credentials</div>
+                  <div style={{ fontSize: 12, color: "rgba(255, 255, 255, 0.5)", marginTop: 2 }}>
+                    Imported from Google Cloud Console (Desktop application client JSON).
+                  </div>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <span
+                    style={{
+                      padding: "4px 8px",
+                      borderRadius: 4,
+                      fontSize: 11,
+                      fontWeight: 600,
+                      backgroundColor: oauthClient ? "rgba(34, 197, 94, 0.15)" : "rgba(245, 158, 11, 0.15)",
+                      color: oauthClient ? "#4ade80" : "#fbbf24",
+                      border: `1px solid ${oauthClient ? "rgba(34, 197, 94, 0.3)" : "rgba(245, 158, 11, 0.3)"}`,
+                    }}
+                  >
+                    {oauthClient ? "Configured" : "Not Configured"}
+                  </span>
+                  {oauthClient && (
+                    <button
+                      onClick={() => setShowJsonInput(!showJsonInput)}
+                      style={{
+                        padding: "4px 8px",
+                        borderRadius: 4,
+                        fontSize: 11,
+                        backgroundColor: "rgba(255, 255, 255, 0.08)",
+                        border: "1px solid rgba(255, 255, 255, 0.16)",
+                        color: "#fff",
+                        cursor: "pointer",
+                      }}
+                    >
+                      {showJsonInput ? "Cancel" : "Replace"}
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {(!oauthClient || showJsonInput) && (
+                <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 10 }}>
+                  <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                    <input
+                      type="file"
+                      accept=".json"
+                      onChange={handleFileUpload}
+                      style={{ fontSize: 12, color: "rgba(255, 255, 255, 0.7)" }}
+                    />
+                    <span style={{ fontSize: 12, color: "rgba(255, 255, 255, 0.4)" }}>or paste JSON below</span>
+                  </div>
+                  <textarea
+                    rows={4}
+                    value={oauthJsonInput}
+                    onChange={(e) => setOauthJsonInput(e.target.value)}
+                    placeholder="Paste credentials.json here..."
+                    style={{
+                      width: "100%",
+                      padding: "8px 12px",
+                      backgroundColor: "rgba(0, 0, 0, 0.3)",
+                      border: "1px solid rgba(255, 255, 255, 0.12)",
+                      borderRadius: 6,
+                      color: "#fff",
+                      fontSize: 12,
+                      fontFamily: "monospace",
+                      resize: "vertical",
+                      outline: "none",
+                    }}
+                  />
+                  <div>
+                    <button
+                      onClick={() => handleImportClientJson()}
+                      disabled={!oauthJsonInput.trim()}
+                      style={{
+                        padding: "6px 14px",
+                        borderRadius: 6,
+                        backgroundColor: "#2563eb",
+                        color: "#fff",
+                        border: "none",
+                        fontSize: 12,
+                        fontWeight: 500,
+                        cursor: oauthJsonInput.trim() ? "pointer" : "not-allowed",
+                        opacity: oauthJsonInput.trim() ? 1 : 0.5,
+                      }}
+                    >
+                      Save Client Configuration
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* 2. Connected Accounts Section */}
+            <div style={{ marginBottom: 20 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                <h3 style={{ fontSize: 15, fontWeight: 600 }}>Connected Accounts ({gmailAccounts.length}/2)</h3>
+              </div>
+
+              {gmailAccounts.length < 2 && (
+                <div
+                  style={{
+                    backgroundColor: "rgba(255, 255, 255, 0.03)",
+                    border: "1px dashed rgba(255, 255, 255, 0.15)",
+                    borderRadius: 8,
+                    padding: 16,
+                    marginBottom: 16,
+                  }}
+                >
+                  <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Add Account</div>
+                  <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                    <input
+                      type="text"
+                      placeholder="Account Alias (e.g. Personal, Work)"
+                      value={newAccountAlias}
+                      onChange={(e) => setNewAccountAlias(e.target.value)}
+                      style={{
+                        flex: 1,
+                        padding: "8px 12px",
+                        backgroundColor: "rgba(255, 255, 255, 0.06)",
+                        border: "1px solid rgba(255, 255, 255, 0.12)",
+                        borderRadius: 6,
+                        color: "#fff",
+                        fontSize: 13,
+                        outline: "none",
+                      }}
+                    />
+                    <button
+                      onClick={handleConnectGmail}
+                      disabled={!oauthClient || isAuthenticating || !newAccountAlias.trim()}
+                      style={{
+                        padding: "8px 16px",
+                        borderRadius: 6,
+                        backgroundColor: oauthClient && !isAuthenticating ? "#2563eb" : "rgba(255, 255, 255, 0.1)",
+                        color: "#fff",
+                        border: "none",
+                        fontSize: 13,
+                        fontWeight: 500,
+                        cursor: oauthClient && !isAuthenticating ? "pointer" : "not-allowed",
+                        opacity: oauthClient && !isAuthenticating ? 1 : 0.5,
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {isAuthenticating ? "Authenticating..." : "Connect with Google"}
+                    </button>
+                  </div>
+                  {!oauthClient && (
+                    <p style={{ fontSize: 11, color: "#f87171", marginTop: 6 }}>
+                      Import OAuth client credentials above before connecting accounts.
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {gmailAccounts.map((acc) => (
+                <div
+                  key={acc.alias}
+                  style={{
+                    backgroundColor: "rgba(255, 255, 255, 0.04)",
+                    border: "1px solid rgba(255, 255, 255, 0.1)",
+                    borderRadius: 8,
+                    padding: 16,
+                    marginBottom: 16,
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                    <div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ fontSize: 15, fontWeight: 600 }}>{acc.alias}</span>
+                        <span style={{ fontSize: 12, color: "rgba(255, 255, 255, 0.5)" }}>({acc.email})</span>
+                      </div>
+                      <div style={{ fontSize: 11, color: "rgba(255, 255, 255, 0.4)", marginTop: 2 }}>
+                        {acc.lastPollAt ? `Last checked: ${new Date(acc.lastPollAt).toLocaleTimeString()}` : "Not polled yet"}
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => handleRemoveAccount(acc.alias)}
+                      style={{
+                        padding: "4px 10px",
+                        borderRadius: 4,
+                        backgroundColor: "rgba(239, 68, 68, 0.15)",
+                        border: "1px solid rgba(239, 68, 68, 0.3)",
+                        color: "#f87171",
+                        fontSize: 12,
+                        cursor: "pointer",
+                      }}
+                    >
+                      Disconnect
+                    </button>
+                  </div>
+
+                  {/* Mode Toggles */}
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 16, paddingTop: 10, borderTop: "1px solid rgba(255, 255, 255, 0.08)" }}>
+                    <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13 }}>
+                      <input
+                        type="checkbox"
+                        checked={acc.dryRun}
+                        onChange={(e) => handleUpdateAccount({ ...acc, dryRun: e.target.checked })}
+                      />
+                      <span>Dry Run Mode (Log label/alias/timestamp only, no notifications shown)</span>
+                    </label>
+
+                    <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13 }}>
+                      <input
+                        type="checkbox"
+                        checked={acc.privacyMode}
+                        onChange={(e) => handleUpdateAccount({ ...acc, privacyMode: e.target.checked })}
+                      />
+                      <span>Privacy Mode (Hide email subject in notifications)</span>
+                    </label>
+
+                    <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13 }}>
+                      <input
+                        type="checkbox"
+                        checked={acc.fallbackEnabled}
+                        onChange={(e) => handleUpdateAccount({ ...acc, fallbackEnabled: e.target.checked })}
+                      />
+                      <span>Fallback Rule (Notify on UNREAD + IMPORTANT + INBOX if unlabelled)</span>
+                    </label>
+
+                    <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13 }}>
+                      <input
+                        type="checkbox"
+                        checked={acc.otpPopupOnly}
+                        onChange={(e) => handleUpdateAccount({ ...acc, otpPopupOnly: e.target.checked })}
+                      />
+                      <span>OTP / Verification Codes (Always popup immediately, never queue)</span>
+                    </label>
+                  </div>
+
+                  {/* Category Modes */}
+                  <div style={{ paddingTop: 10, borderTop: "1px solid rgba(255, 255, 255, 0.08)" }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: "rgba(255, 255, 255, 0.7)", marginBottom: 8 }}>
+                      Category Notification Modes
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 8 }}>
+                      {["University", "Work", "Jobs", "Money", "Security", "Personal"].map((cat) => {
+                        const currentMode = acc.categoryModes[cat] ?? "popup";
+                        return (
+                          <div
+                            key={cat}
+                            style={{
+                              display: "flex",
+                              justifyContent: "space-between",
+                              alignItems: "center",
+                              padding: "6px 10px",
+                              backgroundColor: "rgba(255, 255, 255, 0.03)",
+                              borderRadius: 4,
+                            }}
+                          >
+                            <span style={{ fontSize: 12, fontWeight: 500 }}>{cat}</span>
+                            <select
+                              value={currentMode}
+                              onChange={(e) => {
+                                const updatedModes = {
+                                  ...acc.categoryModes,
+                                  [cat]: e.target.value as "popup" | "queue_only" | "off",
+                                };
+                                handleUpdateAccount({ ...acc, categoryModes: updatedModes });
+                              }}
+                              style={{
+                                padding: "2px 6px",
+                                backgroundColor: "rgba(255, 255, 255, 0.08)",
+                                border: "1px solid rgba(255, 255, 255, 0.16)",
+                                borderRadius: 4,
+                                color: "#fff",
+                                fontSize: 11,
+                                outline: "none",
+                              }}
+                            >
+                              <option value="popup" style={{ backgroundColor: "#1e1e20" }}>Popup</option>
+                              <option value="queue_only" style={{ backgroundColor: "#1e1e20" }}>Queue Only</option>
+                              <option value="off" style={{ backgroundColor: "#1e1e20" }}>Off</option>
+                            </select>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {activeTab !== "general" &&
           activeTab !== "security" &&
           activeTab !== "developer" &&
           activeTab !== "monitors" &&
-          activeTab !== "sources" && (
+          activeTab !== "sources" &&
+          activeTab !== "email" && (
           <div>
             <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 16 }}>
               {activeTab.charAt(0).toUpperCase() + activeTab.slice(1)}
