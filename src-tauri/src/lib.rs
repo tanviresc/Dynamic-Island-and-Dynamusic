@@ -52,6 +52,13 @@ async fn regenerate_pairing_token(state: State<'_, AppState>) -> Result<String, 
     let _ = state.secrets.set_secret("pairing-token", &new_token);
     let mut guard = state.server_token.write().await;
     *guard = new_token.clone();
+    let _ = std::fs::create_dir_all(".island");
+    let _ = std::fs::write(".island/pairing-token.txt", &new_token);
+    if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+        let island_dir = std::path::PathBuf::from(local_app_data).join("Island");
+        let _ = std::fs::create_dir_all(&island_dir);
+        let _ = std::fs::write(island_dir.join("pairing-token.txt"), &new_token);
+    }
     info!("Pairing token regenerated");
     Ok(new_token)
 }
@@ -599,6 +606,16 @@ pub fn run() {
                     new_tok
                 });
 
+            // Write local pairing token cache for hook scripts and CLI clients
+            let _ = std::fs::create_dir_all(".island");
+            let _ = std::fs::write(".island/pairing-token.txt", &token);
+            let _ = std::fs::write(app_data.join("pairing-token.txt"), &token);
+            if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+                let island_dir = std::path::PathBuf::from(local_app_data).join("Island");
+                let _ = std::fs::create_dir_all(&island_dir);
+                let _ = std::fs::write(island_dir.join("pairing-token.txt"), &token);
+            }
+
             let token_lock = Arc::new(tokio::sync::RwLock::new(token.clone()));
 
             // Core State & Ingest channels
@@ -634,7 +651,7 @@ pub fn run() {
             });
 
             // Start Local HTTP/WS Server
-            let server_state = ServerState::new(token, store.clone(), event_tx).with_focus_tx(focus_tx);
+            let server_state = ServerState::new(token, store.clone(), event_tx.clone()).with_focus_tx(focus_tx);
             let command_tx = server_state.command_tx.clone();
             let command_tx_for_effects = command_tx.clone();
             tauri::async_runtime::spawn(async move {
@@ -856,6 +873,12 @@ pub fn run() {
                     }
                     tokio::time::sleep(Duration::from_secs(45)).await;
                 }
+            });
+
+            // Background Antigravity Watcher Task (§1.10.3)
+            let ag_event_tx = event_tx.clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = source_antigravity::start_antigravity_watcher(ag_event_tx).await;
             });
 
             // Register State

@@ -17,6 +17,7 @@ island-server = { path = "../crates/island-server" }
 island-platform = { path = "../crates/island-platform" }
 source-desktop = { path = "../crates/sources/source-desktop" }
 source-gmail = { path = "../crates/sources/source-gmail" }
+source-antigravity = { path = "../crates/sources/source-antigravity" }
 tauri = { version = "2.0", features = ["tray-icon"] }
 tauri-plugin-shell = "2.0"
 serde.workspace = true

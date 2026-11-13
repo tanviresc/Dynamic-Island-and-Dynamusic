@@ -1698,6 +1698,7 @@ dependencies = [
  "island-store",
  "serde",
  "serde_json",
+ "source-antigravity",
  "source-desktop",
  "source-gmail",
  "tauri",

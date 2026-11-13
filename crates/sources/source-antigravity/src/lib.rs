@@ -229,6 +229,138 @@ impl RunTracker {
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct TranscriptStep {
+    #[serde(rename = "type")]
+    step_type: Option<String>,
+    status: Option<String>,
+    tool_calls: Option<Vec<serde_json::Value>>,
+}
+
+pub fn parse_last_transcript_line(path: &std::path::Path) -> Option<AgentStatus> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    if len == 0 {
+        return None;
+    }
+    let read_len = len.min(8192);
+    file.seek(SeekFrom::End(-(read_len as i64))).ok()?;
+    let mut buf = vec![0u8; read_len as usize];
+    file.read_exact(&mut buf).ok()?;
+    let content = String::from_utf8_lossy(&buf);
+    let last_line = content.lines().rev().find(|l| !l.trim().is_empty())?;
+
+    let step: TranscriptStep = serde_json::from_str(last_line).ok()?;
+    match step.step_type.as_deref() {
+        Some("USER_INPUT") => Some(AgentStatus::Running),
+        Some("PLANNER_RESPONSE") => {
+            let tools = step.tool_calls.unwrap_or_default();
+            if tools
+                .iter()
+                .any(|t| t.get("name").and_then(|n| n.as_str()) == Some("ask_question"))
+            {
+                Some(AgentStatus::WaitingForApproval {
+                    command: Some("Question asked".to_string()),
+                })
+            } else if !tools.is_empty() {
+                Some(AgentStatus::Running)
+            } else if step.status.as_deref() == Some("ERROR") {
+                Some(AgentStatus::Error {
+                    message: "Task error".to_string(),
+                })
+            } else {
+                Some(AgentStatus::Stopped { reason: None })
+            }
+        }
+        _ => None,
+    }
+}
+
+pub fn start_antigravity_watcher(
+    event_tx: tokio::sync::mpsc::Sender<Event>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut tracker = RunTracker::new();
+
+        // Baseline suppression: detect existing transcripts at startup (§4B.1)
+        if let Ok(home) = std::env::var("USERPROFILE") {
+            let brain_dir = std::path::PathBuf::from(home)
+                .join(".gemini")
+                .join("antigravity")
+                .join("brain");
+            if let Ok(entries) = std::fs::read_dir(&brain_dir) {
+                let baseline_ids: Vec<String> = entries
+                    .filter_map(|e| e.ok())
+                    .filter_map(|e| e.file_name().into_string().ok())
+                    .collect();
+                tracker.initialize_baseline(&baseline_ids);
+            }
+        }
+
+        let mut ticker = tokio::time::interval(std::time::Duration::from_millis(1000));
+        let mut last_modified_map: HashMap<String, std::time::SystemTime> = HashMap::new();
+
+        loop {
+            ticker.tick().await;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+
+            if let Ok(home) = std::env::var("USERPROFILE") {
+                let brain_dir = std::path::PathBuf::from(home)
+                    .join(".gemini")
+                    .join("antigravity")
+                    .join("brain");
+
+                if let Ok(entries) = std::fs::read_dir(&brain_dir) {
+                    for entry in entries.flatten() {
+                        let conv_id = entry.file_name().to_string_lossy().to_string();
+                        let transcript_path = entry
+                            .path()
+                            .join(".system_generated")
+                            .join("logs")
+                            .join("transcript.jsonl");
+
+                        if let Ok(meta) = std::fs::metadata(&transcript_path) {
+                            if let Ok(mtime) = meta.modified() {
+                                let prev = last_modified_map.get(&conv_id);
+                                if prev.is_none() || prev != Some(&mtime) {
+                                    last_modified_map.insert(conv_id.clone(), mtime);
+
+                                    if let Some(status) =
+                                        parse_last_transcript_line(&transcript_path)
+                                    {
+                                        let update = AgentSessionUpdate {
+                                            conversation_id: conv_id.clone(),
+                                            is_subagent: false,
+                                            workspace_path: "Antigravity".to_string(),
+                                            task_title: None,
+                                            status,
+                                            timestamp_ms: now,
+                                        };
+                                        let immediate_events = tracker.handle_update(update, now);
+                                        for ev in immediate_events {
+                                            let _ = event_tx.send(ev).await;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Tick for 8-second debounce completion (§1.10.3)
+            let ready_events = tracker.tick(now);
+            for ev in ready_events {
+                let _ = event_tx.send(ev).await;
+            }
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -371,5 +503,72 @@ mod tests {
         let ev = tracker.handle_update(existing_update, 1000);
         assert!(ev.is_empty());
         assert!(tracker.tick(10000).is_empty());
+    }
+
+    #[test]
+    fn test_parse_last_transcript_line() {
+        use std::io::Write;
+        let temp_dir = std::env::temp_dir().join(format!("test_ag_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let log_file = temp_dir.join("transcript.jsonl");
+
+        // 1. User input
+        let mut f = std::fs::File::create(&log_file).unwrap();
+        writeln!(f, r#"{{"type":"USER_INPUT","status":"DONE"}}"#).unwrap();
+        drop(f);
+        assert_eq!(
+            parse_last_transcript_line(&log_file),
+            Some(AgentStatus::Running)
+        );
+
+        // 2. Planner response calling tools
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&log_file)
+            .unwrap();
+        writeln!(
+            f,
+            r#"{{"type":"PLANNER_RESPONSE","status":"DONE","tool_calls":[{{"name":"run_command"}}]}}"#
+        )
+        .unwrap();
+        drop(f);
+        assert_eq!(
+            parse_last_transcript_line(&log_file),
+            Some(AgentStatus::Running)
+        );
+
+        // 3. Planner response calling ask_question
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&log_file)
+            .unwrap();
+        writeln!(
+            f,
+            r#"{{"type":"PLANNER_RESPONSE","status":"DONE","tool_calls":[{{"name":"ask_question"}}]}}"#
+        )
+        .unwrap();
+        drop(f);
+        assert!(matches!(
+            parse_last_transcript_line(&log_file),
+            Some(AgentStatus::WaitingForApproval { .. })
+        ));
+
+        // 4. Planner response completing task with no tools
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&log_file)
+            .unwrap();
+        writeln!(
+            f,
+            r#"{{"type":"PLANNER_RESPONSE","status":"DONE","tool_calls":[]}}"#
+        )
+        .unwrap();
+        drop(f);
+        assert_eq!(
+            parse_last_transcript_line(&log_file),
+            Some(AgentStatus::Stopped { reason: None })
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

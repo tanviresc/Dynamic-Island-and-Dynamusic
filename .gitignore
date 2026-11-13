@@ -36,6 +36,8 @@ tools/antigravity-inspector/out/
 *client_secret*.json
 oauth-client*.json
 *.credentials.json
+*token*.txt
+.island/
 
 # OS and Editor files
 .DS_Store
