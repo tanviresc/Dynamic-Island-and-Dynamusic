@@ -22,8 +22,14 @@ export interface QueuePanelProps {
 }
 
 export function formatRelativeTime(dateStr: string): string {
+  if (!dateStr) return "";
+  const parsed = new Date(dateStr).getTime();
+  if (isNaN(parsed)) {
+    // If it's already a relative time string from backend (e.g. "just now", "1m", "now")
+    return dateStr;
+  }
   try {
-    const diffMs = Date.now() - new Date(dateStr).getTime();
+    const diffMs = Math.max(0, Date.now() - parsed);
     const diffSec = Math.floor(diffMs / 1000);
     if (diffSec < 60) return "now";
     const diffMin = Math.floor(diffSec / 60);
@@ -34,7 +40,7 @@ export function formatRelativeTime(dateStr: string): string {
     if (diffDay < 7) return `${diffDay}d`;
     return new Date(dateStr).toLocaleDateString(undefined, { weekday: "short" });
   } catch {
-    return "";
+    return dateStr;
   }
 }
 
