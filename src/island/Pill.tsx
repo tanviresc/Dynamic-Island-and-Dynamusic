@@ -69,9 +69,9 @@ export const Pill: React.FC<PillProps> = ({
       className="island-interactive"
       layoutId="island-surface"
       initial={{
-        width: 5,
-        height: 5,
-        borderRadius: 2.5,
+        width: 0.5,
+        height: 0.5,
+        borderRadius: 0.25,
         opacity: 0,
       }}
       animate={{
@@ -81,9 +81,9 @@ export const Pill: React.FC<PillProps> = ({
         opacity: 1,
       }}
       exit={{
-        width: 5,
-        height: 5,
-        borderRadius: 2.5,
+        width: 0.5,
+        height: 0.5,
+        borderRadius: 0.25,
         opacity: 0,
         transition: motionPreset.disappear.layout,
       }}

@@ -526,7 +526,9 @@ pub fn run() {
                         }
 
                         // Adaptive Click-through Worker Thread (§3.6)
+                        let win_clone = window.clone();
                         let hit_rect_thread = hit_rect_arc.clone();
+                        let _ = win_clone.set_ignore_cursor_events(true);
                         std::thread::spawn(move || {
                             let mut last_inside = false;
                             loop {
@@ -539,8 +541,8 @@ pub fn run() {
                                 let win_rect_opt = get_window_screen_rect(raw_hwnd);
                                 let scale = get_window_dpi_scale(raw_hwnd);
 
-                                // 4px tolerance when checking entrance; 10px (4px tolerance + 6px hysteresis) when checking exit
-                                let tolerance = if last_inside { 10 } else { 4 };
+                                // 4px tolerance when checking entrance; 8px when checking exit
+                                let tolerance = if last_inside { 8 } else { 4 };
 
                                 let screen_hit_rect = match (rect_opt, win_rect_opt) {
                                     (Some(client_rect), Some(win_rect)) if !client_rect.is_empty() => {
@@ -564,6 +566,7 @@ pub fn run() {
                                     .is_some_and(|r| r.contains_point(cursor_pt.0, cursor_pt.1));
 
                                 if inside != last_inside {
+                                    let _ = win_clone.set_ignore_cursor_events(!inside);
                                     update_window_clickthrough(raw_hwnd, inside);
                                     last_inside = inside;
                                 }
@@ -879,6 +882,12 @@ pub fn run() {
             let ag_event_tx = event_tx.clone();
             tauri::async_runtime::spawn(async move {
                 let _ = source_antigravity::start_antigravity_watcher(ag_event_tx).await;
+            });
+
+            // Background Desktop Apps Watcher Task (§1.10.2)
+            let desktop_event_tx = event_tx.clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = source_desktop::start_desktop_watcher(desktop_event_tx).await;
             });
 
             // Register State

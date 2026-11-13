@@ -26,11 +26,11 @@ export const Dot: React.FC<DotProps> = ({
         opacity: 1,
         backgroundColor: color,
         boxShadow: isReducedMotion
-          ? `0 0 6px 1px ${color}, 0 0 12px 2px ${color}80, 0 0 1px 0.5px #ffffff`
+          ? `0 0 3px 1px rgba(255, 255, 255, 0.95), 0 0 8px 2.5px ${color}, 0 0 16px 5px ${color}80`
           : [
-              `0 0 6px 1px ${color}, 0 0 12px 2px ${color}80, 0 0 1px 0.5px #ffffff`,
-              `0 0 9px 2px ${color}, 0 0 16px 3px ${color}99, 0 0 2px 0.5px #ffffff`,
-              `0 0 6px 1px ${color}, 0 0 12px 2px ${color}80, 0 0 1px 0.5px #ffffff`,
+              `0 0 3px 1px rgba(255, 255, 255, 0.95), 0 0 8px 2.5px ${color}, 0 0 16px 5px ${color}80`,
+              `0 0 5px 1.5px rgba(255, 255, 255, 1), 0 0 12px 3.5px ${color}, 0 0 24px 7px ${color}99`,
+              `0 0 3px 1px rgba(255, 255, 255, 0.95), 0 0 8px 2.5px ${color}, 0 0 16px 5px ${color}80`,
             ],
       }}
       exit={{ scale: 0, opacity: 0, transition: { duration: motionPreset.dotDisappear.duration } }}
@@ -45,10 +45,11 @@ export const Dot: React.FC<DotProps> = ({
         backgroundColor: { duration: motionPreset.dotColor.duration },
       }}
       style={{
-        width: 5,
-        height: 5,
+        width: 0.5,
+        height: 0.5,
+        minWidth: 0.5,
+        minHeight: 0.5,
         borderRadius: "50%",
-        border: "0.5px solid rgba(255, 255, 255, 0.95)",
         cursor: "pointer",
         padding: 0,
         outline: "none",

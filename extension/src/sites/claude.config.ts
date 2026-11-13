@@ -26,7 +26,7 @@ export const claudeConfig: SiteConfig = {
     ],
     chatTitle: undefined, // Falls back to document.title
   },
-  settlingDebounceMs: 1500,
+  settlingDebounceMs: 400,
   minGenerationDurationMs: 800,
   notes: "Stop button appears during generation in chat interface. UNVERIFIED until tested on live claude.ai.",
 };

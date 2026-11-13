@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Antigravity Lifecycle Hook for Island Dynamic Island
 .DESCRIPTION
@@ -125,3 +125,4 @@ try {
     # Antigravity hooks expect valid JSON on stdout
     [Console]::Out.Write("{}")
 }
+

@@ -25,7 +25,7 @@ export const chatgptConfig: SiteConfig = {
     ],
     chatTitle: undefined, // Falls back to document.title
   },
-  settlingDebounceMs: 1500,
+  settlingDebounceMs: 400,
   minGenerationDurationMs: 800,
   notes: "Stop generation button toggles in the prompt composer footer. UNVERIFIED until tested on live chatgpt.com.",
 };

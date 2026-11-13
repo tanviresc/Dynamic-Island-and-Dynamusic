@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use thiserror::Error;
 use uuid::Uuid;
 
-pub const STOPPED_DEBOUNCE_MS: u64 = 8000; // 8 seconds debounce per §1.10.3 & §4B.1
+pub const STOPPED_DEBOUNCE_MS: u64 = 400; // 400ms fast responsive debounce
 
 #[derive(Debug, Error)]
 pub enum AdapterError {
@@ -298,7 +298,7 @@ pub fn start_antigravity_watcher(
             }
         }
 
-        let mut ticker = tokio::time::interval(std::time::Duration::from_millis(1000));
+        let mut ticker = tokio::time::interval(std::time::Duration::from_millis(200));
         let mut last_modified_map: HashMap<String, std::time::SystemTime> = HashMap::new();
 
         loop {
@@ -392,37 +392,37 @@ mod tests {
         };
         tracker.handle_update(u2, 3000);
 
-        // t=5000: Flaps back to Running within 2s (<8s)
+        // t=3200: Flaps back to Running within 200ms (<400ms debounce)
         let u3 = AgentSessionUpdate {
             conversation_id: "conv-main".to_string(),
             is_subagent: false,
             workspace_path: "E:/workspace/island".to_string(),
             task_title: Some("Build auth".to_string()),
             status: AgentStatus::Running,
-            timestamp_ms: 5000,
+            timestamp_ms: 3200,
         };
-        tracker.handle_update(u3, 5000);
+        tracker.handle_update(u3, 3200);
 
-        // Advance to t=12000: flap cancelled debounce, NO event emitted!
-        let tick1 = tracker.tick(12000);
+        // Advance to t=3600: flap cancelled debounce, NO event emitted!
+        let tick1 = tracker.tick(3600);
         assert!(tick1.is_empty());
 
-        // t=13000: Truly stops
+        // t=4000: Truly stops
         let u4 = AgentSessionUpdate {
             conversation_id: "conv-main".to_string(),
             is_subagent: false,
             workspace_path: "E:/workspace/island".to_string(),
             task_title: Some("Build auth".to_string()),
             status: AgentStatus::Stopped { reason: None },
-            timestamp_ms: 13000,
+            timestamp_ms: 4000,
         };
-        tracker.handle_update(u4, 13000);
+        tracker.handle_update(u4, 4000);
 
-        // t=20000 (7s after stop): still debouncing, no event
-        assert!(tracker.tick(20000).is_empty());
+        // t=4200 (200ms after stop): still debouncing, no event
+        assert!(tracker.tick(4200).is_empty());
 
-        // t=21001 (>8s after stop): exactly one Done event emitted!
-        let tick2 = tracker.tick(21001);
+        // t=4401 (>400ms after stop): exactly one Done event emitted!
+        let tick2 = tracker.tick(4401);
         assert_eq!(tick2.len(), 1);
         assert_eq!(tick2[0].kind, Kind::Done);
         assert_eq!(tick2[0].title, "island · Build auth");

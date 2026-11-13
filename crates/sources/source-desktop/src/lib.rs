@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use island_contract::{Event, Kind, Source, Surface, Target};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -324,6 +325,176 @@ impl UiaSignalDetector {
             }
         }
     }
+}
+
+#[cfg(windows)]
+fn find_process_window(target_process: &str) -> Option<(isize, String)> {
+    use windows::Win32::Foundation::{BOOL, HWND, LPARAM};
+    use windows::Win32::System::ProcessStatus::GetProcessImageFileNameW;
+    use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
+        IsWindowVisible,
+    };
+
+    struct SearchCtx {
+        proc_name: String,
+        result: Option<(isize, String)>,
+    }
+
+    unsafe extern "system" fn enum_cb(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let ctx = &mut *(lparam.0 as *mut SearchCtx);
+        if !IsWindowVisible(hwnd).as_bool() {
+            return BOOL(1);
+        }
+        let mut pid: u32 = 0;
+        let _ = GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid == 0 {
+            return BOOL(1);
+        }
+        if let Ok(handle) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+            let mut buf = [0u16; 512];
+            let len = GetProcessImageFileNameW(handle, &mut buf);
+            let _ = windows::Win32::Foundation::CloseHandle(handle);
+            if len > 0 {
+                let full = String::from_utf16_lossy(&buf[..len as usize]);
+                if let Some(file_name) = full.rsplit('\\').next() {
+                    if file_name.eq_ignore_ascii_case(&ctx.proc_name) {
+                        let text_len = GetWindowTextLengthW(hwnd);
+                        let mut title = String::new();
+                        if text_len > 0 {
+                            let mut title_buf = vec![0u16; text_len as usize + 1];
+                            let read_len = GetWindowTextW(hwnd, &mut title_buf);
+                            if read_len > 0 {
+                                title = String::from_utf16_lossy(&title_buf[..read_len as usize]);
+                            }
+                        }
+                        ctx.result = Some((hwnd.0 as isize, title));
+                        return BOOL(0);
+                    }
+                }
+            }
+        }
+        BOOL(1)
+    }
+
+    let mut ctx = SearchCtx {
+        proc_name: target_process.to_string(),
+        result: None,
+    };
+    unsafe {
+        let _ = EnumWindows(Some(enum_cb), LPARAM(&mut ctx as *mut _ as _));
+    }
+    ctx.result
+}
+
+#[cfg(windows)]
+fn probe_window_state(hwnd: isize) -> (bool, Option<String>) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
+    };
+    use windows::Win32::UI::Accessibility::{
+        CUIAutomation, IUIAutomation, TreeScope_Descendants, UIA_ButtonControlTypeId,
+        UIA_ControlTypePropertyId,
+    };
+
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        let uia: Result<IUIAutomation, _> =
+            CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER);
+        let uia = match uia {
+            Ok(u) => u,
+            Err(_) => return (false, None),
+        };
+
+        let root_el = match uia.ElementFromHandle(HWND(hwnd as _)) {
+            Ok(el) => el,
+            Err(_) => return (false, None),
+        };
+
+        let val = windows::core::VARIANT::from(UIA_ButtonControlTypeId.0);
+        let condition = match uia.CreatePropertyCondition(UIA_ControlTypePropertyId, &val) {
+            Ok(c) => c,
+            Err(_) => return (false, None),
+        };
+
+        let mut is_generating = false;
+        let mut needs_input = None;
+
+        if let Ok(elements) = root_el.FindAll(TreeScope_Descendants, &condition) {
+            if let Ok(count) = elements.Length() {
+                for i in 0..count {
+                    if let Ok(btn) = elements.GetElement(i) {
+                        if let Ok(name) = btn.CurrentName() {
+                            let name_str = name.to_string();
+                            let lower = name_str.to_lowercase();
+                            if lower.contains("stop") {
+                                is_generating = true;
+                            } else if lower.contains("allow")
+                                || lower.contains("approve")
+                                || lower.contains("confirm")
+                            {
+                                needs_input = Some(name_str);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        (is_generating, needs_input)
+    }
+}
+
+pub fn start_desktop_watcher(
+    event_tx: tokio::sync::mpsc::Sender<Event>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let apps = default_desktop_apps();
+        let mut detectors: HashMap<String, UiaSignalDetector> = HashMap::new();
+        for app in apps {
+            if app.enabled {
+                detectors.insert(app.id.clone(), UiaSignalDetector::new(app));
+            }
+        }
+
+        let mut ticker = tokio::time::interval(std::time::Duration::from_millis(400));
+        loop {
+            ticker.tick().await;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+
+            #[cfg(windows)]
+            {
+                for detector in detectors.values_mut() {
+                    let mut found_window = None;
+                    for proc_name in &detector.app.process_names {
+                        if let Some((hwnd, title)) = find_process_window(proc_name) {
+                            found_window = Some((hwnd, title));
+                            break;
+                        }
+                    }
+
+                    if let Some((hwnd, title)) = found_window {
+                        let (is_gen, needs_input) = probe_window_state(hwnd);
+                        if let Some(mut ev) = detector.tick(is_gen, needs_input, now) {
+                            let clean_title = title.trim();
+                            if !clean_title.is_empty()
+                                && clean_title.to_lowercase() != "claude"
+                                && clean_title.to_lowercase() != "chatgpt"
+                            {
+                                ev.text = clean_title.to_string();
+                            }
+                            let _ = event_tx.send(ev).await;
+                        }
+                    }
+                }
+            }
+        }
+    })
 }
 
 #[cfg(test)]
