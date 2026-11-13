@@ -1,0 +1,44 @@
+# Rust
+/target
+src-tauri/target
+**/*.rs.bk
+
+# Node / Frontend
+node_modules/
+dist/
+.vite/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Extension build
+extension/dist/
+
+# SQLite & Runtime storage
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+
+# Logging
+logs/
+*.log
+
+# Inspector & Diagnostic outputs
+tools/antigravity-inspector/out/
+
+# Secrets and OAuth client downloads
+.env
+.env.*
+!*.env.example
+*client_secret*.json
+oauth-client*.json
+*.credentials.json
+
+# OS and Editor files
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json
+.idea/

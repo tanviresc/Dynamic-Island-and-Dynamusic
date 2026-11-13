@@ -1,0 +1,238 @@
+# Island
+
+> A sleek, unobtrusive "Dynamic Island" notification overlay for Windows 10 and 11.
+>
+> **Working Name Notice**: "Island" is the project working name. Product branding, window titles, and bundle identifiers are centralized in [`branding.json`](file:///e:/dynamic%20island/branding.json) and fully configurable.
+
+---
+
+## 1. Project Overview
+
+**Island** brings the fluid, context-aware "Dynamic Island" notification experience to the Windows desktop. Designed specifically for multi-monitor, high-productivity developer workflows, Island rests centered at the top of your **active working monitor** as a discreet status surface.
+
+Island surfaces mission-critical updates without breaking your flow:
+- **AI Task Completions & Input Prompts**: Claude, ChatGPT, Gemini (web and desktop), and Antigravity IDE agent sessions.
+- **High-Priority Gmail**: Real-time arrival of filtered emails across **two separate Gmail accounts**, operating silently in the background even when your browser is closed.
+- **Contextual Jumps**: One click takes you directly back to the exact browser tab, desktop window, IDE workspace, or email thread where the event originated.
+
+---
+
+## 2. Feature Highlights
+
+- **Dynamic Island Surface**:
+  - Pure black (`#000000`) pill with a subtle border and soft ambient outer glow.
+  - Dynamic sizing: dynamically measures incoming text and animates smoothly between compact, standard, and two-line layouts (max 480 px width, 2 lines with graceful ellipsis).
+  - 60 fps spring-based layout animations powered by the Motion library inside a fixed 640×560 logical window that never resizes during transitions.
+  - Full respect for Windows "Reduce motion" accessibility settings.
+- **Activity-Based State Machine**:
+  - Built with an extensible architecture where notifications are the primary activity type, with clean state boundaries for future activities (such as music).
+- **Interactive Queue & Status Dot**:
+  - Unread notifications collapse into an elegant status dot at the top of your screen.
+  - **Green Dot**: Unread completed tasks or incoming emails.
+  - **Blue Dot**: At least one unread task is actively waiting for your approval, input, or clarification (Blue takes precedence over Green).
+  - Clicking the dot expands an interactive queue panel to inspect, jump to, or clear unread notifications.
+- **Intelligent Multi-Monitor Tracking**:
+  - Automatically tracks and follows the **active monitor** based on the current foreground window (with cursor position fallback and 500 ms anti-flicker debounce).
+  - Per-monitor DPI awareness handles mixed scaling (e.g. 100% and 150%) seamlessly.
+  - Optional "Fixed Monitor" mode if you prefer anchoring Island to a dedicated display.
+- **Fullscreen & Game Mode**:
+  - Automatically senses fullscreen games, presentations, or media playback on the active display.
+  - Suppresses large pill expansions: displays only a brief 10-second dot pulse upon arrival, followed by a non-intrusive 3-second pulse every 60 seconds while unread items remain.
+- **Smart Skip ("Already Looking")**:
+  - Suppresses popups and queue pollution if you are actively focused on the source (e.g. watching Claude generate in the active tab, or working in the focused IDE workspace).
+  - Configurable 3-minute idle detection ensures notifications resume if you step away from your desk.
+  - Automatically marks queued notifications as read when you switch focus to their source window.
+- **Click-Through Transparency**:
+  - The OS window is transparent to mouse clicks by default, enabling cursor interaction with underlying apps right up to the visible boundary of the pill or dot.
+- **System Tray Integration**:
+  - Quick tray icon controls for Pause, Do Not Disturb (DND), Settings, and Quit.
+
+---
+
+## 3. Architecture Summary
+
+Island adheres to a **functional core, imperative shell** design. The core state machine (`island-core`) is completely deterministic and decoupled from operating system APIs, network loops, and UI frameworks, making every timing and routing rule 100% unit-testable.
+
+```mermaid
+flowchart TD
+    subgraph Sources["Notification Sources"]
+        EXT["Chrome / Brave Extension<br/>(Claude, ChatGPT, Gemini Web)"]
+        IDE["Antigravity IDE<br/>(File Watcher / Hooks)"]
+        DSK["Desktop AI Apps<br/>(Toast / UI Automation)"]
+        GML["Gmail Background Service<br/>(REST API / Metadata)"]
+    end
+
+    subgraph CoreApp["Island Desktop Core (Tauri v2 + Rust)"]
+        SRV["Local Server (127.0.0.1:47821)<br/>Token Auth + Origin Pinning"]
+        ING["Ingest Pipeline<br/>(Validation, Dedupe, Smart Skip)"]
+        SM["Activity State Machine<br/>(Queue, Timers, Monitors, Game Mode)"]
+        WIN["Win32 Shell (windows crate)<br/>(DPI, Hit-Testing, Jumps, Foregrounds)"]
+        DB[("SQLite (WAL)<br/>Settings & Unread Queue")]
+    end
+
+    subgraph UI["Frontend UI (React + Vite + Motion)"]
+        ISL["Island Window<br/>(Pill, Dot, Queue Panel)"]
+        SET["Settings Window & Dev Test Panel"]
+    end
+
+    EXT -- "WebSocket / Bearer Token" --> SRV
+    SRV --> ING
+    IDE --> ING
+    DSK --> ING
+    GML --> ING
+    ING --> SM
+    SM <--> DB
+    SM <--> WIN
+    SM -- "View Model Events" --> ISL
+    ISL -- "User Interactions" --> SM
+    SET <--> SM
+```
+
+---
+
+## 4. Windows Prerequisites
+
+Before building or running Island, ensure your Windows environment has the following prerequisites:
+
+1. **Operating System**: Windows 10 (version 1903+ / Build 18362+) or Windows 11 (64-bit).
+2. **Rust Toolchain**:
+   - `rustc` ≥ 1.77 and `cargo` (via [rustup.rs](https://rustup.rs/)).
+   - Default host target: `x86_64-pc-windows-msvc`.
+3. **Microsoft C++ Build Tools**:
+   - Visual Studio 2022 Build Tools (or Visual Studio Community/Professional).
+   - Ensure the **"Desktop development with C++"** workload and Windows 10/11 SDK are installed.
+4. **Node.js & npm**:
+   - Node.js LTS (v20+ or v24+).
+   - `npm` (included with Node.js).
+5. **WebView2 Runtime**:
+   - Microsoft Edge WebView2 Evergreen Runtime (pre-installed on Windows 11 and modern Windows 10).
+
+---
+
+## 5. Development & Running
+
+### Install Dependencies
+```powershell
+npm install
+```
+
+### Run in Development Mode
+Launch both the Vite dev server and the Tauri v2 desktop application with live reload:
+```powershell
+npm run tauri dev
+```
+
+### Run Quality Gates & Tests
+Run the comprehensive verification script (formatting, clippy, unit tests, TypeScript typechecks, and workspace builds):
+```powershell
+.\scripts\check.ps1
+```
+
+### Injecting Test Events
+You can inject simulated events via the built-in Developer Test Panel in Settings or via PowerShell:
+```powershell
+.\tools\send-test-event.ps1 -Kind done -Source claude
+```
+
+---
+
+## 6. Browser Extension Setup (Chrome / Brave)
+
+The companion Manifest V3 browser extension captures generation status and input prompts from Claude (`claude.ai`), ChatGPT (`chatgpt.com`), and Gemini (`gemini.google.com`).
+
+1. **Build the Extension**:
+   ```powershell
+   npm run build
+   ```
+   *(This builds the extension into `extension/dist/`)*
+2. **Load the Extension in Chrome or Brave**:
+   - Open `chrome://extensions` (or `brave://extensions`).
+   - Enable **Developer mode** (toggle in top-right corner).
+   - Click **Load unpacked** and select the folder:
+     `E:\dynamic island\extension\dist`
+3. **Pair the Extension**:
+   - Open the extension's **Options** page.
+   - In Island, open **Settings → Security**, and click **Copy Token**.
+   - Paste the token into the extension Options page and click **Save**.
+   - The status indicator will switch to **Connected**, and Island will pin the extension origin.
+
+---
+
+## 7. Gmail Integration Setup (Summary)
+
+Island polls the official Gmail REST API directly to detect incoming high-priority emails across **two Google accounts** without requiring your web browser to remain open.
+
+### Quick Setup Steps:
+1. **Google Cloud Console**:
+   - Create a Google Cloud project and enable the **Gmail API**.
+   - Configure the OAuth Consent Screen (Audience: *External*, add both email addresses as *Test Users*).
+   - Request scope: `https://www.googleapis.com/auth/gmail.metadata` (read-only metadata; cannot read email bodies, send, or delete).
+   - Create an OAuth Client ID for **Desktop App** and download the credentials JSON.
+2. **Import into Island**:
+   - In Island, open **Settings → Email → Import OAuth Client** and select your JSON.
+3. **Configure Gmail Labels & Filters**:
+   - In both Gmail accounts, create a parent label named `Island` with sub-labels:
+     `Island/University`, `Island/Work`, `Island/Jobs`, `Island/Money`, `Island/Security`, `Island/Personal`.
+   - Set up Gmail filters matching your priority criteria to apply these labels.
+4. **Authorize Accounts**:
+   - In Island Settings, add your accounts via the local loopback OAuth flow.
+   - For complete step-by-step instructions, see **Section 6 (Manual steps for the human)** in [`PLAN.md`](PLAN.md).
+
+---
+
+## 8. Privacy & Security Stance
+
+Island is built with an uncompromising local-first security model:
+
+- **Strict Loopback Binding**: The embedded HTTP/WebSocket server listens exclusively on `127.0.0.1:47821` (never `0.0.0.0` or external network interfaces).
+- **Cryptographic Pairing Token**: Every external event producer must present a 32-byte CSPRNG token generated on first boot and secured in the **Windows Credential Manager**.
+- **Origin Pinning & DNS Rebinding Defense**: Web page origins (`http://` / `https://`) are strictly rejected; only paired extension IDs and localhost requests are accepted. CORS wildcards are completely disabled.
+- **Zero Content Logging**: Island **never** logs conversation prompts, AI completions, email subjects, email senders, recipient addresses, or auth tokens.
+- **Strict Data Scoping**:
+  - Gmail API scopes are restricted to `gmail.metadata`. Email bodies are never downloaded, inspected, or persisted.
+  - Historical records store timestamps, category tags, and resolution states only—never message payloads.
+
+---
+
+## 9. Project Structure
+
+```text
+E:\dynamic island\
+├── README.md                 # Public project overview & quickstart (this file)
+├── PLAN.md                   # Single source of truth: specs, contracts, phases & logs
+├── branding.json             # Centralized application identity and naming
+├── package.json              # Monorepo npm workspace configuration
+├── tsconfig.json             # Root TypeScript configuration (strict)
+├── vite.config.ts            # Vite configuration for React UI
+├── scripts/
+│   └── check.ps1             # Universal phase gate: fmt, clippy, test, typecheck
+├── src/                      # React UI (Island overlay, Settings, Test Panel)
+│   ├── island/               # Pill, Dot, QueuePanel, measuring & Motion transitions
+│   ├── settings/             # Settings tabs (General, Sources, Email, Security)
+│   └── shared/               # Icons, design tokens, and styling
+├── src-tauri/                # Tauri v2 desktop application composition root
+│   ├── Cargo.toml            # Tauri app manifest & dependencies
+│   └── src/                  # Main loop, tray icon, Win32 hooks & IPC commands
+├── crates/                   # Modularized Rust workspace
+│   ├── island-contract/      # Event schema, normalization & validation
+│   ├── island-core/          # Deterministic activity state machine & timers
+│   ├── island-store/         # SQLite persistence & migrations (WAL)
+│   ├── island-secrets/       # Windows Credential Manager integration (keyring)
+│   ├── island-server/        # Authenticated 127.0.0.1 HTTP & WebSocket server
+│   ├── island-platform/      # Win32 integration (monitors, DPI, click-through, jumps)
+│   └── sources/              # Independent source watchers (Antigravity, Desktop, Gmail)
+├── extension/                # Manifest V3 extension for Chrome and Brave
+│   ├── manifest.json         # Extension manifest
+│   └── src/                  # Background service worker, content scripts & site configs
+└── tools/
+    ├── antigravity-inspector/# Read-only diagnostic inspector for Antigravity IDE
+    └── send-test-event.ps1   # Command-line event injection tool
+```
+
+---
+
+## 10. Current Status & Detailed Specification
+
+- **Current Status**: **Phase 0 Complete** (Documentation baseline finalized).
+- **Single Source of Truth**: For detailed technical specifications, event schemas, validation rules, autonomous execution protocols, and the active phase roadmap, refer directly to [`PLAN.md`](PLAN.md).
+
