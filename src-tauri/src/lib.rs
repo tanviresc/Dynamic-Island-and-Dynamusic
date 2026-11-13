@@ -1,4 +1,4 @@
-use island_contract::{Event, Target};
+use island_contract::{Event, Target, WsServerMessage};
 use island_core::{Effect, Input, IslandCore, Millis};
 use island_platform::{
     calculate_window_position, enumerate_monitors, find_window_by_process_and_title, focus_window,
@@ -13,7 +13,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::menu::{CheckMenuItem, Menu, MenuItem};
 use tauri::tray::{TrayIcon, TrayIconBuilder};
 use tauri::{AppHandle, Emitter, Manager, State};
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tracing::{error, info, warn};
 
 pub struct AppState {
@@ -23,6 +23,7 @@ pub struct AppState {
     pub server_token: Arc<tokio::sync::RwLock<String>>,
     pub input_tx: mpsc::Sender<Input>,
     pub hit_rect: Arc<Mutex<Option<Rect>>>,
+    pub command_tx: broadcast::Sender<WsServerMessage>,
 }
 
 fn current_millis() -> Millis {
@@ -243,6 +244,7 @@ pub fn run() {
 
             let (input_tx, mut input_rx) = mpsc::channel::<Input>(64);
             let (event_tx, mut event_rx) = mpsc::channel::<Event>(64);
+            let (focus_tx, mut focus_rx) = mpsc::channel::<island_contract::WebFocusReport>(64);
 
             // Forward incoming server events to core input
             let input_tx_for_events = input_tx.clone();
@@ -254,8 +256,20 @@ pub fn run() {
                 }
             });
 
+            // Forward incoming web focus reports to core input
+            let input_tx_for_focus = input_tx.clone();
+            tauri::async_runtime::spawn(async move {
+                while let Some(report) = focus_rx.recv().await {
+                    let _ = input_tx_for_focus
+                        .send(Input::WebFocus(report))
+                        .await;
+                }
+            });
+
             // Start Local HTTP/WS Server
-            let server_state = ServerState::new(token, store.clone(), event_tx);
+            let server_state = ServerState::new(token, store.clone(), event_tx).with_focus_tx(focus_tx);
+            let command_tx = server_state.command_tx.clone();
+            let command_tx_for_effects = command_tx.clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(e) = start_server(DEFAULT_PORT, server_state).await {
                     error!("Local server failed to start: {}", e);
@@ -343,6 +357,7 @@ pub fn run() {
             let core_for_loop = core_arc.clone();
             let store_for_loop = store.clone();
             let hit_rect_for_effects = hit_rect_arc.clone();
+            let cmd_tx_for_effects = command_tx_for_effects.clone();
 
             tauri::async_runtime::spawn(async move {
                 let mut interval = tokio::time::interval(Duration::from_millis(100));
@@ -354,7 +369,7 @@ pub fn run() {
                                 let mut guard = core_for_loop.lock().unwrap();
                                 guard.handle_input(Input::Tick, now)
                             };
-                            process_effects(&app_handle, &store_for_loop, &tray, &core_for_loop, &hit_rect_for_effects, effects);
+                            process_effects(&app_handle, &store_for_loop, &tray, &core_for_loop, &hit_rect_for_effects, &cmd_tx_for_effects, effects);
                         }
                         Some(input) = input_rx.recv() => {
                             let now = current_millis();
@@ -362,7 +377,7 @@ pub fn run() {
                                 let mut guard = core_for_loop.lock().unwrap();
                                 guard.handle_input(input, now)
                             };
-                            process_effects(&app_handle, &store_for_loop, &tray, &core_for_loop, &hit_rect_for_effects, effects);
+                            process_effects(&app_handle, &store_for_loop, &tray, &core_for_loop, &hit_rect_for_effects, &cmd_tx_for_effects, effects);
                         }
                     }
                 }
@@ -376,6 +391,7 @@ pub fn run() {
                 server_token: token_lock,
                 input_tx,
                 hit_rect: hit_rect_arc,
+                command_tx,
             });
 
             Ok(())
@@ -399,6 +415,7 @@ fn process_effects(
     tray: &TrayIcon,
     core: &Arc<Mutex<IslandCore>>,
     hit_rect: &Arc<Mutex<Option<Rect>>>,
+    command_tx: &broadcast::Sender<WsServerMessage>,
     effects: Vec<Effect>,
 ) {
     for effect in effects {
@@ -455,8 +472,23 @@ fn process_effects(
                 Target::Url { url } => {
                     open_url(&url);
                 }
-                Target::BrowserTab { url: Some(u), .. } => {
-                    open_url(&u);
+                Target::BrowserTab {
+                    tab_id,
+                    window_id,
+                    url,
+                } => {
+                    let cmd = WsServerMessage::Command {
+                        request_id: uuid::Uuid::new_v4().to_string(),
+                        command: "focusTab".to_string(),
+                        tab_id,
+                        window_id,
+                    };
+                    // Send command to browser extension; if extension is not connected, fallback to URL
+                    if command_tx.send(cmd).is_err() {
+                        if let Some(ref u) = url {
+                            open_url(u);
+                        }
+                    }
                 }
                 Target::Process {
                     process_names,
@@ -492,7 +524,6 @@ fn process_effects(
                         }
                     }
                 }
-                _ => {}
             },
             Effect::PersistSave(stored) => {
                 let _ = store.save_notification(&stored);

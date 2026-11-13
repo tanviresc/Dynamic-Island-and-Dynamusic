@@ -811,7 +811,7 @@ Example 3 — Gmail security email on the "personal" account:
 | 2 | State machine, queue, dots, Clear, SQLite, server, pairing, tray | DONE | `phase-2-complete` |
 | 3 | Window behavior: click-through, jump, monitors, fullscreen, foreground/idle | DONE | `phase-3-complete` |
 | 4 | Antigravity IDE (A: inspector → human → B: watcher) | BLOCKED (awaiting human Step 4A.4) | `phase-4-complete` |
-| 5 | Browser extension (Claude → ChatGPT → Gemini) | TODO | `phase-5-complete` |
+| 5 | Browser extension (Claude → ChatGPT → Gemini) | BLOCKED (awaiting human live testing) | `phase-5-complete` |
 | 6 | Desktop AI apps (spike → implement) | TODO | `phase-6-complete` |
 | 7 | Gmail (mocked → human setup → dry-run → live) | TODO | `phase-7-complete` |
 | 8 | Hardening, settings polish, installer, autostart, final README | TODO | `phase-8-complete` |
@@ -942,24 +942,24 @@ Commit message for the phase-closing commit: `phase-N: complete — <summary>`, 
 
 ---
 
-### Phase 5 — Browser extension · Status: TODO
+### Phase 5 — Browser extension · Status: BLOCKED (awaiting human live testing)
 
 **Deliverables**
 
-- [ ] 5.1 `extension\` scaffold: MV3 manifest, TypeScript strict, esbuild (IIFE content scripts, ESM service worker), `npm run build` → `extension\dist\`
-- [ ] 5.2 Service worker: WS connect + `hello`, reconnect with backoff + jitter, 20 s ping, 30 s alarm, offline buffer (50 / 2 min)
-- [ ] 5.3 Options page: port, token, status, per-site toggles, "Show chat titles", probe mode
-- [ ] 5.4 Focus reports + `focusTab` command + fallback URL handling in the app; web smart skip and auto-read in the core
-- [ ] 5.5 Generic detector engine (generating → settling → done; needs_input once per prompt instance), with all parameters from site configs
-- [ ] 5.6 Probe mode: structure-only DOM report (tag, role, `aria-label`, `data-testid`, and button labels ≤ 24 chars on `button` elements only), printed to the DevTools console of that tab only
-- [ ] 5.7 **Claude** config from the probe findings → live test (human) → mark VERIFIED / UNVERIFIED
-- [ ] 5.8 **ChatGPT** config → live test
-- [ ] 5.9 **Gemini** config → live test
+- [x] 5.1 `extension\` scaffold: MV3 manifest, TypeScript strict, esbuild (IIFE content scripts, ESM service worker), `npm run build` → `extension\dist\`
+- [x] 5.2 Service worker: WS connect + `hello`, reconnect with backoff + jitter, 20 s ping, 30 s alarm, offline buffer (50 / 2 min)
+- [x] 5.3 Options page: port, token, status, per-site toggles, "Show chat titles", probe mode
+- [x] 5.4 Focus reports + `focusTab` command + fallback URL handling in the app; web smart skip and auto-read in the core
+- [x] 5.5 Generic detector engine (generating → settling → done; needs_input once per prompt instance), with all parameters from site configs
+- [x] 5.6 Probe mode: structure-only DOM report (tag, role, `aria-label`, `data-testid`, and button labels ≤ 24 chars on `button` elements only), printed to the DevTools console of that tab only
+- [ ] 5.7 **Claude** config (`claude.config.ts`, UNVERIFIED) → awaits live human test
+- [ ] 5.8 **ChatGPT** config (`chatgpt.config.ts`, UNVERIFIED) → awaits live human test
+- [ ] 5.9 **Gemini** config (`gemini.config.ts`, UNVERIFIED) → awaits live human test
 
-**Tests:** detector engine with jsdom and **synthetic** DOM (debounce cancels a false done, a minimum duration, one done per generation, needs_input dedupe); reconnect/backoff logic with fake timers; message schemas against the generated contract types; the server rejects `surface != web` from the extension.
+**Tests:** detector engine with jsdom/mock DOM (debounce cancels a false done, a minimum duration, one done per generation, needs_input dedupe); reconnect/backoff logic with fake timers; message schemas against the generated contract types; the server rejects `surface != web` from the extension.
 **Done when:** with the extension loaded and paired, finishing a generation in a background tab produces one `done`, an approval prompt produces `needs_input`, a click focuses the exact tab, and nothing fires while I am looking at the tab; the gate passes. Heuristics not confirmed live stay UNVERIFIED (the phase can be DONE with explicitly listed UNVERIFIED sites only if the user cannot test them).
-**Commit + tag:** `phase-5-complete`.
-**Phase report:** _(to be written)_
+**Commit + tag:** `phase-5-complete` (only after human verification).
+**Phase report:** Built complete MV3 browser extension in `extension/` with strict TypeScript and esbuild bundling (`dist/background.js` as ESM, `dist/content.js` and `dist/options.js` as IIFE). Implemented `DetectorEngine` running a deterministic `idle -> generating -> settling -> done` state machine (1500ms debounce, >= 800ms generation duration, prompt instance deduplication for `needs_input`). Implemented `WsClient` with exponential backoff + jitter (1s to 30s), 20s ping keepalive, 30s `chrome.alarms` wake, and 50-item offline event buffer. Implemented `ProbeEngine` structure-only DOM inspector for safe selector discovery. Implemented options UI for port, pairing token, site toggles, and probe mode. Implemented tab focus reporting and `focusTab` command dispatching in `island-server` and `src-tauri` with fallback URL opening. All 12 TypeScript Vitest tests and all 36 Rust unit tests pass clean with 0 warnings. Phase 5 is marked BLOCKED pending the human loading the unpacked extension in Chrome/Brave and performing live site verification; proceeding to Phase 6 per autonomous execution protocol.
 
 ---
 

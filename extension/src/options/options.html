@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Island Extension Settings</title>
+  <style>
+    :root {
+      --bg: #09090b;
+      --card-bg: #121215;
+      --border: #27272a;
+      --text: #f4f4f5;
+      --text-muted: #a1a1aa;
+      --accent: #3b82f6;
+      --success: #10b981;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+
+    body {
+      background-color: var(--bg);
+      color: var(--text);
+      display: flex;
+      justify-content: center;
+      padding: 40px 20px;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 580px;
+    }
+
+    header {
+      margin-bottom: 24px;
+    }
+
+    h1 {
+      font-size: 20px;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      padding: 3px 8px;
+      border-radius: 9999px;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .status-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+    }
+
+    .status-connected {
+      background: rgba(16, 185, 129, 0.15);
+      color: #34d399;
+      border: 1px solid rgba(16, 185, 129, 0.3);
+    }
+    .status-connected .status-dot { background: #34d399; }
+
+    .status-connecting {
+      background: rgba(245, 158, 11, 0.15);
+      color: #fbbf24;
+      border: 1px solid rgba(245, 158, 11, 0.3);
+    }
+    .status-connecting .status-dot { background: #fbbf24; }
+
+    .status-disconnected {
+      background: rgba(161, 161, 170, 0.15);
+      color: #a1a1aa;
+      border: 1px solid rgba(161, 161, 170, 0.3);
+    }
+    .status-disconnected .status-dot { background: #a1a1aa; }
+
+    .status-auth_failed {
+      background: rgba(239, 68, 68, 0.15);
+      color: #f87171;
+      border: 1px solid rgba(239, 68, 68, 0.3);
+    }
+    .status-auth_failed .status-dot { background: #f87171; }
+
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+
+    h2 {
+      font-size: 13px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      margin-bottom: 16px;
+    }
+
+    .form-group {
+      margin-bottom: 16px;
+    }
+
+    .form-group:last-child {
+      margin-bottom: 0;
+    }
+
+    label {
+      display: block;
+      font-size: 13px;
+      font-weight: 500;
+      margin-bottom: 6px;
+    }
+
+    .helper {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-top: 4px;
+    }
+
+    input[type="text"], input[type="password"], input[type="number"] {
+      width: 100%;
+      background: #18181b;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 9px 12px;
+      color: var(--text);
+      font-size: 13px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    input:focus {
+      border-color: var(--accent);
+    }
+
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 0;
+      border-bottom: 1px solid rgba(39, 39, 42, 0.5);
+    }
+
+    .toggle-row:last-child {
+      border-bottom: none;
+    }
+
+    .toggle-info h3 {
+      font-size: 13px;
+      font-weight: 500;
+    }
+
+    .toggle-info p {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    input[type="checkbox"] {
+      accent-color: var(--accent);
+      width: 16px;
+      height: 16px;
+      cursor: pointer;
+    }
+
+    .actions {
+      display: flex;
+      gap: 12px;
+      justify-content: flex-end;
+      margin-top: 24px;
+    }
+
+    button {
+      padding: 8px 16px;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      border: 1px solid transparent;
+      transition: all 0.15s;
+    }
+
+    .btn-secondary {
+      background: #18181b;
+      border-color: var(--border);
+      color: var(--text);
+    }
+
+    .btn-secondary:hover {
+      background: #27272a;
+    }
+
+    .btn-primary {
+      background: #2563eb;
+      color: #fff;
+    }
+
+    .btn-primary:hover {
+      background: #1d4ed8;
+    }
+
+    .toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      background: #18181b;
+      border: 1px solid var(--border);
+      color: #fff;
+      padding: 10px 16px;
+      border-radius: 8px;
+      font-size: 13px;
+      display: none;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>
+        Island Companion
+        <span id="statusBadge" class="badge status-disconnected">
+          <span class="status-dot"></span>
+          <span id="statusText">Disconnected</span>
+        </span>
+      </h1>
+      <p class="helper" style="margin-top: 4px;">Connects browser tabs to Island desktop notification overlay</p>
+    </header>
+
+    <div class="card">
+      <h2>Connection</h2>
+      <div class="form-group">
+        <label for="portInput">Local Port</label>
+        <input type="number" id="portInput" value="47821" min="1024" max="65535" />
+        <p class="helper">Default: 47821 (matches Island app)</p>
+      </div>
+      <div class="form-group" style="margin-top: 14px;">
+        <label for="tokenInput">Pairing Token</label>
+        <input type="password" id="tokenInput" placeholder="Paste pairing token from Island Settings -> Security" />
+        <p class="helper">Stored locally in your browser, never transmitted to remote servers.</p>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Site Monitoring</h2>
+      <div class="toggle-row">
+        <div class="toggle-info">
+          <h3>Claude (claude.ai)</h3>
+          <p>Notify when prompt completes or needs input</p>
+        </div>
+        <input type="checkbox" id="siteClaude" checked />
+      </div>
+      <div class="toggle-row">
+        <div class="toggle-info">
+          <h3>ChatGPT (chatgpt.com)</h3>
+          <p>Notify when generation finishes or tools ask confirmation</p>
+        </div>
+        <input type="checkbox" id="siteChatgpt" checked />
+      </div>
+      <div class="toggle-row">
+        <div class="toggle-info">
+          <h3>Gemini (gemini.google.com)</h3>
+          <p>Notify on Gemini responses</p>
+        </div>
+        <input type="checkbox" id="siteGemini" checked />
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Privacy & Developer</h2>
+      <div class="toggle-row">
+        <div class="toggle-info">
+          <h3>Show Chat Titles</h3>
+          <p>Display tab title in notification body. Turn off to show generic site name only.</p>
+        </div>
+        <input type="checkbox" id="showChatTitles" checked />
+      </div>
+      <div class="toggle-row" style="margin-top: 8px;">
+        <div class="toggle-info">
+          <h3>Developer Probe Mode</h3>
+          <p>Log structure-only DOM inspection reports to DevTools console (no private text).</p>
+        </div>
+        <input type="checkbox" id="probeMode" />
+      </div>
+    </div>
+
+    <div class="actions">
+      <button type="button" id="btnTest" class="btn-secondary">Test Connection</button>
+      <button type="button" id="btnSave" class="btn-primary">Save Settings</button>
+    </div>
+  </div>
+
+  <div id="toast" class="toast">Settings saved successfully</div>
+
+  <script src="options.js"></script>
+</body>
+</html>

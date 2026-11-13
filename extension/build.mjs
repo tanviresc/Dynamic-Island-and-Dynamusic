@@ -7,8 +7,11 @@ if (!fs.existsSync(outdir)) {
   fs.mkdirSync(outdir, { recursive: true });
 }
 
-// Copy manifest.json
+// Copy manifest.json and options.html
 fs.copyFileSync("manifest.json", path.join(outdir, "manifest.json"));
+if (fs.existsSync("src/options/options.html")) {
+  fs.copyFileSync("src/options/options.html", path.join(outdir, "options.html"));
+}
 
 // Build background service worker
 await esbuild.build({
@@ -24,6 +27,15 @@ await esbuild.build({
   entryPoints: ["src/content/detector.ts"],
   bundle: true,
   outfile: path.join(outdir, "content.js"),
+  format: "iife",
+  target: "es2022",
+});
+
+// Build options script
+await esbuild.build({
+  entryPoints: ["src/options/options.ts"],
+  bundle: true,
+  outfile: path.join(outdir, "options.js"),
   format: "iife",
   target: "es2022",
 });

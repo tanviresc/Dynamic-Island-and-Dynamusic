@@ -5,7 +5,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::Utc;
-use island_contract::{Event, WsClientMessage, WsServerMessage};
+use island_contract::{Event, Surface, WebFocusReport, WsClientMessage, WsServerMessage};
 use island_store::Store;
 use serde_json::json;
 use std::net::SocketAddr;
@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use subtle::ConstantTimeEq;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{broadcast, mpsc, RwLock};
 use tracing::{debug, info, warn};
 
 pub const DEFAULT_PORT: u16 = 47821;
@@ -25,17 +25,27 @@ pub struct ServerState {
     pub pairing_token: Arc<RwLock<String>>,
     pub store: Store,
     pub event_tx: mpsc::Sender<Event>,
+    pub focus_tx: Option<mpsc::Sender<WebFocusReport>>,
+    pub command_tx: broadcast::Sender<WsServerMessage>,
     pub active_ws_count: Arc<AtomicUsize>,
 }
 
 impl ServerState {
     pub fn new(token: String, store: Store, event_tx: mpsc::Sender<Event>) -> Self {
+        let (command_tx, _) = broadcast::channel(16);
         Self {
             pairing_token: Arc::new(RwLock::new(token)),
             store,
             event_tx,
+            focus_tx: None,
+            command_tx,
             active_ws_count: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    pub fn with_focus_tx(mut self, focus_tx: mpsc::Sender<WebFocusReport>) -> Self {
+        self.focus_tx = Some(focus_tx);
+        self
     }
 
     pub async fn verify_token(&self, token_candidate: &str) -> bool {
@@ -140,6 +150,7 @@ async fn handle_ws_socket(mut socket: WebSocket, state: ServerState, origin: Opt
     );
 
     let mut authenticated = false;
+    let mut command_rx = state.command_tx.subscribe();
 
     // Timeout for hello auth is 5 seconds
     let auth_timeout = tokio::time::sleep(Duration::from_secs(5));
@@ -154,6 +165,11 @@ async fn handle_ws_socket(mut socket: WebSocket, state: ServerState, origin: Opt
                     reason: "Auth timeout".into(),
                 }))).await;
                 break;
+            }
+            Ok(cmd) = command_rx.recv(), if authenticated => {
+                if let Ok(serialized) = serde_json::to_string(&cmd) {
+                    let _ = socket.send(Message::Text(serialized)).await;
+                }
             }
             msg = socket.recv() => {
                 let msg = match msg {
@@ -211,7 +227,15 @@ async fn handle_ws_socket(mut socket: WebSocket, state: ServerState, origin: Opt
                             match parsed {
                                 Ok(WsClientMessage::Event { mut event }) => {
                                     let id = event.id;
-                                    if event.normalize_and_validate(Utc::now()).is_ok() && state.event_tx.send(event).await.is_ok() {
+                                    // Security check: Extension client over WS must use surface 'web'
+                                    if event.surface != Surface::Web {
+                                        let ack = WsServerMessage::Ack {
+                                            id,
+                                            status: "rejected".to_string(),
+                                            reason: Some("Extension client must use surface 'web'".to_string()),
+                                        };
+                                        let _ = socket.send(Message::Text(serde_json::to_string(&ack).unwrap())).await;
+                                    } else if event.normalize_and_validate(Utc::now()).is_ok() && state.event_tx.send(event).await.is_ok() {
                                         let ack = WsServerMessage::Ack {
                                             id,
                                             status: "accepted".to_string(),
@@ -226,6 +250,25 @@ async fn handle_ws_socket(mut socket: WebSocket, state: ServerState, origin: Opt
                                         };
                                         let _ = socket.send(Message::Text(serde_json::to_string(&ack).unwrap())).await;
                                     }
+                                }
+                                Ok(WsClientMessage::Focus { window_focused, window_id, tab_id, .. }) => {
+                                    if let Some(ref tx) = state.focus_tx {
+                                        let report = WebFocusReport {
+                                            active_tab_id: tab_id.unwrap_or(0),
+                                            active_window_id: window_id.unwrap_or(0),
+                                            active_url: None,
+                                            is_browser_focused: window_focused,
+                                        };
+                                        let _ = tx.send(report).await;
+                                    }
+                                }
+                                Ok(WsClientMessage::CommandResult { request_id, ok, error }) => {
+                                    debug!(
+                                        request_id = %request_id,
+                                        ok = ok,
+                                        error = ?error,
+                                        "Received command result from extension"
+                                    );
                                 }
                                 Ok(WsClientMessage::Ping { t }) => {
                                     let pong = WsServerMessage::Pong { t };
@@ -288,5 +331,43 @@ mod tests {
 
         assert!(state.verify_token("secret-token-123").await);
         assert!(!state.verify_token("wrong-token").await);
+    }
+
+    #[tokio::test]
+    async fn test_focus_and_command_channels() {
+        let store = Store::open_in_memory().unwrap();
+        let (event_tx, _event_rx) = mpsc::channel(16);
+        let (focus_tx, mut focus_rx) = mpsc::channel(16);
+        let state = ServerState::new("token".into(), store, event_tx).with_focus_tx(focus_tx);
+
+        let mut cmd_rx = state.command_tx.subscribe();
+
+        // Broadcast a command
+        let cmd = WsServerMessage::Command {
+            request_id: "req-1".into(),
+            command: "focusTab".into(),
+            tab_id: 101,
+            window_id: 202,
+        };
+        state.command_tx.send(cmd.clone()).unwrap();
+        let received_cmd = cmd_rx.recv().await.unwrap();
+        assert_eq!(received_cmd, cmd);
+
+        // Send a focus report
+        let report = WebFocusReport {
+            active_tab_id: 101,
+            active_window_id: 202,
+            active_url: None,
+            is_browser_focused: true,
+        };
+        state
+            .focus_tx
+            .as_ref()
+            .unwrap()
+            .send(report.clone())
+            .await
+            .unwrap();
+        let received_report = focus_rx.recv().await.unwrap();
+        assert_eq!(received_report, report);
     }
 }

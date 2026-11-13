@@ -262,6 +262,15 @@ impl Event {
 
 // WebSocket Envelope Types (v1)
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebFocusReport {
+    pub active_tab_id: u32,
+    pub active_window_id: u32,
+    pub active_url: Option<String>,
+    pub is_browser_focused: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum WsClientMessage {
     Hello {

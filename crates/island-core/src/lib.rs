@@ -1,4 +1,5 @@
 use chrono::Utc;
+pub use island_contract::WebFocusReport;
 use island_contract::{Event, Kind, Source, Surface, Target};
 use island_platform::{MonitorInfo, PlatformState, Rect};
 use island_store::{NotificationState, StoredNotification};
@@ -57,15 +58,6 @@ pub enum WindowTransition {
     Immediate,
     DotMove,
     Fade,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WebFocusReport {
-    pub active_tab_id: u32,
-    pub active_window_id: u32,
-    pub active_url: Option<String>,
-    pub is_browser_focused: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
