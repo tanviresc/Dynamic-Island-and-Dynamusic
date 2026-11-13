@@ -20,6 +20,15 @@ interface MonitorOption {
   scale_factor: number;
 }
 
+interface DesktopApp {
+  id: string;
+  displayName: string;
+  source: "claude" | "chatgpt" | "gemini";
+  processNames: string[];
+  enabled: boolean;
+  detection: "toast" | "uia";
+}
+
 export const SettingsShell: React.FC = () => {
   const [activeTab, setActiveTab] = useState<SettingsTab>("developer");
   const [reduceMotion, setReduceMotion] = useState<boolean>(false);
@@ -36,6 +45,25 @@ export const SettingsShell: React.FC = () => {
   const [monitors, setMonitors] = useState<MonitorOption[]>([]);
   const [followActiveMonitor, setFollowActiveMonitor] = useState(true);
   const [fixedMonitorId, setFixedMonitorId] = useState<string>("");
+
+  // Desktop Apps State (§6.5 & §6.6)
+  const [desktopApps, setDesktopApps] = useState<DesktopApp[]>([]);
+  const [appsSaved, setAppsSaved] = useState<boolean>(false);
+
+  useEffect(() => {
+    invoke<DesktopApp[]>("get_desktop_apps")
+      .then((apps) => setDesktopApps(apps))
+      .catch(() => {});
+  }, []);
+
+  const handleSaveDesktopApps = () => {
+    invoke("save_desktop_apps", { apps: desktopApps })
+      .then(() => {
+        setAppsSaved(true);
+        setTimeout(() => setAppsSaved(false), 2000);
+      })
+      .catch((err) => alert("Failed to save desktop apps: " + err));
+  };
 
   useEffect(() => {
     invoke<MonitorOption[]>("get_monitors")
@@ -334,10 +362,122 @@ export const SettingsShell: React.FC = () => {
           </div>
         )}
 
+        {activeTab === "sources" && (
+          <div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+              <div>
+                <h2 style={{ fontSize: 18, fontWeight: 600 }}>Desktop AI Applications</h2>
+                <p style={{ fontSize: 12, color: "rgba(255, 255, 255, 0.5)", marginTop: 2 }}>
+                  Detect completions and approval requests from native desktop AI apps.
+                </p>
+              </div>
+              <button
+                onClick={handleSaveDesktopApps}
+                style={{
+                  backgroundColor: "#2563eb",
+                  color: "#ffffff",
+                  padding: "8px 16px",
+                  borderRadius: 6,
+                  border: "none",
+                  fontSize: 13,
+                  fontWeight: 500,
+                  cursor: "pointer",
+                }}
+              >
+                {appsSaved ? "Saved!" : "Save Changes"}
+              </button>
+            </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 16, maxWidth: 600 }}>
+              {desktopApps.map((app, idx) => (
+                <div
+                  key={app.id}
+                  style={{
+                    backgroundColor: "rgba(255, 255, 255, 0.04)",
+                    border: "1px solid rgba(255, 255, 255, 0.1)",
+                    borderRadius: 8,
+                    padding: 16,
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
+                      <input
+                        type="checkbox"
+                        checked={app.enabled}
+                        onChange={(e) => {
+                          const updated = [...desktopApps];
+                          updated[idx] = { ...app, enabled: e.target.checked };
+                          setDesktopApps(updated);
+                        }}
+                      />
+                      <span style={{ fontSize: 15, fontWeight: 600 }}>{app.displayName}</span>
+                    </label>
+
+                    <select
+                      value={app.detection}
+                      onChange={(e) => {
+                        const updated = [...desktopApps];
+                        updated[idx] = { ...app, detection: e.target.value as "toast" | "uia" };
+                        setDesktopApps(updated);
+                      }}
+                      style={{
+                        padding: "6px 10px",
+                        backgroundColor: "rgba(255, 255, 255, 0.08)",
+                        border: "1px solid rgba(255, 255, 255, 0.16)",
+                        borderRadius: 6,
+                        color: "#ffffff",
+                        fontSize: 12,
+                        outline: "none",
+                      }}
+                    >
+                      <option value="uia" style={{ backgroundColor: "#1e1e20" }}>
+                        UI Automation (Window Watcher)
+                      </option>
+                      <option value="toast" style={{ backgroundColor: "#1e1e20" }}>
+                        Windows Toast (Notification Listener)
+                      </option>
+                    </select>
+                  </div>
+
+                  <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 4 }}>
+                    <label style={{ fontSize: 12, color: "rgba(255, 255, 255, 0.6)" }}>
+                      Process Names (comma separated)
+                    </label>
+                    <input
+                      type="text"
+                      value={app.processNames.join(", ")}
+                      onChange={(e) => {
+                        const names = e.target.value
+                          .split(",")
+                          .map((s) => s.trim())
+                          .filter((s) => s.length > 0);
+                        const updated = [...desktopApps];
+                        updated[idx] = { ...app, processNames: names };
+                        setDesktopApps(updated);
+                      }}
+                      style={{
+                        padding: "6px 10px",
+                        backgroundColor: "rgba(255, 255, 255, 0.06)",
+                        border: "1px solid rgba(255, 255, 255, 0.12)",
+                        borderRadius: 6,
+                        color: "#ffffff",
+                        fontSize: 12,
+                        fontFamily: "monospace",
+                        outline: "none",
+                      }}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {activeTab !== "general" &&
           activeTab !== "security" &&
           activeTab !== "developer" &&
-          activeTab !== "monitors" && (
+          activeTab !== "monitors" &&
+          activeTab !== "sources" && (
           <div>
             <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 16 }}>
               {activeTab.charAt(0).toUpperCase() + activeTab.slice(1)}

@@ -13,6 +13,18 @@ pub enum Source {
     Gmail,
 }
 
+impl std::fmt::Display for Source {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Source::Claude => write!(f, "claude"),
+            Source::Chatgpt => write!(f, "chatgpt"),
+            Source::Gemini => write!(f, "gemini"),
+            Source::Antigravity => write!(f, "antigravity"),
+            Source::Gmail => write!(f, "gmail"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Surface {
@@ -22,6 +34,17 @@ pub enum Surface {
     Background,
 }
 
+impl std::fmt::Display for Surface {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Surface::Web => write!(f, "web"),
+            Surface::Desktop => write!(f, "desktop"),
+            Surface::Ide => write!(f, "ide"),
+            Surface::Background => write!(f, "background"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
@@ -29,6 +52,17 @@ pub enum Kind {
     NeedsInput,
     Error,
     NewMail,
+}
+
+impl std::fmt::Display for Kind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Kind::Done => write!(f, "done"),
+            Kind::NeedsInput => write!(f, "needs_input"),
+            Kind::Error => write!(f, "error"),
+            Kind::NewMail => write!(f, "new_mail"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

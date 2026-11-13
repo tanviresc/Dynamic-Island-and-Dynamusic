@@ -8,6 +8,7 @@ use island_platform::{
 use island_secrets::{generate_pairing_token, SecretStore, WindowsSecretStore};
 use island_server::{start_server, ServerState, DEFAULT_PORT};
 use island_store::Store;
+use source_desktop::{default_desktop_apps, DesktopAppConfig};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::menu::{CheckMenuItem, Menu, MenuItem};
@@ -102,6 +103,33 @@ async fn set_monitor_settings(
     };
 
     state.input_tx.send(input).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_desktop_apps(state: State<'_, AppState>) -> Result<Vec<DesktopAppConfig>, String> {
+    if let Ok(Some(json)) = state.store.get_setting_json("desktop_apps") {
+        if let Ok(apps) = serde_json::from_str::<Vec<DesktopAppConfig>>(&json) {
+            return Ok(apps);
+        }
+    }
+    Ok(default_desktop_apps())
+}
+
+#[tauri::command]
+async fn save_desktop_apps(
+    apps: Vec<DesktopAppConfig>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    for app in &apps {
+        app.validate().map_err(|e| e.to_string())?;
+    }
+    let json = serde_json::to_string(&apps).map_err(|e| e.to_string())?;
+    state
+        .store
+        .set_setting_json("desktop_apps", &json)
+        .map_err(|e| e.to_string())?;
+    info!("Saved {} desktop app configurations", apps.len());
+    Ok(())
 }
 
 #[tauri::command]
@@ -403,7 +431,9 @@ pub fn run() {
             update_hit_rect,
             get_monitors,
             set_monitor_settings,
-            set_queue_focus
+            set_queue_focus,
+            get_desktop_apps,
+            save_desktop_apps
         ])
         .run(tauri::generate_context!())
         .expect("error while running island application");

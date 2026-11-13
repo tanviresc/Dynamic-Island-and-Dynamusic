@@ -8,6 +8,7 @@ members = [
     "crates/island-server",
     "crates/island-platform",
     "crates/sources/source-antigravity",
+    "crates/sources/source-desktop",
 ]
 resolver = "2"
 

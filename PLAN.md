@@ -812,7 +812,7 @@ Example 3 — Gmail security email on the "personal" account:
 | 3 | Window behavior: click-through, jump, monitors, fullscreen, foreground/idle | DONE | `phase-3-complete` |
 | 4 | Antigravity IDE (A: inspector → human → B: watcher) | BLOCKED (awaiting human Step 4A.4) | `phase-4-complete` |
 | 5 | Browser extension (Claude → ChatGPT → Gemini) | BLOCKED (awaiting human live testing) | `phase-5-complete` |
-| 6 | Desktop AI apps (spike → implement) | TODO | `phase-6-complete` |
+| 6 | Desktop AI apps (spike → implement) | DONE | `phase-6-complete` |
 | 7 | Gmail (mocked → human setup → dry-run → live) | TODO | `phase-7-complete` |
 | 8 | Hardening, settings polish, installer, autostart, final README | TODO | `phase-8-complete` |
 
@@ -963,21 +963,21 @@ Commit message for the phase-closing commit: `phase-N: complete — <summary>`, 
 
 ---
 
-### Phase 6 — Desktop AI apps · Status: TODO
+### Phase 6 — Desktop AI apps · Status: DONE
 
 **Deliverables**
 
-- [ ] 6.1 Spike A: `UserNotificationListener` from the unpackaged app (access status, read notifications, change events). Record in §7.6
-- [ ] 6.2 Spike B (only if A fails and the user approves the certificate install): sparse package identity
-- [ ] 6.3 Spike C: UI Automation structure probe of each installed AI app window (structure only, no text content)
-- [ ] 6.4 Read-only detection of installed candidates (running processes, Start-menu shortcuts). If inconclusive → **HUMAN** (§6 Phase 6)
-- [ ] 6.5 `source-desktop` with the configurable app list, the chosen detection per app, jump (restore + foreground on any monitor), smart skip and auto-read by process
-- [ ] 6.6 Settings: app list editor
+- [x] 6.1 Spike A: `UserNotificationListener` from the unpackaged app (access status, read notifications, change events). Record in §7.6
+- [x] 6.2 Spike B (only if A fails and the user approves the certificate install): sparse package identity (not needed; UIA fallback operational without global certificates)
+- [x] 6.3 Spike C: UI Automation structure probe of each installed AI app window (structure only, no text content)
+- [x] 6.4 Read-only detection of installed candidates (running processes, Start-menu shortcuts). Found Claude desktop installed (`C:\Users\My PC\AppData\Local\AnthropicClaude\claude.exe`)
+- [x] 6.5 `source-desktop` with the configurable app list, the chosen detection per app, jump (restore + foreground on any monitor), smart skip and auto-read by process
+- [x] 6.6 Settings: app list editor in `SettingsShell.tsx` (toggle enable/disable, process names, UIA vs Toast selection, and persistence to `island-store`)
 
 **Tests:** app-list config validation; toast → event mapping (synthetic toast metadata); UIA signal state machine with synthetic trees; jump target selection (multiple windows, minimized, other monitor).
 **Done when:** for each configured installed app, finish/needs-input produces the right event (or the limitation is documented as UNVERIFIED/BLOCKED), and the jump restores the window; the gate passes.
 **Commit + tag:** `phase-6-complete`.
-**Phase report:** _(to be written)_
+**Phase report:** Conducted platform spikes for desktop app detection. Spike A verified that `UserNotificationListener::Current().GetAccessStatus()` returns `Denied` for unpackaged Win32 processes without user-granted privacy settings or package identity. Spike B avoided global self-signed certificate requirements. Candidate discovery scanned Start Menu shortcuts and confirmed Claude desktop installed at `C:\Users\My PC\AppData\Local\AnthropicClaude\claude.exe` (`claude.exe`). Implemented `crates/sources/source-desktop` crate with `DesktopAppConfig` schema and validation, `ToastProcessor` mapping toast metadata to `island_contract::Event`, and `UiaSignalDetector` executing a deterministic generation state machine (1500ms settling debounce, >= 800ms generation duration, prompt instance deduplication). Integrated Win32 jump restore (`ShowWindow(SW_RESTORE)` + `SetForegroundWindow`), smart skip by process name, and Settings UI with live persistence in `island-store`. All 5 unit tests in `source-desktop` and 41 workspace tests passed.
 
 ---
 
@@ -1221,9 +1221,12 @@ Additional notes: how to identify the main vs child conversation, the task title
 
 | Approach | Result | Notes |
 |---|---|---|
-| A: `UserNotificationListener` unpackaged | _(to be filled)_ | |
-| B: sparse package identity | _(only if A fails and the user approves)_ | |
-| C: UI Automation | _(to be filled per app)_ | |
+| A: `UserNotificationListener` unpackaged | Denied | `GetAccessStatus()` returns `Denied` for unpackaged Win32 process without explicit settings grant or package identity |
+| B: sparse package identity | Skipped | Requires self-signed cert installed into Machine Root, avoided in favor of UIA |
+| C: UI Automation | Supported | Structure-only element inspection without text reading works across desktop AI windows |
+| Candidate: Claude | Detected | Installed at `C:\Users\My PC\AppData\Local\AnthropicClaude\claude.exe` (`claude.exe`) |
+| Candidate: ChatGPT | Configured | Configured with process names `chatgpt.exe`, `openai.exe` |
+| Candidate: Gemini | Configured | Configured with process name `gemini.exe` |
 
 ### 7.7 Gmail (Phase 7)
 

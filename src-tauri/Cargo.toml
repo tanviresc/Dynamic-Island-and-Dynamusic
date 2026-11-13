@@ -15,6 +15,7 @@ island-store = { path = "../crates/island-store" }
 island-secrets = { path = "../crates/island-secrets" }
 island-server = { path = "../crates/island-server" }
 island-platform = { path = "../crates/island-platform" }
+source-desktop = { path = "../crates/sources/source-desktop" }
 tauri = { version = "2.0", features = ["tray-icon"] }
 tauri-plugin-shell = "2.0"
 serde.workspace = true

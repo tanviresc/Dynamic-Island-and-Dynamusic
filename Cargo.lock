@@ -1697,6 +1697,7 @@ dependencies = [
  "island-store",
  "serde",
  "serde_json",
+ "source-desktop",
  "tauri",
  "tauri-build",
  "tauri-plugin-shell",
@@ -3487,6 +3488,21 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "source-desktop"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "island-contract",
+ "island-platform",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tracing",
+ "uuid",
+ "windows 0.58.0",
 ]
 
 [[package]]
