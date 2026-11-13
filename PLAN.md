@@ -1323,6 +1323,7 @@ Statuses: **CONFIRMED** (stated by the user's requirements) / **DEFAULT (unconfi
 | D-052 | Synchronous Hidden-DOM Text Measurement | Measurement node rendered with identical font styles (`Segoe UI Variable Text`, 13px, etc.) computes target width/height before spring layout animations run, avoiding 1-frame layout flashes | CONFIRMED (technical refinement) |
 | D-053 | SQLite Isolated Store Actor Pattern | `rusqlite` connection is isolated to a dedicated background task via an async mpsc channel, guaranteeing zero Tokio thread pool blocking and thread safety | CONFIRMED (technical refinement) |
 | D-054 | Antigravity Inspector Target Prioritization | Pre-check confirmed `%USERPROFILE%\.gemini\antigravity-ide` exists; inspector specifically prioritizes this subfolder while watching `%USERPROFILE%\.gemini` | CONFIRMED (technical refinement) |
+| D-055 | Click-Through Screen Coordinate Mapping & Refined Island Geometry | Window-relative hit rectangles from `surfaceRef` are translated into screen pixels using `GetWindowRect` and `GetDpiForWindow` in the adaptive click-through thread. Everywhere outside the visible capsule or micro-dot has `WS_EX_TRANSPARENT` active, ensuring 100% click-through for desktop and background applications. Island geometry reduced by 30% (height 28px, min-width 130px, max-width 340px, font 10.5px), center-aligned, with 25px margin-top, sharp 5px micro-dot, and 1.5s smooth layout transitions | CONFIRMED |
 
 ---
 
