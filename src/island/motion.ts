@@ -1,28 +1,28 @@
 export interface MotionPresets {
   appear: {
-    layout: { type: "spring"; stiffness: number; damping: number; mass: number };
+    layout: { duration?: number; ease?: string | number[]; type?: string; stiffness?: number; damping?: number; mass?: number };
     content: { opacity: { duration: number; delay: number; ease: string }; filter?: { duration: number; delay: number } };
   };
   disappear: {
-    layout: { type: "spring"; stiffness: number; damping: number; mass: number; delay: number };
+    layout: { duration?: number; ease?: string | number[]; type?: string; stiffness?: number; damping?: number; mass?: number; delay?: number };
     content: { opacity: { duration: number; ease: string } };
   };
   contentChange: {
-    layout: { type: "spring"; stiffness: number; damping: number };
+    layout: { type?: string; stiffness?: number; damping?: number; duration?: number; ease?: string | number[] };
     crossfade: { duration: number };
   };
   queueOpen: {
-    layout: { type: "spring"; stiffness: number; damping: number; mass: number };
+    layout: { type?: string; stiffness?: number; damping?: number; mass?: number; duration?: number; ease?: string | number[] };
     stagger: number;
     rowDuration: number;
     rowDelay: number;
   };
   queueClose: {
-    layout: { type: "spring"; stiffness: number; damping: number };
+    layout: { type?: string; stiffness?: number; damping?: number; duration?: number; ease?: string | number[] };
     rowDuration: number;
   };
   dotAppear: {
-    scale: { type: "spring"; stiffness: number; damping: number };
+    scale: { type?: string; stiffness?: number; damping?: number };
     opacity: { duration: number };
   };
   dotDisappear: {
@@ -37,30 +37,30 @@ export interface MotionPresets {
 
 export const standardMotion: MotionPresets = {
   appear: {
-    layout: { type: "spring", stiffness: 150, damping: 20, mass: 1.1 },
+    layout: { duration: 1.5, ease: [0.16, 1, 0.3, 1] },
     content: {
-      opacity: { duration: 0.35, delay: 0.18, ease: "easeOut" },
-      filter: { duration: 0.35, delay: 0.18 },
+      opacity: { duration: 0.8, delay: 0.35, ease: "easeOut" },
+      filter: { duration: 0.8, delay: 0.35 },
     },
   },
   disappear: {
-    layout: { type: "spring", stiffness: 160, damping: 22, mass: 1.0, delay: 0.05 },
+    layout: { duration: 1.5, ease: [0.16, 1, 0.3, 1] },
     content: {
-      opacity: { duration: 0.20, ease: "easeInOut" },
+      opacity: { duration: 0.35, ease: "easeInOut" },
     },
   },
   contentChange: {
-    layout: { type: "spring", stiffness: 160, damping: 22 },
+    layout: { duration: 0.45, ease: [0.16, 1, 0.3, 1] },
     crossfade: { duration: 0.25 },
   },
   queueOpen: {
-    layout: { type: "spring", stiffness: 150, damping: 20, mass: 1.1 },
+    layout: { duration: 0.45, ease: [0.16, 1, 0.3, 1] },
     stagger: 0.04,
     rowDuration: 0.30,
     rowDelay: 0.15,
   },
   queueClose: {
-    layout: { type: "spring", stiffness: 170, damping: 22 },
+    layout: { duration: 0.30, ease: [0.16, 1, 0.3, 1] },
     rowDuration: 0.15,
   },
   dotAppear: {

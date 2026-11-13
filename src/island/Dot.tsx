@@ -22,15 +22,15 @@ export const Dot: React.FC<DotProps> = ({
       layoutId="island-surface"
       initial={{ scale: 0, opacity: 0 }}
       animate={{
-        scale: isReducedMotion ? 1 : [1, 1.18, 1],
+        scale: isReducedMotion ? 1 : [1, 1.15, 1],
         opacity: 1,
         backgroundColor: color,
         boxShadow: isReducedMotion
-          ? `0 0 10px 2px ${color}, 0 0 3px #ffffff, 0 0 18px 4px ${color}80`
+          ? `0 0 6px 1px ${color}, 0 0 12px 2px ${color}80, 0 0 1px 0.5px #ffffff`
           : [
-              `0 0 10px 2px ${color}, 0 0 3px #ffffff, 0 0 18px 4px ${color}80`,
-              `0 0 14px 3px ${color}, 0 0 5px #ffffff, 0 0 24px 6px ${color}99`,
-              `0 0 10px 2px ${color}, 0 0 3px #ffffff, 0 0 18px 4px ${color}80`,
+              `0 0 6px 1px ${color}, 0 0 12px 2px ${color}80, 0 0 1px 0.5px #ffffff`,
+              `0 0 9px 2px ${color}, 0 0 16px 3px ${color}99, 0 0 2px 0.5px #ffffff`,
+              `0 0 6px 1px ${color}, 0 0 12px 2px ${color}80, 0 0 1px 0.5px #ffffff`,
             ],
       }}
       exit={{ scale: 0, opacity: 0, transition: { duration: motionPreset.dotDisappear.duration } }}
@@ -45,10 +45,10 @@ export const Dot: React.FC<DotProps> = ({
         backgroundColor: { duration: motionPreset.dotColor.duration },
       }}
       style={{
-        width: 7,
-        height: 7,
+        width: 5,
+        height: 5,
         borderRadius: "50%",
-        border: "1px solid rgba(255, 255, 255, 0.75)",
+        border: "0.5px solid rgba(255, 255, 255, 0.95)",
         cursor: "pointer",
         padding: 0,
         outline: "none",

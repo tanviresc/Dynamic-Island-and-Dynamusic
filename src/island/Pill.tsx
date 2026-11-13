@@ -19,21 +19,21 @@ export interface PillProps {
 
 function getSourceGlow(source: SourceType, kind: string): string {
   if (kind === "needs_input" || kind === "error") {
-    return "rgba(255, 69, 58, 0.65)"; // Radiant coral-red alert glow matching the reference image
+    return "rgba(255, 69, 58, 0.85)"; // Vibrant coral red
   }
   switch (source) {
     case "antigravity":
-      return "rgba(0, 194, 255, 0.60)"; // Electric cyan matching the reference image
+      return "rgba(0, 194, 255, 0.85)"; // Electric cyan
     case "claude":
-      return "rgba(217, 119, 87, 0.55)";
+      return "rgba(217, 119, 87, 0.80)";
     case "chatgpt":
-      return "rgba(16, 163, 127, 0.55)";
+      return "rgba(16, 163, 127, 0.80)";
     case "gemini":
-      return "rgba(76, 141, 246, 0.55)";
+      return "rgba(76, 141, 246, 0.80)";
     case "gmail":
-      return "rgba(234, 67, 53, 0.55)";
+      return "rgba(234, 67, 53, 0.80)";
     default:
-      return "rgba(255, 255, 255, 0.45)";
+      return "rgba(255, 255, 255, 0.65)";
   }
 }
 
@@ -69,9 +69,9 @@ export const Pill: React.FC<PillProps> = ({
       className="island-interactive"
       layoutId="island-surface"
       initial={{
-        width: 7,
-        height: 7,
-        borderRadius: 3.5,
+        width: 5,
+        height: 5,
+        borderRadius: 2.5,
         opacity: 0,
       }}
       animate={{
@@ -81,21 +81,22 @@ export const Pill: React.FC<PillProps> = ({
         opacity: 1,
       }}
       exit={{
-        width: 7,
-        height: 7,
-        borderRadius: 3.5,
+        width: 5,
+        height: 5,
+        borderRadius: 2.5,
         opacity: 0,
         transition: motionPreset.disappear.layout,
       }}
       transition={motionPreset.appear.layout}
       style={{
         backgroundColor: "#000000",
-        border: "1px solid rgba(255, 255, 255, 0.55)",
-        boxShadow: `0 0 16px 2px rgba(255, 255, 255, 0.35), 0 0 35px 8px ${glowColor}, 0 0 70px 16px ${glowColor}66, inset 0 1px 1.5px 0 rgba(255, 255, 255, 0.45)`,
+        border: "1px solid rgba(255, 255, 255, 0.85)",
+        boxShadow: `0 0 10px 1.5px rgba(255, 255, 255, 0.45), 0 0 24px 4px ${glowColor}, 0 0 50px 10px ${glowColor}99, 0 0 90px 20px ${glowColor}40, inset 0 1px 1px 0 rgba(255, 255, 255, 0.60)`,
         cursor: "pointer",
         display: "flex",
         alignItems: "center",
-        padding: "0 14px",
+        justifyContent: "center",
+        padding: "0 10px",
         overflow: "hidden",
         position: "relative",
       }}
@@ -111,30 +112,31 @@ export const Pill: React.FC<PillProps> = ({
         style={{
           display: "flex",
           alignItems: "center",
-          gap: 8,
+          justifyContent: "center",
+          gap: 6,
           width: "100%",
           minWidth: 0,
         }}
       >
-        {/* Source Icon: circle with letter/glyph */}
-        <SourceIcon source={source} needsInput={false} size={20} />
+        {/* Source Icon: circle with letter/glyph (30% reduced: 14px) */}
+        <SourceIcon source={source} needsInput={false} size={14} />
 
-        {/* Needs Input / Error Icon - Red circle with exclamation '!', exactly as in reference image */}
+        {/* Needs Input / Error Icon (30% reduced: 13px) */}
         {needsInput && (
           <div
             style={{
-              width: 18,
-              height: 18,
+              width: 13,
+              height: 13,
               borderRadius: "50%",
               backgroundColor: "#FF453A",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
               color: "#ffffff",
-              fontSize: 11,
+              fontSize: 8.5,
               fontWeight: 800,
               flexShrink: 0,
-              boxShadow: "0 0 8px rgba(255, 69, 58, 0.75)",
+              boxShadow: "0 0 6px rgba(255, 69, 58, 0.75)",
             }}
             title={kind === "error" ? "Error" : "Needs Input"}
           >
@@ -146,9 +148,9 @@ export const Pill: React.FC<PillProps> = ({
         {displayCategory && !needsInput && (
           <span
             style={{
-              fontSize: 10,
+              fontSize: 8.5,
               fontWeight: 600,
-              padding: "1px 6px",
+              padding: "1px 5px",
               borderRadius: 9999,
               backgroundColor: "rgba(255, 255, 255, 0.14)",
               color: "#ffffff",
@@ -160,21 +162,22 @@ export const Pill: React.FC<PillProps> = ({
           </span>
         )}
 
-        {/* Single-line text layout with crisp white typography */}
+        {/* Center-aligned single-line text layout (30% reduced: 10.5px typography) */}
         <div
           style={{
             display: "flex",
             alignItems: "center",
-            gap: 6,
+            justifyContent: "center",
+            gap: 4,
             minWidth: 0,
-            flex: 1,
             overflow: "hidden",
             whiteSpace: "nowrap",
+            textAlign: "center",
           }}
         >
           <span
             style={{
-              fontSize: 13,
+              fontSize: 10.5,
               fontWeight: 600,
               color: "#ffffff",
               whiteSpace: "nowrap",
@@ -188,13 +191,12 @@ export const Pill: React.FC<PillProps> = ({
               <span style={{ color: "rgba(255, 255, 255, 0.40)", flexShrink: 0, margin: "0 1px" }}>:</span>
               <span
                 style={{
-                  fontSize: 13,
+                  fontSize: 10.5,
                   fontWeight: 400,
                   color: "rgba(255, 255, 255, 0.88)",
                   whiteSpace: "nowrap",
                   overflow: "hidden",
                   textOverflow: "ellipsis",
-                  flex: 1,
                 }}
               >
                 {text}

@@ -1,8 +1,9 @@
 use island_contract::{Event, Kind, Source, Surface, Target, WsServerMessage};
 use island_core::{Effect, Input, IslandCore, Millis};
 use island_platform::{
-    calculate_window_position, enumerate_monitors, find_window_by_process_and_title, focus_window,
-    get_adaptive_poll_interval_ms, get_cursor_pos, poll_platform_state, update_window_clickthrough,
+    calculate_window_position, client_rect_to_screen_rect, enumerate_monitors,
+    find_window_by_process_and_title, focus_window, get_adaptive_poll_interval_ms, get_cursor_pos,
+    get_window_dpi_scale, get_window_screen_rect, poll_platform_state, update_window_clickthrough,
     MonitorInfo, Rect,
 };
 use island_secrets::{generate_pairing_token, SecretStore, WindowsSecretStore};
@@ -528,20 +529,36 @@ pub fn run() {
                                 };
 
                                 let cursor_pt = get_cursor_pos().unwrap_or((0, 0));
+                                let win_rect_opt = get_window_screen_rect(raw_hwnd);
+                                let scale = get_window_dpi_scale(raw_hwnd);
+
+                                // 4px tolerance when checking entrance; 10px (4px tolerance + 6px hysteresis) when checking exit
+                                let tolerance = if last_inside { 10 } else { 4 };
+
+                                let screen_hit_rect = match (rect_opt, win_rect_opt) {
+                                    (Some(client_rect), Some(win_rect)) if !client_rect.is_empty() => {
+                                        Some(client_rect_to_screen_rect(
+                                            &client_rect,
+                                            &win_rect,
+                                            scale,
+                                            tolerance,
+                                        ))
+                                    }
+                                    _ => None,
+                                };
+
                                 let poll_interval = get_adaptive_poll_interval_ms(
                                     cursor_pt,
-                                    rect_opt.as_ref(),
+                                    screen_hit_rect.as_ref(),
                                 );
 
-                                if let Some(rect) = rect_opt {
-                                    let inside = rect.contains_point(cursor_pt.0, cursor_pt.1);
-                                    if inside != last_inside {
-                                        update_window_clickthrough(raw_hwnd, inside);
-                                        last_inside = inside;
-                                    }
-                                } else if last_inside {
-                                    update_window_clickthrough(raw_hwnd, false);
-                                    last_inside = false;
+                                let inside = screen_hit_rect
+                                    .as_ref()
+                                    .is_some_and(|r| r.contains_point(cursor_pt.0, cursor_pt.1));
+
+                                if inside != last_inside {
+                                    update_window_clickthrough(raw_hwnd, inside);
+                                    last_inside = inside;
                                 }
 
                                 std::thread::sleep(Duration::from_millis(poll_interval));
@@ -586,6 +603,7 @@ pub fn run() {
 
             // Core State & Ingest channels
             let mut core = IslandCore::new();
+            core.display_ms = 4500;
             if let Ok(unreads) = store.get_unread_notifications() {
                 core.load_initial_unread(unreads);
             }

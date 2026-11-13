@@ -68,7 +68,7 @@ export const QueuePanel: React.FC<QueuePanelProps> = ({
     <motion.div
       className="island-interactive"
       layoutId="island-surface"
-      initial={{ width: 7, height: 7, borderRadius: 3.5, opacity: 0 }}
+      initial={{ width: 5, height: 5, borderRadius: 2.5, opacity: 0 }}
       animate={{
         width: 320,
         height: "auto",
@@ -77,9 +77,9 @@ export const QueuePanel: React.FC<QueuePanelProps> = ({
         opacity: 1,
       }}
       exit={{
-        width: 7,
-        height: 7,
-        borderRadius: 3.5,
+        width: 5,
+        height: 5,
+        borderRadius: 2.5,
         opacity: 0,
         transition: motionPreset.queueClose.layout,
       }}
