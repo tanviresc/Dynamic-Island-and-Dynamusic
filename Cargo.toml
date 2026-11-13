@@ -3,6 +3,9 @@ members = [
     "src-tauri",
     "crates/island-contract",
     "crates/island-core",
+    "crates/island-secrets",
+    "crates/island-store",
+    "crates/island-server",
 ]
 resolver = "2"
 

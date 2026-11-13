@@ -1,0 +1,19 @@
+[package]
+name = "island-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+island-contract = { path = "../island-contract" }
+island-secrets = { path = "../island-secrets" }
+island-store = { path = "../island-store" }
+axum = { version = "0.7", features = ["ws"] }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+subtle = "2.5"
+tower = { version = "0.4", features = ["util"] }

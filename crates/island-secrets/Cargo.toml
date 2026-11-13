@@ -1,0 +1,11 @@
+[package]
+name = "island-secrets"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+rand = "0.8"
+base64 = "0.22"
+keyring = { version = "3.3", default-features = false, features = ["windows-native"] }

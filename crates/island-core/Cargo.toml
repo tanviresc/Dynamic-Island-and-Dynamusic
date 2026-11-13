@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 island-contract = { path = "../island-contract" }
+island-store = { path = "../island-store" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

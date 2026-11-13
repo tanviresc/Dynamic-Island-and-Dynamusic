@@ -1,10 +1,34 @@
 import React, { useState, useEffect, useRef } from "react";
 import { AnimatePresence } from "motion/react";
+import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import { Dot } from "./Dot";
 import { Pill, PillProps } from "./Pill";
 import { QueuePanel, QueueItem } from "./QueuePanel";
 
 export type IslandMode = "hidden" | "dot" | "pill" | "queue";
+
+interface BackendViewModel {
+  mode: IslandMode;
+  color?: string;
+  notification?: {
+    id: string;
+    source: string;
+    kind: string;
+    title: string;
+    text: string;
+    category?: string;
+  };
+  items?: Array<{
+    id: string;
+    source: string;
+    kind: string;
+    title: string;
+    text: string;
+    category?: string;
+    createdAt: string;
+  }>;
+}
 
 export interface IslandRootProps {
   initialMode?: IslandMode;
@@ -27,47 +51,50 @@ export const IslandRoot: React.FC<IslandRootProps> = ({
     category: undefined,
   });
 
-  const [queueItems, setQueueItems] = useState<QueueItem[]>([
-    {
-      id: "q-1",
-      source: "antigravity",
-      kind: "needs_input",
-      title: "Antigravity Agent",
-      text: "Waiting for approval: npm run test",
-      category: "Needs input",
-      createdAt: new Date(Date.now() - 1000 * 60 * 4).toISOString(),
-    },
-    {
-      id: "q-2",
-      source: "gmail",
-      kind: "new_mail",
-      title: "security@google.com",
-      text: "Security alert: New sign-in detected",
-      category: "Security",
-      createdAt: new Date(Date.now() - 1000 * 60 * 25).toISOString(),
-    },
-    {
-      id: "q-3",
-      source: "chatgpt",
-      kind: "done",
-      title: "ChatGPT",
-      text: "Analysis completed",
-      createdAt: new Date(Date.now() - 1000 * 60 * 90).toISOString(),
-    },
-  ]);
-
-  const [dotColor, setDotColor] = useState<string>("#0A84FF"); // Blue because needs_input exists
-  const [isHovered, setIsHovered] = useState<boolean>(false);
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const [queueItems, setQueueItems] = useState<QueueItem[]>([]);
+  const [dotColor, setDotColor] = useState<string>("#30D158");
   const surfaceRef = useRef<HTMLDivElement>(null);
 
-  // Update dot color based on queue items (Blue if needs_input / error, else Green)
+  // Listen to Tauri backend "island://view" event
   useEffect(() => {
-    const hasNeedsInput = queueItems.some(
-      (it) => it.kind === "needs_input" || it.kind === "error"
-    );
-    setDotColor(hasNeedsInput ? "#0A84FF" : "#30D158");
-  }, [queueItems]);
+    let unlisten: (() => void) | undefined;
+    listen<BackendViewModel>("island://view", (event) => {
+      const vm = event.payload;
+      setMode(vm.mode);
+      if (vm.color) {
+        setDotColor(vm.color);
+      }
+      if (vm.notification) {
+        setCurrentNotification({
+          id: vm.notification.id,
+          source: vm.notification.source as any,
+          kind: vm.notification.kind as any,
+          title: vm.notification.title,
+          text: vm.notification.text,
+          category: vm.notification.category,
+        });
+      }
+      if (vm.items) {
+        setQueueItems(
+          vm.items.map((it) => ({
+            id: it.id,
+            source: it.source as any,
+            kind: it.kind as any,
+            title: it.title,
+            text: it.text,
+            category: it.category,
+            createdAt: it.createdAt,
+          }))
+        );
+      }
+    }).then((fn) => {
+      unlisten = fn;
+    });
+
+    return () => {
+      unlisten?.();
+    };
+  }, []);
 
   // Report hit rectangle to Rust / layout whenever mode or size changes
   useEffect(() => {
@@ -92,57 +119,30 @@ export const IslandRoot: React.FC<IslandRootProps> = ({
     return () => ro.disconnect();
   }, [mode, onHitRectChange]);
 
-  // Pill 3-second display timer (pausable by hover)
-  useEffect(() => {
-    if (mode !== "pill" || isHovered) {
-      if (timerRef.current) clearTimeout(timerRef.current);
-      return;
-    }
-
-    timerRef.current = setTimeout(() => {
-      // Transition from pill to dot
-      setMode(queueItems.length > 0 ? "dot" : "hidden");
-    }, 3000);
-
-    return () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
-    };
-  }, [mode, isHovered, queueItems.length]);
-
-  // Listen to custom window events for Developer test panel injection
-  useEffect(() => {
-    const handleInject = (e: CustomEvent) => {
-      const data = e.detail;
-      setCurrentNotification({
-        id: data.id || `inj-${Date.now()}`,
-        source: data.source || "claude",
-        kind: data.kind || "done",
-        title: data.title || "Notification",
-        text: data.text || "",
-        category: data.category,
-      });
-      setMode("pill");
-    };
-
-    const handleSetMode = (e: CustomEvent) => {
-      setMode(e.detail.mode);
-    };
-
-    window.addEventListener("island:inject" as any, handleInject);
-    window.addEventListener("island:set-mode" as any, handleSetMode);
-    return () => {
-      window.removeEventListener("island:inject" as any, handleInject);
-      window.removeEventListener("island:set-mode" as any, handleSetMode);
-    };
-  }, []);
-
   const handlePillClick = () => {
-    // Dismiss and transition to dot or hidden
+    try {
+      invoke("send_island_input", { action: "pill_clicked" });
+    } catch {}
     setMode(queueItems.length > 0 ? "dot" : "hidden");
   };
 
   const handleDotClick = () => {
+    try {
+      invoke("send_island_input", { action: "dot_clicked" });
+    } catch {}
     setMode("queue");
+  };
+
+  const handleHoverEnter = () => {
+    try {
+      invoke("send_island_input", { action: "hover_enter" });
+    } catch {}
+  };
+
+  const handleHoverLeave = () => {
+    try {
+      invoke("send_island_input", { action: "hover_leave" });
+    } catch {}
   };
 
   const handleQueueItemClick = (id: string) => {
@@ -154,8 +154,18 @@ export const IslandRoot: React.FC<IslandRootProps> = ({
   };
 
   const handleClearQueue = () => {
+    try {
+      invoke("send_island_input", { action: "queue_clear" });
+    } catch {}
     setQueueItems([]);
     setMode("hidden");
+  };
+
+  const handleCloseQueue = () => {
+    try {
+      invoke("send_island_input", { action: "queue_close" });
+    } catch {}
+    setMode(queueItems.length > 0 ? "dot" : "hidden");
   };
 
   return (
@@ -176,8 +186,8 @@ export const IslandRoot: React.FC<IslandRootProps> = ({
               key="pill"
               {...currentNotification}
               onClick={handlePillClick}
-              onHoverEnter={() => setIsHovered(true)}
-              onHoverLeave={() => setIsHovered(false)}
+              onHoverEnter={handleHoverEnter}
+              onHoverLeave={handleHoverLeave}
               isReducedMotion={isReducedMotion}
             />
           )}
@@ -188,7 +198,7 @@ export const IslandRoot: React.FC<IslandRootProps> = ({
               items={queueItems}
               onItemClick={handleQueueItemClick}
               onClear={handleClearQueue}
-              onClose={() => setMode(queueItems.length > 0 ? "dot" : "hidden")}
+              onClose={handleCloseQueue}
               isReducedMotion={isReducedMotion}
             />
           )}

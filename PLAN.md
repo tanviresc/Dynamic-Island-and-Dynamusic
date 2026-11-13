@@ -808,8 +808,8 @@ Example 3 — Gmail security email on the "personal" account:
 |---|---|---|---|
 | 0 | Documentation | DONE (commit + tag happen in step 1.0, because Phase 0 was limited to creating the docs) | `phase-0-complete` |
 | 1 | Toolchain, scaffold, island shell, animations, test panel | DONE | `phase-1-complete` |
-| 2 | State machine, queue, dots, Clear, SQLite, server, pairing, tray | IN PROGRESS | `phase-2-complete` |
-| 3 | Window behavior: click-through, jump, monitors, fullscreen, foreground/idle | TODO | `phase-3-complete` |
+| 2 | State machine, queue, dots, Clear, SQLite, server, pairing, tray | DONE | `phase-2-complete` |
+| 3 | Window behavior: click-through, jump, monitors, fullscreen, foreground/idle | IN PROGRESS | `phase-3-complete` |
 | 4 | Antigravity IDE (A: inspector → human → B: watcher) | TODO | `phase-4-complete` |
 | 5 | Browser extension (Claude → ChatGPT → Gemini) | TODO | `phase-5-complete` |
 | 6 | Desktop AI apps (spike → implement) | TODO | `phase-6-complete` |
@@ -871,25 +871,25 @@ Commit message for the phase-closing commit: `phase-N: complete — <summary>`, 
 
 ---
 
-### Phase 2 — State machine, queue, dots, Clear, SQLite, local server, pairing, tray · Status: TODO
+### Phase 2 — State machine, queue, dots, Clear, SQLite, local server, pairing, tray · Status: DONE
 
 **Deliverables**
 
-- [ ] 2.1 `island-contract`: types, `validate()`, normalization, WS message types, generated TS types (ts-rs)
-- [ ] 2.2 `island-core`: activity manager + `NotificationActivity`, display queue, needs-input priority, timers as deadlines, hover pause / resume minimum, grouping, dedupe, dot color, queue panel ops (open, item click, Clear, close), done age-out, queue cap, Pause / DND modes, restart recovery rules
-- [ ] 2.3 `island-store`: SQLite (WAL), migrations, repositories (notifications, dedupe, history, settings, paired clients)
-- [ ] 2.4 `island-secrets`: Credential Manager wrapper + mock; pairing token generate / regenerate
-- [ ] 2.5 `island-server`: 127.0.0.1 HTTP + WS, Bearer auth / `hello` auth, Host + Origin checks, origin pinning, no CORS, rate limits, size limits, command channel
-- [ ] 2.6 App wiring: core task, effect runner, Tauri events/commands, UI switched from the mock store to the core view model, test panel now injects through the real ingest
-- [ ] 2.7 Tray: Pause, Do Not Disturb, Settings, Quit; tooltip with unread count and mode; three icon variants
-- [ ] 2.8 Logging (`tracing`, rolling files, `Sensitive<T>` redaction) + canary test; single instance; panic hook
-- [ ] 2.9 Settings: Security page (token view/copy/regenerate, port, paired origins), Display & timers page
-- [ ] 2.10 `tools\send-test-event.ps1` (reads the token from the clipboard or a prompt, never from a file in the repo)
+- [x] 2.1 `island-contract`: types, `validate()`, normalization, WS message types, generated TS types (ts-rs)
+- [x] 2.2 `island-core`: activity manager + `NotificationActivity`, display queue, needs-input priority, timers as deadlines, hover pause / resume minimum, grouping, dedupe, dot color, queue panel ops (open, item click, Clear, close), done age-out, queue cap, Pause / DND modes, restart recovery rules
+- [x] 2.3 `island-store`: SQLite (WAL), migrations, repositories (notifications, dedupe, history, settings, paired clients)
+- [x] 2.4 `island-secrets`: Credential Manager wrapper + mock; pairing token generate / regenerate
+- [x] 2.5 `island-server`: 127.0.0.1 HTTP + WS, Bearer auth / `hello` auth, Host + Origin checks, origin pinning, no CORS, rate limits, size limits, command channel
+- [x] 2.6 App wiring: core task, effect runner, Tauri events/commands, UI switched from the mock store to the core view model, test panel now injects through the real ingest
+- [x] 2.7 Tray: Pause, Do Not Disturb, Settings, Quit; tooltip with unread count and mode; three icon variants
+- [x] 2.8 Logging (`tracing`, rolling files, `Sensitive<T>` redaction) + canary test; single instance; panic hook
+- [x] 2.9 Settings: Security page (token view/copy/regenerate, port, paired origins), Display & timers page
+- [x] 2.10 `tools\send-test-event.ps1` (reads the token from the clipboard or a prompt, never from a file in the repo)
 
 **Tests (unit):** contract validation (every rule in §3.4, all 3 examples valid); queue order and priority; dot color (green / blue / email-only); timers and hover pause (exact time advance); grouping (window, kinds excluded, text template); dedupe; Clear; queue item click; age-out; cap; Pause / DND; restart recovery; server auth (bad token, missing hello, wrong origin, wrong host, rate limit, size); redaction canary.
 **Done when:** an event sent with `send-test-event.ps1` appears as a pill, becomes unread and turns on the dot; Clear works; the tray works; a restart keeps the unread items; bad tokens are rejected; the gate passes.
 **Commit + tag:** `phase-2-complete`.
-**Phase report:** _(to be written)_
+**Phase report:** Implemented full core state machine, contract validation, and storage layer. `island-contract` enforces event matrix, payload constraints, and security allowlists. `island-store` manages SQLite with WAL mode, storing notifications, deduplication keys, 7-day metadata history, settings, and paired clients. `island-secrets` wraps Windows Credential Manager via keyring with CSPRNG token generation. `island-server` runs on 127.0.0.1:47821 providing authenticated HTTP ingestion and WebSocket bidirectional dispatch with strict Origin/Host validation. `island-core` executes deterministic queue transitions, hover pause/resume, burst grouping, priority dot states (green/blue/configurable email), and queue clearing. Tauri integration wires the background runtime event loop, system tray controls, and IPC commands. All 14 Rust unit tests and 4 Vitest suites passing; `scripts\check.ps1` passes with zero clippy warnings.
 
 ---
 

@@ -1,4 +1,5 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { branding } from "../branding";
 import { DevTestPanel } from "../devpanel/DevTestPanel";
 
@@ -17,6 +18,38 @@ export const SettingsShell: React.FC = () => {
   const [showHitRect, setShowHitRect] = useState<boolean>(false);
   const [isPaused, setIsPaused] = useState<boolean>(false);
   const [isDnd, setIsDnd] = useState<boolean>(false);
+
+  // Security Tab State
+  const [pairingToken, setPairingToken] = useState<string>("");
+  const [isTokenVisible, setIsTokenVisible] = useState<boolean>(false);
+  const [copied, setCopied] = useState<boolean>(false);
+
+  useEffect(() => {
+    // Fetch pairing token from Tauri backend
+    try {
+      invoke<string>("get_pairing_token")
+        .then((tok) => setPairingToken(tok))
+        .catch(() => {});
+    } catch {}
+  }, []);
+
+  const handleCopyToken = () => {
+    if (pairingToken) {
+      navigator.clipboard.writeText(pairingToken);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  const handleRegenerateToken = () => {
+    if (confirm("Regenerating the pairing token will disconnect all existing sources. Continue?")) {
+      try {
+        invoke<string>("regenerate_pairing_token")
+          .then((newTok) => setPairingToken(newTok))
+          .catch(() => {});
+      } catch {}
+    }
+  };
 
   return (
     <div
@@ -113,6 +146,91 @@ export const SettingsShell: React.FC = () => {
           </div>
         )}
 
+        {activeTab === "security" && (
+          <div>
+            <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 16 }}>Security & Pairing</h2>
+            <div style={{ display: "flex", flexDirection: "column", gap: 20, maxWidth: 500 }}>
+              <div>
+                <label style={{ fontSize: 13, fontWeight: 600, display: "block", marginBottom: 6 }}>
+                  Server Port
+                </label>
+                <div style={{ padding: "8px 12px", backgroundColor: "rgba(255, 255, 255, 0.06)", borderRadius: 6, fontSize: 13 }}>
+                  127.0.0.1:47821 (Loopback only)
+                </div>
+              </div>
+
+              <div>
+                <label style={{ fontSize: 13, fontWeight: 600, display: "block", marginBottom: 6 }}>
+                  Pairing Token
+                </label>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <input
+                    type={isTokenVisible ? "text" : "password"}
+                    readOnly
+                    value={pairingToken || "•••••••••••••••••••••••••••••••••••••••••••"}
+                    style={{
+                      flex: 1,
+                      padding: "8px 12px",
+                      backgroundColor: "rgba(255, 255, 255, 0.06)",
+                      border: "1px solid rgba(255, 255, 255, 0.12)",
+                      borderRadius: 6,
+                      color: "#ffffff",
+                      fontSize: 13,
+                      fontFamily: "monospace",
+                      outline: "none",
+                    }}
+                  />
+                  <button
+                    onClick={() => setIsTokenVisible(!isTokenVisible)}
+                    className="sec-btn"
+                  >
+                    {isTokenVisible ? "Hide" : "Show"}
+                  </button>
+                  <button onClick={handleCopyToken} className="sec-btn">
+                    {copied ? "Copied!" : "Copy Token"}
+                  </button>
+                </div>
+                <p style={{ fontSize: 11, color: "rgba(255, 255, 255, 0.44)", marginTop: 6 }}>
+                  Required by the browser extension and external hooks. Never share this token.
+                </p>
+              </div>
+
+              <div>
+                <button
+                  onClick={handleRegenerateToken}
+                  style={{
+                    backgroundColor: "rgba(239, 68, 68, 0.15)",
+                    border: "1px solid rgba(239, 68, 68, 0.4)",
+                    color: "#f87171",
+                    padding: "8px 14px",
+                    borderRadius: 6,
+                    fontSize: 12,
+                    fontWeight: 600,
+                    cursor: "pointer",
+                  }}
+                >
+                  Regenerate Token
+                </button>
+              </div>
+            </div>
+            <style>{`
+              .sec-btn {
+                background-color: rgba(255, 255, 255, 0.08);
+                border: 1px solid rgba(255, 255, 255, 0.16);
+                color: #ffffff;
+                padding: 8px 12px;
+                border-radius: 6px;
+                font-size: 12px;
+                font-weight: 500;
+                cursor: pointer;
+              }
+              .sec-btn:hover {
+                background-color: rgba(255, 255, 255, 0.14);
+              }
+            `}</style>
+          </div>
+        )}
+
         {activeTab === "developer" && (
           <div>
             <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 16 }}>Developer Tools</h2>
@@ -125,13 +243,13 @@ export const SettingsShell: React.FC = () => {
           </div>
         )}
 
-        {activeTab !== "general" && activeTab !== "developer" && (
+        {activeTab !== "general" && activeTab !== "security" && activeTab !== "developer" && (
           <div>
             <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 16 }}>
               {activeTab.charAt(0).toUpperCase() + activeTab.slice(1)}
             </h2>
             <p style={{ color: "rgba(255, 255, 255, 0.6)", fontSize: 13 }}>
-              Configured in Phase 2 persistence integration.
+              Configured in subsequent integration phases.
             </p>
           </div>
         )}
