@@ -7,6 +7,7 @@ members = [
     "crates/island-store",
     "crates/island-server",
     "crates/island-platform",
+    "crates/sources/source-antigravity",
 ]
 resolver = "2"
 

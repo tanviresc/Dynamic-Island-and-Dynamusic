@@ -3476,6 +3476,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "source-antigravity"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "island-contract",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -1,0 +1,24 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "command": "powershell -ExecutionPolicy Bypass -File ./probe-hook.ps1"
+      }
+    ],
+    "PreToolUse": [
+      {
+        "command": "powershell -ExecutionPolicy Bypass -File ./probe-hook.ps1"
+      }
+    ],
+    "PostToolUse": [
+      {
+        "command": "powershell -ExecutionPolicy Bypass -File ./probe-hook.ps1"
+      }
+    ],
+    "SessionStart": [
+      {
+        "command": "powershell -ExecutionPolicy Bypass -File ./probe-hook.ps1"
+      }
+    ]
+  }
+}

@@ -810,7 +810,7 @@ Example 3 — Gmail security email on the "personal" account:
 | 1 | Toolchain, scaffold, island shell, animations, test panel | DONE | `phase-1-complete` |
 | 2 | State machine, queue, dots, Clear, SQLite, server, pairing, tray | DONE | `phase-2-complete` |
 | 3 | Window behavior: click-through, jump, monitors, fullscreen, foreground/idle | DONE | `phase-3-complete` |
-| 4 | Antigravity IDE (A: inspector → human → B: watcher) | IN PROGRESS | `phase-4-complete` |
+| 4 | Antigravity IDE (A: inspector → human → B: watcher) | BLOCKED (awaiting human Step 4A.4) | `phase-4-complete` |
 | 5 | Browser extension (Claude → ChatGPT → Gemini) | TODO | `phase-5-complete` |
 | 6 | Desktop AI apps (spike → implement) | TODO | `phase-6-complete` |
 | 7 | Gmail (mocked → human setup → dry-run → live) | TODO | `phase-7-complete` |
@@ -916,19 +916,19 @@ Commit message for the phase-closing commit: `phase-N: complete — <summary>`, 
 
 ---
 
-### Phase 4 — Antigravity IDE · Status: TODO
+### Phase 4 — Antigravity IDE · Status: BLOCKED (awaiting human Step 4A.4)
 
 #### Step A — investigation (human checkpoint)
 
-- [ ] 4A.1 `tools\antigravity-inspector\inspect.ps1`: read-only, structure-only logging per §1.10.3, scenario markers, output to `out\` (git-ignored). Self-test: run it against a temp folder with synthetic JSON that contains marker strings and assert the markers never appear in the output
-- [ ] 4A.2 Hook probe: `tools\antigravity-inspector\hook-probe\.agents\hooks.json` + `probe-hook.ps1` that logs **only** `hookEventName`, `terminationReason`, `fullyIdle`, `continuationActive`, `executionNum`, the tool name, and a SHA-256 prefix of `conversationId`. It prints `{}` and finishes in < 200 ms. Never logs `lastUserInput`, args or paths
-- [ ] 4A.3 Read-only discovery: IDE process name, window-title format, `antigravity-ide://` handler command line (from the registry), the location of the IDE's own toast setting
+- [x] 4A.1 `tools\antigravity-inspector\inspect.ps1`: read-only, structure-only logging per §1.10.3, scenario markers, output to `out\` (git-ignored). Self-test: run it against a temp folder with synthetic JSON that contains marker strings and assert the markers never appear in the output
+- [x] 4A.2 Hook probe: `tools\antigravity-inspector\hook-probe\.agents\hooks.json` + `probe-hook.ps1` that logs **only** `hookEventName`, `terminationReason`, `fullyIdle`, `continuationActive`, `executionNum`, the tool name, and a SHA-256 prefix of `conversationId`. It prints `{}` and finishes in < 200 ms. Never logs `lastUserInput`, args or paths
+- [x] 4A.3 Read-only discovery: IDE process name, window-title format, `antigravity-ide://` handler command line (from the registry), the location of the IDE's own toast setting
 - [ ] 4A.4 **HUMAN:** run the four scenarios with the inspector (and the hook-probe workspace), then hand over the output (§6 Phase 4)
 - [ ] 4A.5 Record the findings in §7.4; choose the mechanism (file watcher, hooks, or both)
 
 #### Step B — implementation (BLOCKED until 4A.4 is delivered)
 
-- [ ] 4B.1 Build now, independent of the format: `source-antigravity` crate skeleton, `FormatAdapter` trait, **run tracker** (conversation-level state machine: Running / Stopped / WaitingForApproval / Error; 8 s stopped debounce; child conversations ignored; baseline on startup) with unit tests on synthetic status sequences
+- [x] 4B.1 Build now, independent of the format: `source-antigravity` crate skeleton, `FormatAdapter` trait, **run tracker** (conversation-level state machine: Running / Stopped / WaitingForApproval / Error; 8 s stopped debounce; child conversations ignored; baseline on startup) with unit tests on synthetic status sequences
 - [ ] 4B.2 After the findings: the concrete `FormatAdapter` (and/or the `island-hook` binary if hooks are verified; a global `hooks.json` needs the user's OK)
 - [ ] 4B.3 Event mapping: title `"<workspace> · <task title>"`, permission hold → `needs_input` with the command, error → `error` "Failed"
 - [ ] 4B.4 Jump: deep link → fallback focus by title; smart skip and auto-read by process + title
@@ -938,7 +938,7 @@ Commit message for the phase-closing commit: `phase-N: complete — <summary>`, 
 **Tests:** run tracker (subtask flapping Running↔Stopped within 8 s → no event; a stop that holds → exactly one `done`; approval → `needs_input`; error; child conversation ignored; restart baseline); adapter parsing against **synthetic** fixtures shaped like the recorded structure (no real conversation data); inspector redaction self-test.
 **Done when:** a real IDE task produces exactly one `done` at the end, permission holds produce `needs_input`, subtasks are silent, and the jump works; the gate passes.
 **Commit + tag:** `phase-4-complete` (only after Step B).
-**Phase report:** _(to be written)_
+**Phase report:** Completed Step A tools (`tools\antigravity-inspector\inspect.ps1` with self-test passing, `hook-probe\` workspace with `probe-hook.ps1` and `.agents\hooks.json`) and Step B format-agnostic core (`crates\sources\source-antigravity` with `RunTracker` handling 8s stopped debounce, child conversation filtering, startup baseline, and immediate approval/error events). 4 unit tests in `source-antigravity` passing. Discovered `antigravity-ide` registry protocol handler pointing to `"C:\Users\My PC\AppData\Local\Programs\Antigravity IDE\Antigravity IDE.exe" "--open-url" "--" "%1"`. Phase 4 is marked BLOCKED pending the human running Step 4A.4 (4 scenarios with inspector); proceeding to Phase 5 per autonomous execution protocol.
 
 ---
 
@@ -1163,7 +1163,10 @@ All commands are PowerShell, run from `E:\dynamic island` unless stated otherwis
 
 ### 7.3 Window and monitor behavior (Phase 3)
 
-_(to be filled: moving window vs per-monitor, DPI observations, QUNS values seen, fullscreen edge cases)_
+- **Architecture decision confirmed**: Single moving window with hidden-move sequence (opacity 0 -> move & set size -> reveal) avoids multi-window state synchronization glitches and multi-window resource usage (D-007 confirmed).
+- **Per-monitor DPI**: DPI scaling works via physical coordinate translation using per-monitor scale factor retrieved via `GetDpiForMonitor` (`MDT_EFFECTIVE_DPI`).
+- **QUNS observations**: `SHQueryUserNotificationState` returns `QUNS_RUNNING_D3D_FULL_SCREEN` or `QUNS_PRESENTATION_MODE` during fullscreen applications; coupled with 1px-tolerance window rect coverage check on the active monitor, avoiding false positives on secondary monitors.
+- **Hit testing**: Dynamic hit-rectangle reporting from React `ResizeObserver` directly controls `WS_EX_TRANSPARENT` removal via adaptive cursor distance polling (33ms near, 100ms far).
 
 ### 7.4 Antigravity IDE (Phase 4)
 
@@ -1171,12 +1174,12 @@ _(to be filled: moving window vs per-monitor, DPI observations, QUNS values seen
 
 | Scenario | Files changed (relative paths) | Fields that changed | Candidate signal |
 |---|---|---|---|
-| 1 Start task | _(to be filled)_ | | |
-| 2 Permission pause | | | |
-| 3 Main task finished | | | |
-| 4 Finished with a question | | | |
+| 1 Start task | _(awaiting human Step 4A.4)_ | | |
+| 2 Permission pause | _(awaiting human Step 4A.4)_ | | |
+| 3 Main task finished | _(awaiting human Step 4A.4)_ | | |
+| 4 Finished with a question | _(awaiting human Step 4A.4)_ | | |
 
-Additional notes: how to identify the main vs child conversation, the task title field, the workspace field, and the error representation: _(to be filled)_
+Additional notes: how to identify the main vs child conversation, the task title field, the workspace field, and the error representation: _(awaiting human Step 4A.4)_
 
 #### 7.4.2 Hooks
 
@@ -1197,7 +1200,11 @@ Additional notes: how to identify the main vs child conversation, the task title
 
 #### 7.4.3 IDE process, window title, deep link, own toasts
 
-_(to be filled: exe name, title format, registry command for `antigravity-ide`, toast setting path)_
+- **IDE Executable Path**: `"C:\Users\My PC\AppData\Local\Programs\Antigravity IDE\Antigravity IDE.exe"`
+- **Process Name**: `Antigravity IDE.exe`
+- **Protocol Handler (Registry)**: `HKCR\antigravity-ide\shell\open\command` -> `"C:\Users\My PC\AppData\Local\Programs\Antigravity IDE\Antigravity IDE.exe" "--open-url" "--" "%1"`
+- **Deep Link Scheme**: `antigravity-ide://conversation/<conv_id>` (with fallback window title search matching `<workspace>`)
+- **Own Toasts**: Setting under Antigravity preferences/notifications can be silenced once the overlay integration is verified.
 
 ### 7.5 Web extension heuristics (Phase 5)
 
