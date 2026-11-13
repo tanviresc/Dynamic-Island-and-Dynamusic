@@ -954,7 +954,7 @@ Commit message for the phase-closing commit: `phase-N: complete — <summary>`, 
 - [x] 5.6 Probe mode: structure-only DOM report (tag, role, `aria-label`, `data-testid`, and button labels ≤ 24 chars on `button` elements only), printed to the DevTools console of that tab only
 - [ ] 5.7 **Claude** config (`claude.config.ts`, UNVERIFIED) → awaits live human test
 - [ ] 5.8 **ChatGPT** config (`chatgpt.config.ts`, UNVERIFIED) → awaits live human test
-- [ ] 5.9 **Gemini** config (`gemini.config.ts`, UNVERIFIED) → awaits live human test
+- [x] 5.9 **Gemini** config (`gemini.config.ts`) → VERIFIED LIVE (tested by user; successful event dispatch, title extraction, and queue display)
 
 **Tests:** detector engine with jsdom/mock DOM (debounce cancels a false done, a minimum duration, one done per generation, needs_input dedupe); reconnect/backoff logic with fake timers; message schemas against the generated contract types; the server rejects `surface != web` from the extension.
 **Done when:** with the extension loaded and paired, finishing a generation in a background tab produces one `done`, an approval prompt produces `needs_input`, a click focuses the exact tab, and nothing fires while I am looking at the tab; the gate passes. Heuristics not confirmed live stay UNVERIFIED (the phase can be DONE with explicitly listed UNVERIFIED sites only if the user cannot test them).
@@ -1214,7 +1214,7 @@ Additional notes: how to identify the main vs child conversation, the task title
 | Claude | needs_input | A tool-permission / approval UI with allow/deny controls appears | TBD | UNVERIFIED |
 | ChatGPT | generating | A stop control replaces the send control while streaming | TBD | UNVERIFIED |
 | ChatGPT | needs_input | A confirmation UI (for example in agent mode) appears | TBD | UNVERIFIED |
-| Gemini | generating | A stop control / busy indicator exists while responding | TBD | UNVERIFIED |
+| Gemini | generating | A stop control / busy indicator exists while responding | TBD | VERIFIED LIVE |
 | Gemini | needs_input | A confirmation UI appears (may not exist) | TBD | UNVERIFIED |
 
 ### 7.6 Desktop apps spike (Phase 6)
