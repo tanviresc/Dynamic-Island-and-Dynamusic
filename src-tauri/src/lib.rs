@@ -362,8 +362,100 @@ async fn set_queue_focus(take_focus: bool, app: AppHandle) -> Result<(), String>
     Ok(())
 }
 
+#[tauri::command]
+async fn get_autostart() -> Result<bool, String> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::Command;
+        let output = Command::new("reg")
+            .args([
+                "query",
+                r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+                "/v",
+                "Island",
+            ])
+            .output()
+            .map_err(|e| e.to_string())?;
+        Ok(output.status.success())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok(false)
+    }
+}
+
+#[tauri::command]
+async fn set_autostart(enabled: bool) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::Command;
+        if enabled {
+            let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+            let exe_str = format!("\"{}\"", exe.to_string_lossy());
+            let status = Command::new("reg")
+                .args([
+                    "add",
+                    r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+                    "/v",
+                    "Island",
+                    "/t",
+                    "REG_SZ",
+                    "/d",
+                    &exe_str,
+                    "/f",
+                ])
+                .status()
+                .map_err(|e| e.to_string())?;
+            if !status.success() {
+                return Err("Failed to register autostart in Windows registry".to_string());
+            }
+        } else {
+            let _ = Command::new("reg")
+                .args([
+                    "delete",
+                    r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+                    "/v",
+                    "Island",
+                    "/f",
+                ])
+                .status();
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = enabled;
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn ensure_single_instance() -> bool {
+    use windows::core::w;
+    use windows::Win32::Foundation::GetLastError;
+    use windows::Win32::System::Threading::CreateMutexW;
+
+    unsafe {
+        let handle = CreateMutexW(None, true, w!("Local\\IslandOverlaySingleInstanceMutex"));
+        if handle.is_err() || GetLastError().0 == 183 {
+            return false;
+        }
+    }
+    true
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    std::panic::set_hook(Box::new(|info| {
+        error!("Island panic occurred: {}", info);
+    }));
+
+    #[cfg(target_os = "windows")]
+    if !ensure_single_instance() {
+        warn!("Another instance of Island is already running. Exiting.");
+        std::process::exit(0);
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter("info,island_app=debug,island_server=debug,island_core=debug")
         .init();
@@ -445,6 +537,13 @@ pub fn run() {
                 warn!("Falling back to in-memory store due to: {}", e);
                 Store::open_in_memory().unwrap()
             });
+
+            // Crash recovery: recover any in-flight notifications to unread queue (§8.2)
+            if let Ok(recovered) = store.reset_in_flight_to_unread() {
+                if recovered > 0 {
+                    info!("Recovered {} in-flight notifications to unread queue", recovered);
+                }
+            }
 
             // Secrets setup
             let secrets: Arc<dyn SecretStore> = Arc::new(WindowsSecretStore::new("Island"));
@@ -744,7 +843,9 @@ pub fn run() {
             start_gmail_oauth,
             get_gmail_accounts,
             save_gmail_account_settings,
-            remove_gmail_account
+            remove_gmail_account,
+            get_autostart,
+            set_autostart
         ])
         .run(tauri::generate_context!())
         .expect("error while running island application");

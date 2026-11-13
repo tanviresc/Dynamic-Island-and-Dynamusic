@@ -225,6 +225,15 @@ impl Store {
         Ok(())
     }
 
+    pub fn reset_in_flight_to_unread(&self) -> Result<usize, StoreError> {
+        let conn = self.conn.lock().map_err(|_| StoreError::LockError)?;
+        let count = conn.execute(
+            "UPDATE notifications SET state = 'unread' WHERE state IN ('pending', 'displaying')",
+            [],
+        )?;
+        Ok(count)
+    }
+
     pub fn get_unread_notifications(&self) -> Result<Vec<StoredNotification>, StoreError> {
         let conn = self.conn.lock().map_err(|_| StoreError::LockError)?;
         let mut stmt = conn.prepare(
@@ -535,5 +544,49 @@ mod tests {
         store.delete_gmail_account("Work").unwrap();
         let list3 = store.get_gmail_accounts().unwrap();
         assert_eq!(list3.len(), 0);
+    }
+
+    #[test]
+    fn test_crash_recovery_resets_in_flight() {
+        let store = Store::open_in_memory().unwrap();
+        let id1 = Uuid::new_v4();
+        let id2 = Uuid::new_v4();
+
+        let mut item1 = StoredNotification {
+            id: id1,
+            source: Source::Claude,
+            surface: Surface::Web,
+            kind: Kind::Done,
+            title: "Task 1".to_string(),
+            text: "Done".to_string(),
+            category: None,
+            account: None,
+            target: Target::Url {
+                url: "https://claude.ai".to_string(),
+            },
+            group_key: None,
+            group_count: 1,
+            state: NotificationState::Displaying,
+            external_ref: None,
+            created_at: 1000,
+            received_at: 1000,
+            expires_at: None,
+        };
+        store.save_notification(&item1).unwrap();
+
+        item1.id = id2;
+        item1.state = NotificationState::Pending;
+        store.save_notification(&item1).unwrap();
+
+        // Before recovery: get_unread returns 0 because items are displaying/pending
+        assert_eq!(store.get_unread_notifications().unwrap().len(), 0);
+
+        // Crash recovery runs on startup
+        let recovered = store.reset_in_flight_to_unread().unwrap();
+        assert_eq!(recovered, 2);
+
+        // After recovery: both items safely in unread queue
+        let unread = store.get_unread_notifications().unwrap();
+        assert_eq!(unread.len(), 2);
     }
 }

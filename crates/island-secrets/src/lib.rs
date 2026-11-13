@@ -26,6 +26,22 @@ pub fn generate_pairing_token() -> String {
     URL_SAFE_NO_PAD.encode(bytes)
 }
 
+/// Wrapper that redacts sensitive values in Debug and Display implementations.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Sensitive<T>(pub T);
+
+impl<T> std::fmt::Debug for Sensitive<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[REDACTED]")
+    }
+}
+
+impl<T> std::fmt::Display for Sensitive<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[REDACTED]")
+    }
+}
+
 /// In-memory implementation of SecretStore for testing
 #[derive(Default)]
 pub struct InMemorySecretStore {
@@ -126,5 +142,16 @@ mod tests {
 
         store.delete_secret("test-key").unwrap();
         assert_eq!(store.get_secret("test-key").unwrap(), None);
+    }
+
+    #[test]
+    fn test_sensitive_redaction_canary() {
+        let secret = Sensitive("super_secret_token_12345");
+        let debug_str = format!("{:?}", secret);
+        let display_str = format!("{}", secret);
+        assert_eq!(debug_str, "[REDACTED]");
+        assert_eq!(display_str, "[REDACTED]");
+        assert!(!debug_str.contains("super_secret_token"));
+        assert!(!display_str.contains("super_secret_token"));
     }
 }

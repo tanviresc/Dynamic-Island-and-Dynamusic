@@ -53,6 +53,7 @@ export const SettingsShell: React.FC = () => {
   const [showHitRect, setShowHitRect] = useState<boolean>(false);
   const [isPaused, setIsPaused] = useState<boolean>(false);
   const [isDnd, setIsDnd] = useState<boolean>(false);
+  const [autostart, setAutostart] = useState<boolean>(false);
 
   // Security Tab State
   const [pairingToken, setPairingToken] = useState<string>("");
@@ -78,6 +79,9 @@ export const SettingsShell: React.FC = () => {
   const [emailStatusMsg, setEmailStatusMsg] = useState<string>("");
 
   useEffect(() => {
+    invoke<boolean>("get_autostart")
+      .then((val) => setAutostart(val))
+      .catch(() => {});
     invoke<OAuthClientConfig | null>("get_gmail_oauth_client")
       .then((cfg) => setOauthClient(cfg))
       .catch(() => {});
@@ -85,6 +89,13 @@ export const SettingsShell: React.FC = () => {
       .then((accs) => setGmailAccounts(accs))
       .catch(() => {});
   }, []);
+
+  const handleToggleAutostart = (enabled: boolean) => {
+    setAutostart(enabled);
+    invoke("set_autostart", { enabled }).catch((err) =>
+      alert("Failed to update autostart setting: " + err)
+    );
+  };
 
   const handleImportClientJson = (rawJson?: string) => {
     const content = rawJson || oauthJsonInput;
@@ -306,6 +317,21 @@ export const SettingsShell: React.FC = () => {
                   onChange={(e) => setReduceMotion(e.target.checked)}
                 />
                 <span>Force Reduced Motion</span>
+              </label>
+
+              <label style={{ display: "flex", alignItems: "flex-start", gap: 12, cursor: "pointer", marginTop: 4 }}>
+                <input
+                  type="checkbox"
+                  checked={autostart}
+                  onChange={(e) => handleToggleAutostart(e.target.checked)}
+                  style={{ marginTop: 3 }}
+                />
+                <div>
+                  <div style={{ fontSize: 14, fontWeight: 500 }}>Launch on Windows Startup (Autostart)</div>
+                  <div style={{ fontSize: 12, color: "rgba(255, 255, 255, 0.5)", marginTop: 2 }}>
+                    Starts Island automatically in the background when you log in to Windows.
+                  </div>
+                </div>
               </label>
             </div>
           </div>
