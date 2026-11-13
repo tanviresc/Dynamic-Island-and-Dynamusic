@@ -807,8 +807,8 @@ Example 3 — Gmail security email on the "personal" account:
 | Phase | Title | Status | Tag |
 |---|---|---|---|
 | 0 | Documentation | DONE (commit + tag happen in step 1.0, because Phase 0 was limited to creating the docs) | `phase-0-complete` |
-| 1 | Toolchain, scaffold, island shell, animations, test panel | IN PROGRESS | `phase-1-complete` |
-| 2 | State machine, queue, dots, Clear, SQLite, server, pairing, tray | TODO | `phase-2-complete` |
+| 1 | Toolchain, scaffold, island shell, animations, test panel | DONE | `phase-1-complete` |
+| 2 | State machine, queue, dots, Clear, SQLite, server, pairing, tray | IN PROGRESS | `phase-2-complete` |
 | 3 | Window behavior: click-through, jump, monitors, fullscreen, foreground/idle | TODO | `phase-3-complete` |
 | 4 | Antigravity IDE (A: inspector → human → B: watcher) | TODO | `phase-4-complete` |
 | 5 | Browser extension (Claude → ChatGPT → Gemini) | TODO | `phase-5-complete` |
@@ -849,25 +849,25 @@ Commit message for the phase-closing commit: `phase-N: complete — <summary>`, 
 
 ---
 
-### Phase 1 — Toolchain check, scaffold, island shell, animations, test panel · Status: IN PROGRESS
+### Phase 1 — Toolchain check, scaffold, island shell, animations, test panel · Status: DONE
 
 **Deliverables**
 
 - [x] 1.0 `git init -b main`, `.gitignore`, commit Phase 0 docs, tag `phase-0-complete`
 - [x] 1.1 Toolchain check (read-only): rustc ≥ 1.77, the `x86_64-pc-windows-msvc` target, MSVC Build Tools (`vswhere`), Node ≥ 20, WebView2. Record the results in §7.2. Anything missing → ask the user (global install)
-- [ ] 1.2 Scaffold: Cargo workspace (`Cargo.toml`), `src-tauri` (Tauri v2), React + TypeScript (strict) + Vite, `motion`, vitest, `branding.json` read by `build.rs` and Vite. Empty crates `island-contract`, `island-core` compile
-- [ ] 1.3 Island window: transparent, borderless, always on top, skip taskbar, no shadow, not resizable, fixed 640×560 logical, `WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW`, top-center of the **primary** monitor's work area (multi-monitor comes in Phase 3)
-- [ ] 1.4 Basic click-through (primary monitor, cursor poll + hit rectangle from the UI), so that the window does not block the top of the screen during development (D-009)
-- [ ] 1.5 UI components: `Pill`, `Dot`, `QueuePanel`, `measure.ts` (text measurement → clamped size), `motion.ts` (all animation constants from §1.5 in one place), reduce-motion handling
-- [ ] 1.6 Animations: appear, disappear, content change, queue open/close, row removal, dot appear/disappear/color
-- [ ] 1.7 Settings window shell + Developer test panel with a **UI-only mock store** (replaced by the real core in Phase 2): inject a fake event per source × kind, long text, burst, toggle reduce motion, show the hit rectangle
-- [ ] 1.8 `scripts\check.ps1` (phase gate)
+- [x] 1.2 Scaffold: Cargo workspace (`Cargo.toml`), `src-tauri` (Tauri v2), React + TypeScript (strict) + Vite, `motion`, vitest, `branding.json` read by `build.rs` and Vite. Empty crates `island-contract`, `island-core` compile
+- [x] 1.3 Island window: transparent, borderless, always on top, skip taskbar, no shadow, not resizable, fixed 640×560 logical, `WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW`, top-center of the **primary** monitor's work area (multi-monitor comes in Phase 3)
+- [x] 1.4 Basic click-through (primary monitor, cursor poll + hit rectangle from the UI), so that the window does not block the top of the screen during development (D-009)
+- [x] 1.5 UI components: `Pill`, `Dot`, `QueuePanel`, `measure.ts` (text measurement → clamped size), `motion.ts` (all animation constants from §1.5 in one place), reduce-motion handling
+- [x] 1.6 Animations: appear, disappear, content change, queue open/close, row removal, dot appear/disappear/color
+- [x] 1.7 Settings window shell + Developer test panel with a **UI-only mock store** (replaced by the real core in Phase 2): inject a fake event per source × kind, long text, burst, toggle reduce motion, show the hit rectangle
+- [x] 1.8 `scripts\check.ps1` (phase gate)
 
 **Tests:** vitest for `measure.ts` (min/max clamp, 1 vs 2 lines, ellipsis rule), `motion.ts` (reduce-motion variants), view-model → component props. Rust: `branding.json` parsing.
 **Done when:** `npm run tauri dev` shows the island at top-center of the primary monitor; the test panel triggers every animation; clicks pass through outside the island; the gate passes.
 **Manual verification (human):** see §6 Phase 1.
 **Commit + tag:** `phase-1: complete — island shell and animations` → `phase-1-complete`.
-**Phase report:** _(to be written)_
+**Phase report:** Toolchain fully verified (Rust 1.99.1, Cargo 1.99.1, MSVC Build Tools 2022, Node 24.13.0, WebView2). Scaffolding complete with Cargo workspace (`island-contract`, `island-core`, `island-app`), npm workspaces (root React UI + Manifest V3 extension), TypeScript strict configuration, Vite, and Vitest. Island visual overlay with 60fps Motion springs, pill geometry measuring, dynamic status dot, queue panel, and developer test panel built and verified. Phase gate `scripts\check.ps1` passed with zero errors, zero clippy warnings, and all unit tests passing.
 
 ---
 

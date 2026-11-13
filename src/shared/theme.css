@@ -1,0 +1,52 @@
+:root {
+  --font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --bg-island: #000000;
+  --border-island: rgba(255, 255, 255, 0.14);
+  --glow-island: 0 0 24px 2px rgba(255, 255, 255, 0.16), 0 0 6px rgba(255, 255, 255, 0.10);
+  --text-primary: #ffffff;
+  --text-secondary: rgba(255, 255, 255, 0.72);
+  --text-muted: rgba(255, 255, 255, 0.44);
+
+  /* Dot & Status Colors */
+  --color-green: #30D158;
+  --color-blue: #0A84FF;
+  --color-error: #FF453A;
+
+  /* Source Accents */
+  --accent-claude: #D97757;
+  --accent-chatgpt: #10A37F;
+  --accent-gemini: #4C8DF6;
+  --accent-antigravity: #8AB4F8;
+  --accent-gmail: #EA4335;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font-family);
+  background: transparent;
+  color: var(--text-primary);
+  overflow: hidden;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Island Container inside transparent window */
+.island-window-container {
+  width: 640px;
+  height: 560px;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 10px;
+  pointer-events: none;
+}
+
+.island-interactive {
+  pointer-events: auto;
+}

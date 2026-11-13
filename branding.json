@@ -1,0 +1,18 @@
+{
+  "name": "Island",
+  "identifier": "local.island.app",
+  "version": "0.1.0",
+  "description": "Dynamic Island style notification overlay for Windows",
+  "windows": {
+    "island": {
+      "title": "Island Overlay",
+      "width": 640,
+      "height": 560
+    },
+    "settings": {
+      "title": "Island Settings",
+      "width": 800,
+      "height": 650
+    }
+  }
+}
