@@ -147,7 +147,7 @@ pub fn enumerate_monitors() -> Vec<MonitorInfo> {
         let lparam = LPARAM(&mut monitors as *mut Vec<MonitorInfo> as isize);
         let _ = EnumDisplayMonitors(
             HDC(std::ptr::null_mut()),
-            Some(&windows::Win32::Foundation::RECT::default()),
+            None,
             Some(monitor_enum_proc),
             lparam,
         );

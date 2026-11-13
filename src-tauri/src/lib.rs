@@ -497,8 +497,8 @@ pub fn run() {
                         if let Some(primary) = monitors.iter().find(|m| m.is_primary).or_else(|| monitors.first()) {
                             let (x, y, w, h) = calculate_window_position(
                                 &primary.work_area,
-                                640.0,
-                                560.0,
+                                720.0,
+                                500.0,
                                 primary.scale_factor,
                                 0.0,
                             );
@@ -514,6 +514,7 @@ pub fn run() {
                                         | windows::Win32::UI::WindowsAndMessaging::SWP_SHOWWINDOW,
                                 );
                             }
+                            let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize { width: 720.0, height: 500.0 }));
                         }
 
                         // Adaptive Click-through Worker Thread (§3.6)
@@ -903,8 +904,8 @@ fn process_effects(
                     if let Some(mon) = monitors.iter().find(|m| m.id == monitor_id) {
                         let (x, y, w, h) = calculate_window_position(
                             &mon.work_area,
-                            640.0,
-                            560.0,
+                            720.0,
+                            500.0,
                             mon.scale_factor,
                             0.0,
                         );
@@ -926,6 +927,10 @@ fn process_effects(
                                     SWP_NOACTIVATE | SWP_SHOWWINDOW,
                                 );
                             }
+                            let _ = win.set_size(tauri::Size::Logical(tauri::LogicalSize {
+                                width: 720.0,
+                                height: 500.0,
+                            }));
                         }
                     }
                 }

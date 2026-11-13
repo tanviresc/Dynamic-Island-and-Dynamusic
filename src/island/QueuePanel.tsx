@@ -70,10 +70,10 @@ export const QueuePanel: React.FC<QueuePanelProps> = ({
       layoutId="island-surface"
       initial={{ width: 7, height: 7, borderRadius: 3.5, opacity: 0 }}
       animate={{
-        width: 400,
+        width: 320,
         height: "auto",
-        maxHeight: 440,
-        borderRadius: 22,
+        maxHeight: 280,
+        borderRadius: 18,
         opacity: 1,
       }}
       exit={{
@@ -87,7 +87,7 @@ export const QueuePanel: React.FC<QueuePanelProps> = ({
       style={{
         backgroundColor: "#000000",
         border: "1px solid rgba(255, 255, 255, 0.45)",
-        boxShadow: "0 0 24px 3px rgba(255, 255, 255, 0.25), 0 0 60px 12px rgba(255, 255, 255, 0.12), inset 0 1px 1.5px 0 rgba(255, 255, 255, 0.35)",
+        boxShadow: "0 0 20px 2px rgba(255, 255, 255, 0.22), 0 0 50px 10px rgba(255, 255, 255, 0.10), inset 0 1px 1.5px 0 rgba(255, 255, 255, 0.35)",
         display: "flex",
         flexDirection: "column",
         overflow: "hidden",
@@ -100,11 +100,11 @@ export const QueuePanel: React.FC<QueuePanelProps> = ({
           display: "flex",
           justifyContent: "space-between",
           alignItems: "center",
-          padding: "14px 18px 10px 18px",
+          padding: "8px 14px 6px 14px",
           borderBottom: "1px solid rgba(255, 255, 255, 0.08)",
         }}
       >
-        <span style={{ fontSize: 13, fontWeight: 600, color: "rgba(255, 255, 255, 0.88)" }}>
+        <span style={{ fontSize: 11, fontWeight: 600, color: "rgba(255, 255, 255, 0.85)", letterSpacing: "0.2px" }}>
           Notifications ({items.length})
         </span>
         <button
@@ -112,8 +112,8 @@ export const QueuePanel: React.FC<QueuePanelProps> = ({
           style={{
             background: "none",
             border: "none",
-            color: "rgba(255, 255, 255, 0.54)",
-            fontSize: 12,
+            color: "rgba(255, 255, 255, 0.50)",
+            fontSize: 10,
             fontWeight: 600,
             cursor: "pointer",
             padding: "2px 6px",
@@ -121,7 +121,7 @@ export const QueuePanel: React.FC<QueuePanelProps> = ({
             transition: "color 0.15s ease",
           }}
           onMouseEnter={(e) => ((e.target as HTMLElement).style.color = "#ffffff")}
-          onMouseLeave={(e) => ((e.target as HTMLElement).style.color = "rgba(255, 255, 255, 0.54)")}
+          onMouseLeave={(e) => ((e.target as HTMLElement).style.color = "rgba(255, 255, 255, 0.50)")}
         >
           Clear
         </button>
@@ -131,7 +131,7 @@ export const QueuePanel: React.FC<QueuePanelProps> = ({
       <div
         style={{
           overflowY: "auto",
-          maxHeight: 380,
+          maxHeight: 240,
           display: "flex",
           flexDirection: "column",
         }}
@@ -147,7 +147,7 @@ export const QueuePanel: React.FC<QueuePanelProps> = ({
               <motion.div
                 key={item.id}
                 layout
-                initial={{ opacity: 0, y: isReducedMotion ? 0 : 6 }}
+                initial={{ opacity: 0, y: isReducedMotion ? 0 : 4 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{
                   opacity: 0,
@@ -160,73 +160,75 @@ export const QueuePanel: React.FC<QueuePanelProps> = ({
                 }}
                 onClick={() => onItemClick(item.id)}
                 style={{
-                  height: 52,
+                  height: 40,
                   display: "flex",
                   alignItems: "center",
-                  padding: "0 18px",
-                  gap: 12,
+                  padding: "0 12px",
+                  gap: 8,
                   cursor: "pointer",
                   borderBottom: "1px solid rgba(255, 255, 255, 0.04)",
                   transition: "background-color 0.15s ease",
                 }}
-                onMouseEnter={(e) => ((e.currentTarget as HTMLElement).style.backgroundColor = "rgba(255, 255, 255, 0.06)")}
+                onMouseEnter={(e) => ((e.currentTarget as HTMLElement).style.backgroundColor = "rgba(255, 255, 255, 0.08)")}
                 onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.backgroundColor = "transparent")}
               >
-                <SourceIcon source={item.source} needsInput={needsInput} size={20} />
+                <SourceIcon source={item.source} needsInput={needsInput} size={18} />
 
-                <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 2 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
-                    <span
-                      style={{
-                        fontSize: 12,
-                        fontWeight: 600,
-                        color: "#ffffff",
-                        whiteSpace: "nowrap",
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        maxWidth: 200,
-                      }}
-                    >
-                      {item.title}
-                    </span>
-                    {tag && (
-                      <span
-                        style={{
-                          fontSize: 10,
-                          fontWeight: 600,
-                          padding: "1px 5px",
-                          borderRadius: 4,
-                          backgroundColor: "rgba(255, 255, 255, 0.10)",
-                          color: "rgba(255, 255, 255, 0.8)",
-                          whiteSpace: "nowrap",
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                        }}
-                      >
-                        {tag}
-                      </span>
-                    )}
-                  </div>
+                <div style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 5, overflow: "hidden" }}>
                   <span
                     style={{
                       fontSize: 12,
-                      fontWeight: 400,
-                      color: "rgba(255, 255, 255, 0.65)",
+                      fontWeight: 600,
+                      color: "#ffffff",
                       whiteSpace: "nowrap",
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
+                      flexShrink: 0,
                     }}
                   >
-                    {item.text}
+                    {item.title}
                   </span>
+                  {tag && (
+                    <span
+                      style={{
+                        fontSize: 9,
+                        fontWeight: 600,
+                        padding: "1px 4px",
+                        borderRadius: 3,
+                        backgroundColor: "rgba(255, 255, 255, 0.12)",
+                        color: "rgba(255, 255, 255, 0.85)",
+                        whiteSpace: "nowrap",
+                        flexShrink: 0,
+                      }}
+                    >
+                      {tag}
+                    </span>
+                  )}
+                  {item.text && (
+                    <>
+                      <span style={{ color: "rgba(255, 255, 255, 0.35)", fontSize: 11, flexShrink: 0 }}>:</span>
+                      <span
+                        style={{
+                          fontSize: 11,
+                          fontWeight: 400,
+                          color: "rgba(255, 255, 255, 0.75)",
+                          whiteSpace: "nowrap",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          flex: 1,
+                        }}
+                      >
+                        {item.text}
+                      </span>
+                    </>
+                  )}
                 </div>
 
                 <span
                   style={{
-                    fontSize: 11,
-                    color: "rgba(255, 255, 255, 0.40)",
+                    fontSize: 10,
+                    color: "rgba(255, 255, 255, 0.45)",
                     flexShrink: 0,
                     fontWeight: 500,
+                    marginLeft: 4,
                   }}
                 >
                   {formatRelativeTime(item.createdAt)}

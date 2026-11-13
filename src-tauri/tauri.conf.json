@@ -14,8 +14,8 @@
       {
         "label": "island",
         "title": "Island Overlay",
-        "width": 640,
-        "height": 560,
+        "width": 720,
+        "height": 500,
         "resizable": false,
         "decorations": false,
         "transparent": true,
