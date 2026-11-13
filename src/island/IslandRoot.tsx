@@ -100,17 +100,27 @@ export const IslandRoot: React.FC<IslandRootProps> = ({
   useEffect(() => {
     if (!surfaceRef.current || mode === "hidden") {
       onHitRectChange?.(null);
+      invoke("update_hit_rect", { rect: null }).catch(() => {});
       return;
     }
     const updateRect = () => {
       if (surfaceRef.current) {
         const rect = surfaceRef.current.getBoundingClientRect();
-        onHitRectChange?.({
+        const hit = {
           x: Math.round(rect.left),
           y: Math.round(rect.top),
           width: Math.round(rect.width),
           height: Math.round(rect.height),
-        });
+        };
+        onHitRectChange?.(hit);
+        invoke("update_hit_rect", {
+          rect: {
+            left: hit.x,
+            top: hit.y,
+            right: hit.x + hit.width,
+            bottom: hit.y + hit.height,
+          },
+        }).catch(() => {});
       }
     };
     updateRect();
@@ -118,6 +128,32 @@ export const IslandRoot: React.FC<IslandRootProps> = ({
     ro.observe(surfaceRef.current);
     return () => ro.disconnect();
   }, [mode, onHitRectChange]);
+
+  // Queue panel focus & Escape / Blur handling (§1.6.6, §3.10)
+  useEffect(() => {
+    if (mode !== "queue") return;
+
+    invoke("set_queue_focus", { takeFocus: true }).catch(() => {});
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        handleCloseQueue();
+      }
+    };
+
+    const handleBlur = () => {
+      handleCloseQueue();
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("blur", handleBlur);
+
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("blur", handleBlur);
+      invoke("set_queue_focus", { takeFocus: false }).catch(() => {});
+    };
+  }, [mode]);
 
   const handlePillClick = () => {
     try {
@@ -146,6 +182,9 @@ export const IslandRoot: React.FC<IslandRootProps> = ({
   };
 
   const handleQueueItemClick = (id: string) => {
+    try {
+      invoke("send_island_input", { action: `queue_item:${id}` });
+    } catch {}
     setQueueItems((prev) => {
       const next = prev.filter((it) => it.id !== id);
       if (next.length === 0) setMode("hidden");

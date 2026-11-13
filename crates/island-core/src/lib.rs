@@ -1,4 +1,6 @@
-use island_contract::{Event, Kind, Source, Target};
+use chrono::Utc;
+use island_contract::{Event, Kind, Source, Surface, Target};
+use island_platform::{MonitorInfo, PlatformState, Rect};
 use island_store::{NotificationState, StoredNotification};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
@@ -12,6 +14,7 @@ pub const DEFAULT_INTER_ITEM_GAP_MS: Millis = 300;
 pub const DEFAULT_GROUP_WINDOW_MS: Millis = 5000;
 pub const DEFAULT_QUEUE_CAP: usize = 200;
 pub const DEFAULT_DONE_AGE_OUT_HOURS: u32 = 24;
+pub const MONITOR_DEBOUNCE_MS: Millis = 500;
 
 pub const COLOR_GREEN: &str = "#30D158";
 pub const COLOR_BLUE: &str = "#0A84FF";
@@ -48,7 +51,24 @@ pub enum ViewModel {
     Queue { items: Vec<QueueItemView> },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WindowTransition {
+    Immediate,
+    DotMove,
+    Fade,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebFocusReport {
+    pub active_tab_id: u32,
+    pub active_window_id: u32,
+    pub active_url: Option<String>,
+    pub is_browser_focused: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum Input {
     EventAccepted(Box<Event>),
     Tick,
@@ -59,14 +79,25 @@ pub enum Input {
     QueueItemClicked(Uuid),
     QueueClear,
     QueueClose,
-    ContextChanged { is_game_mode: bool, is_idle: bool },
+    PlatformContext(Box<PlatformState>),
+    WebFocus(WebFocusReport),
+    SettingsChanged {
+        follow_active_monitor: bool,
+        fixed_monitor_id: Option<String>,
+        idle_threshold_min: u32,
+    },
     PauseToggled(bool),
     DndToggled(bool),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Effect {
     Render(ViewModel),
+    PlaceWindow {
+        monitor_id: String,
+        transition: WindowTransition,
+    },
+    SetHitRect(Option<Rect>),
     Jump(Target),
     PersistSave(StoredNotification),
     PersistUpdateState(Uuid, NotificationState),
@@ -90,6 +121,18 @@ pub struct IslandCore {
     unread_queue: Vec<StoredNotification>,
     is_queue_panel_open: bool,
 
+    // Multi-monitor & Window State
+    pub active_monitor_id: Option<String>,
+    pending_candidate_id: Option<String>,
+    candidate_first_seen_at: Option<Millis>,
+    deferred_monitor_move: Option<String>,
+    current_monitors: Vec<MonitorInfo>,
+    last_platform_state: Option<PlatformState>,
+    last_web_focus: Option<WebFocusReport>,
+    pub follow_active_monitor: bool,
+    pub fixed_monitor_id: Option<String>,
+    pub idle_threshold_min: u32,
+
     // Modes
     is_paused: bool,
     is_dnd: bool,
@@ -112,6 +155,16 @@ impl Default for IslandCore {
             current_display: None,
             unread_queue: Vec::new(),
             is_queue_panel_open: false,
+            active_monitor_id: None,
+            pending_candidate_id: None,
+            candidate_first_seen_at: None,
+            deferred_monitor_move: None,
+            current_monitors: Vec::new(),
+            last_platform_state: None,
+            last_web_focus: None,
+            follow_active_monitor: true,
+            fixed_monitor_id: None,
+            idle_threshold_min: 3,
             is_paused: false,
             is_dnd: false,
             is_game_mode: false,
@@ -139,6 +192,14 @@ impl IslandCore {
         self.unread_queue.len()
     }
 
+    pub fn has_unread(&self) -> bool {
+        !self.unread_queue.is_empty()
+    }
+
+    pub fn is_displaying(&self) -> bool {
+        self.current_display.is_some()
+    }
+
     pub fn compute_dot_color(&self) -> String {
         let has_needs_input = self
             .unread_queue
@@ -162,42 +223,42 @@ impl IslandCore {
         }
     }
 
-    pub fn current_view_model(&self, now: Millis) -> ViewModel {
+    pub fn current_view_model(&self, _now: Millis) -> ViewModel {
         if self.is_paused {
             return ViewModel::Hidden;
         }
 
         if self.is_queue_panel_open {
-            return ViewModel::Queue {
-                items: self
-                    .unread_queue
-                    .iter()
-                    .map(|it| QueueItemView {
-                        id: it.id,
-                        source: it.source,
-                        kind: it.kind,
-                        title: it.title.clone(),
-                        text: it.text.clone(),
-                        category: it.category.clone(),
-                        created_at: it.created_at.to_string(),
-                    })
-                    .collect(),
-            };
+            let items: Vec<QueueItemView> = self
+                .unread_queue
+                .iter()
+                .map(|item| QueueItemView {
+                    id: item.id,
+                    source: item.source,
+                    kind: item.kind,
+                    title: item.title.clone(),
+                    text: item.text.clone(),
+                    category: item.category.clone(),
+                    created_at: format_relative_time(item.created_at),
+                })
+                .collect();
+            return ViewModel::Queue { items };
         }
 
         if self.is_game_mode {
-            if let Some(until) = self.game_dot_until {
-                if now < until && !self.unread_queue.is_empty() {
-                    return ViewModel::Dot {
-                        color: self.compute_dot_color(),
-                    };
-                }
+            if self.unread_queue.is_empty() {
+                return ViewModel::Hidden;
+            }
+            if self.game_dot_until.is_some() {
+                return ViewModel::Dot {
+                    color: self.compute_dot_color(),
+                };
             }
             return ViewModel::Hidden;
         }
 
         if self.is_dnd {
-            if !self.unread_queue.is_empty() {
+            if self.has_unread() {
                 return ViewModel::Dot {
                     color: self.compute_dot_color(),
                 };
@@ -218,7 +279,7 @@ impl IslandCore {
             };
         }
 
-        if !self.unread_queue.is_empty() {
+        if self.has_unread() {
             return ViewModel::Dot {
                 color: self.compute_dot_color(),
             };
@@ -236,20 +297,109 @@ impl IslandCore {
             }
         }
 
+        if let Some(seen_at) = self.candidate_first_seen_at {
+            deadlines.push(seen_at + MONITOR_DEBOUNCE_MS);
+        }
+
         if self.is_game_mode {
             if let Some(until) = self.game_dot_until {
                 if until > now {
                     deadlines.push(until);
                 }
             }
-            if let Some(next_at) = self.game_next_dot_at {
-                if next_at > now {
-                    deadlines.push(next_at);
+            if let Some(next_dot) = self.game_next_dot_at {
+                if next_dot > now {
+                    deadlines.push(next_dot);
                 }
             }
         }
 
         deadlines.into_iter().min()
+    }
+
+    fn check_is_looking_raw(
+        &self,
+        source: Source,
+        surface: Surface,
+        target: &Target,
+        ignore_idle: bool,
+    ) -> bool {
+        let state = match &self.last_platform_state {
+            Some(s) => s,
+            None => return false,
+        };
+
+        if !ignore_idle && state.is_idle {
+            return false;
+        }
+
+        let fg = match &state.foreground_window {
+            Some(f) if f.is_valid => f,
+            _ => return false,
+        };
+
+        match surface {
+            Surface::Desktop => {
+                let proc = fg.process_name.to_lowercase();
+                match source {
+                    Source::Claude => proc.contains("claude"),
+                    Source::Chatgpt => proc.contains("chatgpt"),
+                    Source::Gemini => proc.contains("gemini"),
+                    _ => false,
+                }
+            }
+            Surface::Ide => {
+                let proc = fg.process_name.to_lowercase();
+                if !proc.contains("antigravity") {
+                    return false;
+                }
+                if let Target::Ide {
+                    ref workspace_path,
+                    ref window_title_contains,
+                    ..
+                } = target
+                {
+                    if let Some(ref title_contains) = window_title_contains {
+                        if !fg
+                            .title
+                            .to_lowercase()
+                            .contains(&title_contains.to_lowercase())
+                        {
+                            return false;
+                        }
+                    }
+                    let folder_name = std::path::Path::new(workspace_path)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or(workspace_path);
+                    fg.title
+                        .to_lowercase()
+                        .contains(&folder_name.to_lowercase())
+                } else {
+                    true
+                }
+            }
+            Surface::Web => {
+                let proc = fg.process_name.to_lowercase();
+                let is_browser = proc.contains("chrome") || proc.contains("brave");
+                if !is_browser {
+                    return false;
+                }
+                if let Some(ref report) = self.last_web_focus {
+                    if !report.is_browser_focused {
+                        return false;
+                    }
+                    if let Target::BrowserTab { tab_id, .. } = target {
+                        *tab_id == report.active_tab_id
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        }
     }
 
     pub fn handle_input(&mut self, input: Input, now: Millis) -> Vec<Effect> {
@@ -258,6 +408,17 @@ impl IslandCore {
         match input {
             Input::EventAccepted(event) => {
                 let event = *event;
+
+                // Smart skip check (§1.8)
+                if self.check_is_looking_raw(event.source, event.surface, &event.target, false) {
+                    tracing::info!(
+                        event_id = %event.id,
+                        source = ?event.source,
+                        "Smart skip: user is already looking at source"
+                    );
+                    return effects;
+                }
+
                 let stored = StoredNotification {
                     id: event.id,
                     source: event.source,
@@ -277,10 +438,9 @@ impl IslandCore {
                     expires_at: None,
                 };
 
-                // Check grouping burst (only done and new_mail merge)
+                // Grouping burst check (done and new_mail merge)
                 let mut merged = false;
                 if stored.kind == Kind::Done || stored.kind == Kind::NewMail {
-                    // Check if current displaying item can merge
                     if let Some(ref mut disp) = self.current_display {
                         if disp.item.source == stored.source
                             && disp.item.surface == stored.surface
@@ -296,19 +456,27 @@ impl IslandCore {
                                 format!("{} new emails", disp.item.group_count)
                             };
                             merged = true;
-                            effects.push(Effect::PersistSave(disp.item.clone()));
                         }
                     }
                 }
 
                 if !merged {
+                    effects.push(Effect::PersistSave(stored.clone()));
+
                     if self.is_paused || self.is_dnd || self.is_game_mode {
                         let mut item = stored;
                         item.state = NotificationState::Unread;
-                        self.push_unread(item.clone(), &mut effects);
-                        effects.push(Effect::PersistSave(item));
+                        effects.push(Effect::PersistUpdateState(
+                            item.id,
+                            NotificationState::Unread,
+                        ));
+                        self.push_unread(item, &mut effects);
+
+                        if self.is_game_mode {
+                            self.game_dot_until = Some(now + 10000);
+                            self.game_next_dot_at = Some(now + 10000 + 60000);
+                        }
                     } else if self.current_display.is_none() {
-                        // Start display immediately
                         let mut item = stored;
                         item.state = NotificationState::Displaying;
                         self.current_display = Some(DisplayingItem {
@@ -318,57 +486,90 @@ impl IslandCore {
                             is_hovered: false,
                             hover_remaining_ms: None,
                         });
-                        effects.push(Effect::PersistSave(item));
+                        effects.push(Effect::PersistUpdateState(
+                            item.id,
+                            NotificationState::Displaying,
+                        ));
                     } else {
-                        // Queue in display queue
-                        // needs_input and error jump ahead of done and new_mail
-                        let is_urgent =
-                            stored.kind == Kind::NeedsInput || stored.kind == Kind::Error;
-                        if is_urgent {
-                            let insert_idx = self
-                                .display_queue
-                                .iter()
-                                .position(|it| {
-                                    it.kind != Kind::NeedsInput && it.kind != Kind::Error
-                                })
-                                .unwrap_or(self.display_queue.len());
-                            self.display_queue.insert(insert_idx, stored.clone());
+                        if stored.kind == Kind::NeedsInput || stored.kind == Kind::Error {
+                            let first_non_urgent = self.display_queue.iter().position(|it| {
+                                it.kind != Kind::NeedsInput && it.kind != Kind::Error
+                            });
+                            match first_non_urgent {
+                                Some(idx) => self.display_queue.insert(idx, stored),
+                                None => self.display_queue.push_back(stored),
+                            }
                         } else {
-                            self.display_queue.push_back(stored.clone());
+                            self.display_queue.push_back(stored);
                         }
-                        effects.push(Effect::PersistSave(stored));
                     }
                 }
             }
 
             Input::Tick => {
+                // Check displaying expiration
                 if let Some(ref disp) = self.current_display {
                     if !disp.is_hovered && now >= disp.deadline {
-                        // Display timer expired, move item to unread
-                        let mut item = disp.item.clone();
+                        let finished = self.current_display.take().unwrap();
+                        let mut item = finished.item;
                         item.state = NotificationState::Unread;
-                        self.current_display = None;
-                        self.push_unread(item.clone(), &mut effects);
                         effects.push(Effect::PersistUpdateState(
                             item.id,
                             NotificationState::Unread,
                         ));
+                        self.push_unread(item, &mut effects);
 
-                        // Check next item in display queue
+                        // If monitor move was deferred due to display, move now!
+                        if let Some(target) = self.deferred_monitor_move.take() {
+                            self.active_monitor_id = Some(target.clone());
+                            effects.push(Effect::PlaceWindow {
+                                monitor_id: target,
+                                transition: WindowTransition::DotMove,
+                            });
+                        }
+
+                        // Next item in display queue
                         if let Some(next_item) = self.display_queue.pop_front() {
-                            let mut item = next_item;
-                            item.state = NotificationState::Displaying;
+                            let mut next = next_item;
+                            next.state = NotificationState::Displaying;
                             self.current_display = Some(DisplayingItem {
-                                item: item.clone(),
+                                item: next.clone(),
                                 started_at: now,
                                 deadline: now + self.display_ms,
                                 is_hovered: false,
                                 hover_remaining_ms: None,
                             });
                             effects.push(Effect::PersistUpdateState(
-                                item.id,
+                                next.id,
                                 NotificationState::Displaying,
                             ));
+                        }
+                    }
+                }
+
+                // Check monitor debounce
+                if let (Some(cand), Some(seen_at)) =
+                    (&self.pending_candidate_id, self.candidate_first_seen_at)
+                {
+                    if now.saturating_sub(seen_at) >= MONITOR_DEBOUNCE_MS {
+                        let target = cand.clone();
+                        self.pending_candidate_id = None;
+                        self.candidate_first_seen_at = None;
+
+                        if self.current_display.is_some() || self.is_queue_panel_open {
+                            // Defer move until pill finishes or panel closes
+                            self.deferred_monitor_move = Some(target);
+                        } else {
+                            self.active_monitor_id = Some(target.clone());
+                            let transition = if self.has_unread() {
+                                WindowTransition::DotMove
+                            } else {
+                                WindowTransition::Immediate
+                            };
+                            effects.push(Effect::PlaceWindow {
+                                monitor_id: target,
+                                transition,
+                            });
                         }
                     }
                 }
@@ -383,10 +584,111 @@ impl IslandCore {
                     } else if let Some(next_at) = self.game_next_dot_at {
                         if now >= next_at && !self.unread_queue.is_empty() {
                             self.game_dot_until = Some(now + 3000);
-                            self.game_next_dot_at = None;
+                            self.game_next_dot_at = Some(now + 3000 + 60000);
                         }
                     }
                 }
+            }
+
+            Input::PlatformContext(boxed_state) => {
+                let state = *boxed_state;
+                self.current_monitors = state.monitors.clone();
+
+                // 1. Hot-unplug check: current monitor disconnected
+                if let Some(ref current_id) = self.active_monitor_id {
+                    let still_exists = state.monitors.iter().any(|m| &m.id == current_id);
+                    if !still_exists {
+                        let fallback = state
+                            .active_monitor_id
+                            .clone()
+                            .or_else(|| state.monitors.first().map(|m| m.id.clone()));
+                        if let Some(target) = fallback {
+                            self.active_monitor_id = Some(target.clone());
+                            self.deferred_monitor_move = None;
+                            effects.push(Effect::PlaceWindow {
+                                monitor_id: target,
+                                transition: WindowTransition::Immediate,
+                            });
+                        }
+                    }
+                }
+
+                // 2. Debounce evaluation for active monitor candidate
+                if let Some(target) = state.active_monitor_id.clone() {
+                    if Some(&target) != self.active_monitor_id.as_ref() {
+                        if self.pending_candidate_id.as_deref() == Some(&target) {
+                            if let Some(seen_at) = self.candidate_first_seen_at {
+                                if now.saturating_sub(seen_at) >= MONITOR_DEBOUNCE_MS {
+                                    self.pending_candidate_id = None;
+                                    self.candidate_first_seen_at = None;
+
+                                    if self.current_display.is_some() || self.is_queue_panel_open {
+                                        self.deferred_monitor_move = Some(target);
+                                    } else {
+                                        self.active_monitor_id = Some(target.clone());
+                                        let transition = if self.has_unread() {
+                                            WindowTransition::DotMove
+                                        } else {
+                                            WindowTransition::Immediate
+                                        };
+                                        effects.push(Effect::PlaceWindow {
+                                            monitor_id: target,
+                                            transition,
+                                        });
+                                    }
+                                }
+                            }
+                        } else {
+                            self.pending_candidate_id = Some(target);
+                            self.candidate_first_seen_at = Some(now);
+                        }
+                    } else {
+                        self.pending_candidate_id = None;
+                        self.candidate_first_seen_at = None;
+                    }
+                }
+
+                // 3. Game mode transitions
+                if !self.is_game_mode && state.is_game_mode {
+                    self.is_game_mode = true;
+                    if let Some(disp) = self.current_display.take() {
+                        let mut item = disp.item;
+                        item.state = NotificationState::Unread;
+                        effects.push(Effect::PersistUpdateState(
+                            item.id,
+                            NotificationState::Unread,
+                        ));
+                        self.push_unread(item, &mut effects);
+                    }
+                    if self.has_unread() {
+                        self.game_dot_until = Some(now + 10000);
+                        self.game_next_dot_at = Some(now + 10000 + 60000);
+                    }
+                } else if self.is_game_mode && !state.is_game_mode {
+                    self.is_game_mode = false;
+                    self.game_dot_until = None;
+                    self.game_next_dot_at = None;
+                }
+
+                self.last_platform_state = Some(state);
+
+                // 4. Auto-read check (§1.8)
+                self.run_auto_read(&mut effects);
+            }
+
+            Input::WebFocus(report) => {
+                self.last_web_focus = Some(report);
+                self.run_auto_read(&mut effects);
+            }
+
+            Input::SettingsChanged {
+                follow_active_monitor,
+                fixed_monitor_id,
+                idle_threshold_min,
+            } => {
+                self.follow_active_monitor = follow_active_monitor;
+                self.fixed_monitor_id = fixed_monitor_id;
+                self.idle_threshold_min = idle_threshold_min;
             }
 
             Input::HoverEnter => {
@@ -417,7 +719,7 @@ impl IslandCore {
                     effects.push(Effect::Jump(disp.item.target));
                     effects.push(Effect::PersistRemove(disp.item.id, "clicked"));
 
-                    // Advance to next pending in display queue
+                    // Next item in display queue
                     if let Some(next_item) = self.display_queue.pop_front() {
                         let mut item = next_item;
                         item.state = NotificationState::Displaying;
@@ -447,6 +749,13 @@ impl IslandCore {
                     effects.push(Effect::PersistRemove(item.id, "clicked"));
                     if self.unread_queue.is_empty() {
                         self.is_queue_panel_open = false;
+                        if let Some(target) = self.deferred_monitor_move.take() {
+                            self.active_monitor_id = Some(target.clone());
+                            effects.push(Effect::PlaceWindow {
+                                monitor_id: target,
+                                transition: WindowTransition::Immediate,
+                            });
+                        }
                     }
                 }
             }
@@ -455,17 +764,23 @@ impl IslandCore {
                 self.unread_queue.clear();
                 self.is_queue_panel_open = false;
                 effects.push(Effect::PersistClearAll("cleared"));
+                if let Some(target) = self.deferred_monitor_move.take() {
+                    self.active_monitor_id = Some(target.clone());
+                    effects.push(Effect::PlaceWindow {
+                        monitor_id: target,
+                        transition: WindowTransition::Immediate,
+                    });
+                }
             }
 
             Input::QueueClose => {
                 self.is_queue_panel_open = false;
-            }
-
-            Input::ContextChanged { is_game_mode, .. } => {
-                self.is_game_mode = is_game_mode;
-                if is_game_mode && !self.unread_queue.is_empty() {
-                    self.game_dot_until = Some(now + 10000);
-                    self.game_next_dot_at = None;
+                if let Some(target) = self.deferred_monitor_move.take() {
+                    self.active_monitor_id = Some(target.clone());
+                    effects.push(Effect::PlaceWindow {
+                        monitor_id: target,
+                        transition: WindowTransition::DotMove,
+                    });
                 }
             }
 
@@ -482,10 +797,36 @@ impl IslandCore {
         effects
     }
 
+    fn run_auto_read(&mut self, effects: &mut Vec<Effect>) {
+        // Auto-read checks display queue and unread queue (idle ignored per §1.8)
+        let mut i = 0;
+        while i < self.unread_queue.len() {
+            let item = &self.unread_queue[i];
+            if self.check_is_looking_raw(item.source, item.surface, &item.target, true) {
+                let removed = self.unread_queue.remove(i);
+                effects.push(Effect::PersistRemove(removed.id, "auto_read"));
+            } else {
+                i += 1;
+            }
+        }
+
+        // Also check currently displaying item
+        if let Some(ref disp) = self.current_display {
+            if self.check_is_looking_raw(
+                disp.item.source,
+                disp.item.surface,
+                &disp.item.target,
+                true,
+            ) {
+                let disp = self.current_display.take().unwrap();
+                effects.push(Effect::PersistRemove(disp.item.id, "auto_read"));
+            }
+        }
+    }
+
     fn push_unread(&mut self, item: StoredNotification, effects: &mut Vec<Effect>) {
         self.unread_queue.insert(0, item);
 
-        // Cap enforcement (200 max, oldest done/new_mail dropped first)
         if self.unread_queue.len() > self.queue_cap {
             if let Some(drop_idx) = self
                 .unread_queue
@@ -499,11 +840,28 @@ impl IslandCore {
     }
 }
 
+fn format_relative_time(timestamp_ms: i64) -> String {
+    let now = Utc::now().timestamp_millis();
+    let diff = (now - timestamp_ms).max(0);
+    let seconds = diff / 1000;
+    let minutes = seconds / 60;
+    let hours = minutes / 60;
+
+    if minutes < 1 {
+        "now".to_string()
+    } else if hours < 1 {
+        format!("{}m", minutes)
+    } else if hours < 24 {
+        format!("{}h", hours)
+    } else {
+        format!("{}d", hours / 24)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Utc;
-    use island_contract::{Source, Surface, Target};
+    use island_platform::WindowSummary;
 
     fn make_test_event(id: Uuid, kind: Kind) -> Event {
         Event {
@@ -530,34 +888,26 @@ mod tests {
         let mut core = IslandCore::new();
         let ev = make_test_event(Uuid::new_v4(), Kind::Done);
 
-        // Accept event at t=1000
         let _fx = core.handle_input(Input::EventAccepted(Box::new(ev)), 1000);
         assert!(matches!(
             core.current_view_model(1000),
             ViewModel::Pill { .. }
         ));
 
-        // Hover at t=2000 (after 1000ms display)
         core.handle_input(Input::HoverEnter, 2000);
-
-        // Advance to t=5000: still hovering, should not expire
         core.handle_input(Input::Tick, 5000);
         assert!(matches!(
             core.current_view_model(5000),
             ViewModel::Pill { .. }
         ));
 
-        // Hover leave at t=5000: remaining was 2000ms, should resume until t=7000
         core.handle_input(Input::HoverLeave, 5000);
-
-        // Tick at t=6000: still displaying
         core.handle_input(Input::Tick, 6000);
         assert!(matches!(
             core.current_view_model(6000),
             ViewModel::Pill { .. }
         ));
 
-        // Tick at t=7001: expired -> becomes unread dot
         core.handle_input(Input::Tick, 7001);
         assert!(matches!(
             core.current_view_model(7001),
@@ -573,13 +923,12 @@ mod tests {
 
         let done_ev = make_test_event(Uuid::new_v4(), Kind::Done);
         core.handle_input(Input::EventAccepted(Box::new(done_ev)), 1000);
-        core.handle_input(Input::Tick, 4001); // expires to unread
+        core.handle_input(Input::Tick, 4001);
         assert_eq!(core.compute_dot_color(), COLOR_GREEN);
 
         let input_ev = make_test_event(Uuid::new_v4(), Kind::NeedsInput);
         core.handle_input(Input::EventAccepted(Box::new(input_ev)), 5000);
-        core.handle_input(Input::Tick, 8001); // expires to unread
-                                              // Blue wins over green
+        core.handle_input(Input::Tick, 8001);
         assert_eq!(core.compute_dot_color(), COLOR_BLUE);
     }
 
@@ -600,5 +949,266 @@ mod tests {
         core.handle_input(Input::QueueClear, 5001);
         assert_eq!(core.unread_count(), 0);
         assert!(matches!(core.current_view_model(5001), ViewModel::Hidden));
+    }
+
+    #[test]
+    fn test_monitor_selection_and_debounce() {
+        let mut core = IslandCore::new();
+        let mon1 = MonitorInfo {
+            id: "MON1".to_string(),
+            name: "Primary".to_string(),
+            is_primary: true,
+            rect: Rect::new(0, 0, 1920, 1080),
+            work_area: Rect::new(0, 0, 1920, 1040),
+            scale_factor: 1.0,
+        };
+        let mon2 = MonitorInfo {
+            id: "MON2".to_string(),
+            name: "Secondary".to_string(),
+            is_primary: false,
+            rect: Rect::new(1920, 0, 3840, 1080),
+            work_area: Rect::new(1920, 0, 3840, 1040),
+            scale_factor: 1.0,
+        };
+
+        // Initial setup on MON1
+        core.active_monitor_id = Some("MON1".to_string());
+
+        // Context state indicates user moved to MON2 at t=1000
+        let state = PlatformState {
+            monitors: vec![mon1.clone(), mon2.clone()],
+            foreground_window: None,
+            cursor_pos: Some((2500, 500)),
+            active_monitor_id: Some("MON2".to_string()),
+            is_idle: false,
+            idle_ms: 0,
+            is_game_mode: false,
+            quns_state: 5,
+        };
+
+        let fx1 = core.handle_input(Input::PlatformContext(Box::new(state.clone())), 1000);
+        // Should not move immediately because of 500ms debounce
+        assert!(!fx1.iter().any(|f| matches!(f, Effect::PlaceWindow { .. })));
+        assert_eq!(core.active_monitor_id, Some("MON1".to_string()));
+
+        // Check at t=1400 (400ms): still not moved
+        let fx2 = core.handle_input(Input::Tick, 1400);
+        assert!(!fx2.iter().any(|f| matches!(f, Effect::PlaceWindow { .. })));
+        assert_eq!(core.active_monitor_id, Some("MON1".to_string()));
+
+        // Check at t=1501 (>500ms debounce passed): now it places window on MON2!
+        let fx3 = core.handle_input(Input::Tick, 1501);
+        assert!(fx3.iter().any(|f| match f {
+            Effect::PlaceWindow { monitor_id, .. } => monitor_id == "MON2",
+            _ => false,
+        }));
+        assert_eq!(core.active_monitor_id, Some("MON2".to_string()));
+    }
+
+    #[test]
+    fn test_moving_rule_displaying_stays() {
+        let mut core = IslandCore::new();
+        core.active_monitor_id = Some("MON1".to_string());
+
+        let mon1 = MonitorInfo {
+            id: "MON1".to_string(),
+            name: "Primary".to_string(),
+            is_primary: true,
+            rect: Rect::new(0, 0, 1920, 1080),
+            work_area: Rect::new(0, 0, 1920, 1040),
+            scale_factor: 1.0,
+        };
+        let mon2 = MonitorInfo {
+            id: "MON2".to_string(),
+            name: "Secondary".to_string(),
+            is_primary: false,
+            rect: Rect::new(1920, 0, 3840, 1080),
+            work_area: Rect::new(1920, 0, 3840, 1040),
+            scale_factor: 1.0,
+        };
+
+        // Event accepted at t=1000, displaying pill until t=4000
+        let ev = make_test_event(Uuid::new_v4(), Kind::Done);
+        core.handle_input(Input::EventAccepted(Box::new(ev)), 1000);
+
+        // Active monitor moves to MON2 at t=1100
+        let state = PlatformState {
+            monitors: vec![mon1.clone(), mon2.clone()],
+            foreground_window: None,
+            cursor_pos: Some((2500, 500)),
+            active_monitor_id: Some("MON2".to_string()),
+            is_idle: false,
+            idle_ms: 0,
+            is_game_mode: false,
+            quns_state: 5,
+        };
+        core.handle_input(Input::PlatformContext(Box::new(state)), 1100);
+
+        // Tick past 500ms debounce at t=1700: pill is STILL displaying, so window stays on MON1!
+        let fx = core.handle_input(Input::Tick, 1700);
+        assert!(!fx.iter().any(|f| matches!(f, Effect::PlaceWindow { .. })));
+        assert_eq!(core.active_monitor_id, Some("MON1".to_string()));
+
+        // Display expires at t=4001: shrinks to dot and moves to MON2!
+        let fx_expire = core.handle_input(Input::Tick, 4001);
+        assert!(fx_expire.iter().any(|f| match f {
+            Effect::PlaceWindow { monitor_id, .. } => monitor_id == "MON2",
+            _ => false,
+        }));
+        assert_eq!(core.active_monitor_id, Some("MON2".to_string()));
+    }
+
+    #[test]
+    fn test_moving_rule_hot_unplug() {
+        let mut core = IslandCore::new();
+        core.active_monitor_id = Some("MON_UNPLUGGED".to_string());
+
+        let mon1 = MonitorInfo {
+            id: "MON1".to_string(),
+            name: "Primary".to_string(),
+            is_primary: true,
+            rect: Rect::new(0, 0, 1920, 1080),
+            work_area: Rect::new(0, 0, 1920, 1040),
+            scale_factor: 1.0,
+        };
+
+        // Active monitor disconnected: only MON1 remains
+        let state = PlatformState {
+            monitors: vec![mon1.clone()],
+            foreground_window: None,
+            cursor_pos: None,
+            active_monitor_id: Some("MON1".to_string()),
+            is_idle: false,
+            idle_ms: 0,
+            is_game_mode: false,
+            quns_state: 5,
+        };
+
+        // Should IMMEDIATELY place window on MON1 (no debounce wait on hot-unplug)
+        let fx = core.handle_input(Input::PlatformContext(Box::new(state)), 1000);
+        assert!(fx.iter().any(|f| match f {
+            Effect::PlaceWindow { monitor_id, .. } => monitor_id == "MON1",
+            _ => false,
+        }));
+        assert_eq!(core.active_monitor_id, Some("MON1".to_string()));
+    }
+
+    #[test]
+    fn test_smart_skip_not_queued() {
+        let mut core = IslandCore::new();
+
+        // User is currently looking at Claude Desktop
+        let state = PlatformState {
+            monitors: vec![],
+            foreground_window: Some(WindowSummary {
+                hwnd: 100,
+                title: "Claude".to_string(),
+                process_name: "claude.exe".to_string(),
+                rect: Rect::new(0, 0, 1000, 800),
+                is_valid: true,
+            }),
+            cursor_pos: None,
+            active_monitor_id: None,
+            is_idle: false,
+            idle_ms: 1000,
+            is_game_mode: false,
+            quns_state: 5,
+        };
+        core.handle_input(Input::PlatformContext(Box::new(state)), 1000);
+
+        let mut ev = make_test_event(Uuid::new_v4(), Kind::Done);
+        ev.source = Source::Claude;
+        ev.surface = Surface::Desktop;
+
+        // Ingest event: user is looking and not idle -> dropped!
+        core.handle_input(Input::EventAccepted(Box::new(ev)), 1050);
+        assert_eq!(core.unread_count(), 0);
+        assert!(!core.is_displaying());
+    }
+
+    #[test]
+    fn test_auto_read() {
+        let mut core = IslandCore::new();
+
+        let mut ev = make_test_event(Uuid::new_v4(), Kind::Done);
+        ev.source = Source::Claude;
+        ev.surface = Surface::Desktop;
+
+        // Event queued when not looking
+        core.handle_input(Input::EventAccepted(Box::new(ev.clone())), 1000);
+        core.handle_input(Input::Tick, 4001); // expires to unread
+        assert_eq!(core.unread_count(), 1);
+
+        // User now focuses Claude window -> auto-read triggers!
+        let state = PlatformState {
+            monitors: vec![],
+            foreground_window: Some(WindowSummary {
+                hwnd: 100,
+                title: "Claude".to_string(),
+                process_name: "claude.exe".to_string(),
+                rect: Rect::new(0, 0, 1000, 800),
+                is_valid: true,
+            }),
+            cursor_pos: None,
+            active_monitor_id: None,
+            is_idle: false,
+            idle_ms: 0,
+            is_game_mode: false,
+            quns_state: 5,
+        };
+        let fx = core.handle_input(Input::PlatformContext(Box::new(state)), 5000);
+        assert!(fx.iter().any(|f| match f {
+            Effect::PersistRemove(id, res) => *id == ev.id && *res == "auto_read",
+            _ => false,
+        }));
+        assert_eq!(core.unread_count(), 0);
+    }
+
+    #[test]
+    fn test_game_mode_schedule() {
+        let mut core = IslandCore::new();
+        let ev = make_test_event(Uuid::new_v4(), Kind::Done);
+        core.handle_input(Input::EventAccepted(Box::new(ev)), 1000);
+        core.handle_input(Input::Tick, 4001);
+        assert_eq!(core.unread_count(), 1);
+
+        // Enter game mode at t=5000
+        let state = PlatformState {
+            monitors: vec![],
+            foreground_window: None,
+            cursor_pos: None,
+            active_monitor_id: None,
+            is_idle: false,
+            idle_ms: 0,
+            is_game_mode: true,
+            quns_state: 3,
+        };
+        core.handle_input(Input::PlatformContext(Box::new(state.clone())), 5000);
+
+        // Dot should be visible for 10s (until t=15000)
+        assert!(matches!(
+            core.current_view_model(6000),
+            ViewModel::Dot { .. }
+        ));
+
+        // After 10s (t=15001), dot hides
+        core.handle_input(Input::Tick, 15001);
+        assert!(matches!(core.current_view_model(15001), ViewModel::Hidden));
+
+        // After 60s (t=75001), dot reappears for 3s
+        core.handle_input(Input::Tick, 75001);
+        assert!(matches!(
+            core.current_view_model(75001),
+            ViewModel::Dot { .. }
+        ));
+
+        // Leaves game mode -> dot visible immediately
+        let mut normal_state = state;
+        normal_state.is_game_mode = false;
+        core.handle_input(Input::PlatformContext(Box::new(normal_state)), 76000);
+        assert!(matches!(
+            core.current_view_model(76000),
+            ViewModel::Dot { .. }
+        ));
     }
 }

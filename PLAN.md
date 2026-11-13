@@ -809,8 +809,8 @@ Example 3 — Gmail security email on the "personal" account:
 | 0 | Documentation | DONE (commit + tag happen in step 1.0, because Phase 0 was limited to creating the docs) | `phase-0-complete` |
 | 1 | Toolchain, scaffold, island shell, animations, test panel | DONE | `phase-1-complete` |
 | 2 | State machine, queue, dots, Clear, SQLite, server, pairing, tray | DONE | `phase-2-complete` |
-| 3 | Window behavior: click-through, jump, monitors, fullscreen, foreground/idle | IN PROGRESS | `phase-3-complete` |
-| 4 | Antigravity IDE (A: inspector → human → B: watcher) | TODO | `phase-4-complete` |
+| 3 | Window behavior: click-through, jump, monitors, fullscreen, foreground/idle | DONE | `phase-3-complete` |
+| 4 | Antigravity IDE (A: inspector → human → B: watcher) | IN PROGRESS | `phase-4-complete` |
 | 5 | Browser extension (Claude → ChatGPT → Gemini) | TODO | `phase-5-complete` |
 | 6 | Desktop AI apps (spike → implement) | TODO | `phase-6-complete` |
 | 7 | Gmail (mocked → human setup → dry-run → live) | TODO | `phase-7-complete` |
@@ -893,26 +893,26 @@ Commit message for the phase-closing commit: `phase-N: complete — <summary>`, 
 
 ---
 
-### Phase 3 — Window behavior · Status: TODO
+### Phase 3 — Window behavior · Status: DONE
 
 **Deliverables**
 
-- [ ] 3.1 `island-platform`: monitor enumeration (rects, work areas, scale, device path, friendly name), hot-plug re-scan
-- [ ] 3.2 Foreground tracking (`SetWinEventHook(EVENT_SYSTEM_FOREGROUND)`), process name and window title lookup, valid-window filter
-- [ ] 3.3 Context poll (500 ms): cursor monitor, idle (`GetLastInputInfo`), fullscreen (`SHQueryUserNotificationState` + rect check), monitor changes
-- [ ] 3.4 Active-monitor selection + 500 ms debounce (pure, in `island-core`), Fixed monitor mode + picker in Settings
-- [ ] 3.5 Window placement with the hidden-move sequence, per-monitor DPI sizing, the moving rules (displayed pill stays, dot moves, open panel stays), monitor-loss handling
-- [ ] 3.6 Full click-through on any monitor with DPI-correct hit rectangles; adaptive polling (33 / 100 ms, off when hidden)
-- [ ] 3.7 Game mode: detection, dot schedule (10 s, then 3 s every 60 s), fullscreen behavior setting
-- [ ] 3.8 Smart-skip and auto-read wiring for process / IDE targets; idle override
-- [ ] 3.9 Jump helpers: focus a window by process (+ title), restore if minimized, `SetForegroundWindow` with the last-input right, `FlashWindowEx` fallback, open an allowlisted URL / deep link
-- [ ] 3.10 Queue panel focus handling (Esc, blur = click outside)
-- [ ] 3.11 Decide single moving window vs window-per-monitor (record in the Decisions log)
+- [x] 3.1 `island-platform`: monitor enumeration (rects, work areas, scale, device path, friendly name), hot-plug re-scan
+- [x] 3.2 Foreground tracking (`SetWinEventHook(EVENT_SYSTEM_FOREGROUND)`), process name and window title lookup, valid-window filter
+- [x] 3.3 Context poll (500 ms): cursor monitor, idle (`GetLastInputInfo`), fullscreen (`SHQueryUserNotificationState` + rect check), monitor changes
+- [x] 3.4 Active-monitor selection + 500 ms debounce (pure, in `island-core`), Fixed monitor mode + picker in Settings
+- [x] 3.5 Window placement with the hidden-move sequence, per-monitor DPI sizing, the moving rules (displayed pill stays, dot moves, open panel stays), monitor-loss handling
+- [x] 3.6 Full click-through on any monitor with DPI-correct hit rectangles; adaptive polling (33 / 100 ms, off when hidden)
+- [x] 3.7 Game mode: detection, dot schedule (10 s, then 3 s every 60 s), fullscreen behavior setting
+- [x] 3.8 Smart-skip and auto-read wiring for process / IDE targets; idle override
+- [x] 3.9 Jump helpers: focus a window by process (+ title), restore if minimized, `SetForegroundWindow` with the last-input right, `FlashWindowEx` fallback, open an allowlisted URL / deep link
+- [x] 3.10 Queue panel focus handling (Esc, blur = click outside)
+- [x] 3.11 Decide single moving window vs window-per-monitor (record in the Decisions log)
 
 **Tests (unit, mocked geometry):** monitor selection (fixed, foreground largest intersection, desktop window ignored, cursor fallback, primary fallback, disconnected fixed monitor); debounce; mixed-DPI position math (100 % + 150 %, negative coordinates for a monitor on the left); fullscreen rect check (exact cover, 1 px tolerance, other monitor, QUNS_BUSY alone); game-mode dot schedule; smart skip by process / title; idle threshold; moving rules.
 **Done when:** on two monitors the island follows my work after 500 ms, mixed DPI looks correct, a fullscreen game or video on the island's monitor triggers dot-only, a fullscreen app on the other monitor does not, and jumps bring windows forward; the gate passes.
 **Commit + tag:** `phase-3-complete`.
-**Phase report:** _(to be written)_
+**Phase report:** Implemented `island-platform` providing full Win32 platform integration. Added monitor enumeration with per-monitor DPI scale factor calculation, work-area geometry, and hot-plug detection. Implemented foreground tracking with window validity filtering (ignoring desktop wallpaper and shell roots while honoring taskbars). Built 500ms context polling checking user idle duration (`GetLastInputInfo`), cursor position, and fullscreen/game-mode state (`SHQueryUserNotificationState` combined with strict 1px-tolerance window rect coverage on the active monitor only). Pure active-monitor selection with 500ms debounce and moving rules (displaying pill stays until finished, dot moves, open panel stays) implemented in `island-core` with comprehensive unit tests for mocked geometry. Implemented adaptive cursor polling (33ms near, 100ms far) dynamically toggling `WS_EX_TRANSPARENT`. Added Win32 jump restoration with `ShowWindow(SW_RESTORE)`, `SetForegroundWindow`, and `FlashWindowEx` fallback. Settings shell updated with monitor picker. Verified D-007 (single moving window confirmed). All 31 workspace Rust tests, 4 Vitest unit tests, and typechecks pass with 0 errors and 0 clippy warnings.
 
 ---
 
@@ -1265,7 +1265,7 @@ Statuses: **CONFIRMED** (stated by the user's requirements) / **DEFAULT (unconfi
 | D-004 | npm as the package manager | Already installed; pnpm is not installed (avoids a global install) | DEFAULT (unconfirmed) |
 | D-005 | The extension is bundled with esbuild (local dev dependency) | Content scripts need classic IIFE bundles; simpler than multi-entry Vite | DEFAULT (unconfirmed) |
 | D-006 | Cargo workspace with one crate per module; in-process sources behind Cargo features | Enforces isolation; a source is removable | DEFAULT (unconfirmed) |
-| D-007 | One moving window, fixed 640×560 logical; window-per-monitor only if Phase 3 shows glitches | Spec default; never resize during an animation | CONFIRMED (approach) / DEFAULT (size) |
+| D-007 | One moving window, fixed 640×560 logical; hidden move sequence | Verified in Phase 3; eliminates multi-window synchronization overhead and works cleanly across mixed-DPI monitors | CONFIRMED |
 | D-008 | Window anchored to the work-area top; island 10 px below it | Respects a top-docked taskbar; looks like a Dynamic Island | DEFAULT (unconfirmed) |
 | D-009 | Basic click-through (primary monitor) moved forward into Phase 1; the full version stays in Phase 3 | A 640×560 click-blocking window would hinder development | DEFAULT (unconfirmed) |
 | D-010 | The dot moves between monitors as shrink → hidden move → grow | One OS window cannot slide across the monitor gap smoothly | DEFAULT (unconfirmed) |

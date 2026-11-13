@@ -1691,6 +1691,7 @@ version = "0.1.0"
 dependencies = [
  "island-contract",
  "island-core",
+ "island-platform",
  "island-secrets",
  "island-server",
  "island-store",
@@ -1702,6 +1703,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "uuid",
  "windows 0.58.0",
 ]
 
@@ -1723,12 +1725,27 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "island-contract",
+ "island-platform",
  "island-store",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "island-platform"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "island-contract",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "windows 0.58.0",
 ]
 
 [[package]]

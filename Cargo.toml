@@ -6,6 +6,7 @@ members = [
     "crates/island-secrets",
     "crates/island-store",
     "crates/island-server",
+    "crates/island-platform",
 ]
 resolver = "2"
 

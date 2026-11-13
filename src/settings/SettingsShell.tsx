@@ -12,6 +12,14 @@ type SettingsTab =
   | "security"
   | "developer";
 
+interface MonitorOption {
+  id: string;
+  name: string;
+  is_primary: boolean;
+  rect: { left: number; top: number; right: number; bottom: number };
+  scale_factor: number;
+}
+
 export const SettingsShell: React.FC = () => {
   const [activeTab, setActiveTab] = useState<SettingsTab>("developer");
   const [reduceMotion, setReduceMotion] = useState<boolean>(false);
@@ -23,6 +31,34 @@ export const SettingsShell: React.FC = () => {
   const [pairingToken, setPairingToken] = useState<string>("");
   const [isTokenVisible, setIsTokenVisible] = useState<boolean>(false);
   const [copied, setCopied] = useState<boolean>(false);
+
+  // Monitor Settings (§3.4)
+  const [monitors, setMonitors] = useState<MonitorOption[]>([]);
+  const [followActiveMonitor, setFollowActiveMonitor] = useState(true);
+  const [fixedMonitorId, setFixedMonitorId] = useState<string>("");
+
+  useEffect(() => {
+    invoke<MonitorOption[]>("get_monitors")
+      .then((list) => {
+        setMonitors(list);
+        if (list.length > 0 && !fixedMonitorId) {
+          const primary = list.find((m) => m.is_primary) ?? list[0];
+          if (primary) {
+            setFixedMonitorId(primary.id);
+          }
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  const handleMonitorSettingChange = (follow: boolean, fixedId: string) => {
+    setFollowActiveMonitor(follow);
+    setFixedMonitorId(fixedId);
+    invoke("set_monitor_settings", {
+      followActive: follow,
+      fixedMonitorId: fixedId || null,
+    }).catch(() => {});
+  };
 
   useEffect(() => {
     // Fetch pairing token from Tauri backend
@@ -231,6 +267,61 @@ export const SettingsShell: React.FC = () => {
           </div>
         )}
 
+        {activeTab === "monitors" && (
+          <div>
+            <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 16 }}>Multi-Monitor Settings</h2>
+            <div style={{ display: "flex", flexDirection: "column", gap: 20, maxWidth: 500 }}>
+              <label style={{ display: "flex", alignItems: "flex-start", gap: 12, cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={followActiveMonitor}
+                  onChange={(e) => handleMonitorSettingChange(e.target.checked, fixedMonitorId)}
+                  style={{ marginTop: 3 }}
+                />
+                <div>
+                  <div style={{ fontSize: 14, fontWeight: 600 }}>Follow active monitor (Default)</div>
+                  <div style={{ fontSize: 12, color: "rgba(255, 255, 255, 0.5)", marginTop: 2 }}>
+                    The island follows the monitor containing the active window, with a 500ms debounce to prevent flicker.
+                  </div>
+                </div>
+              </label>
+
+              {!followActiveMonitor && (
+                <div style={{ paddingLeft: 28 }}>
+                  <label style={{ fontSize: 13, fontWeight: 600, display: "block", marginBottom: 8 }}>
+                    Fixed Monitor
+                  </label>
+                  <select
+                    value={fixedMonitorId}
+                    onChange={(e) => handleMonitorSettingChange(false, e.target.value)}
+                    style={{
+                      width: "100%",
+                      padding: "8px 12px",
+                      backgroundColor: "rgba(255, 255, 255, 0.08)",
+                      border: "1px solid rgba(255, 255, 255, 0.16)",
+                      borderRadius: 6,
+                      color: "#ffffff",
+                      fontSize: 13,
+                      outline: "none",
+                    }}
+                  >
+                    {monitors.map((m) => {
+                      const width = m.rect.right - m.rect.left;
+                      const height = m.rect.bottom - m.rect.top;
+                      const scale = Math.round(m.scale_factor * 100);
+                      return (
+                        <option key={m.id} value={m.id} style={{ backgroundColor: "#1e1e20" }}>
+                          {m.name} — {width}×{height} ({scale}%) {m.is_primary ? "• Primary" : ""}
+                        </option>
+                      );
+                    })}
+                  </select>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         {activeTab === "developer" && (
           <div>
             <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 16 }}>Developer Tools</h2>
@@ -243,7 +334,10 @@ export const SettingsShell: React.FC = () => {
           </div>
         )}
 
-        {activeTab !== "general" && activeTab !== "security" && activeTab !== "developer" && (
+        {activeTab !== "general" &&
+          activeTab !== "security" &&
+          activeTab !== "developer" &&
+          activeTab !== "monitors" && (
           <div>
             <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 16 }}>
               {activeTab.charAt(0).toUpperCase() + activeTab.slice(1)}
