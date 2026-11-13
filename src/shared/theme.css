@@ -1,11 +1,11 @@
 :root {
   --font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
   --bg-island: #000000;
-  --border-island: rgba(255, 255, 255, 0.14);
-  --glow-island: 0 0 24px 2px rgba(255, 255, 255, 0.16), 0 0 6px rgba(255, 255, 255, 0.10);
+  --border-island: rgba(255, 255, 255, 0.50);
+  --glow-island: 0 0 24px 3px rgba(255, 255, 255, 0.30), 0 0 60px 10px rgba(255, 255, 255, 0.15);
   --text-primary: #ffffff;
-  --text-secondary: rgba(255, 255, 255, 0.72);
-  --text-muted: rgba(255, 255, 255, 0.44);
+  --text-secondary: rgba(255, 255, 255, 0.88);
+  --text-muted: rgba(255, 255, 255, 0.54);
 
   /* Dot & Status Colors */
   --color-green: #30D158;
@@ -16,7 +16,7 @@
   --accent-claude: #D97757;
   --accent-chatgpt: #10A37F;
   --accent-gemini: #4C8DF6;
-  --accent-antigravity: #8AB4F8;
+  --accent-antigravity: #00C2FF;
   --accent-gmail: #EA4335;
 }
 

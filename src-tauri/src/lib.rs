@@ -492,6 +492,30 @@ pub fn run() {
                             );
                         }
 
+                        // Ensure Island window is positioned at top-center of primary monitor immediately on startup
+                        let monitors = enumerate_monitors();
+                        if let Some(primary) = monitors.iter().find(|m| m.is_primary).or_else(|| monitors.first()) {
+                            let (x, y, w, h) = calculate_window_position(
+                                &primary.work_area,
+                                640.0,
+                                560.0,
+                                primary.scale_factor,
+                                0.0,
+                            );
+                            unsafe {
+                                let _ = windows::Win32::UI::WindowsAndMessaging::SetWindowPos(
+                                    hwnd,
+                                    windows::Win32::UI::WindowsAndMessaging::HWND_TOPMOST,
+                                    x,
+                                    y,
+                                    w,
+                                    h,
+                                    windows::Win32::UI::WindowsAndMessaging::SWP_NOACTIVATE
+                                        | windows::Win32::UI::WindowsAndMessaging::SWP_SHOWWINDOW,
+                                );
+                            }
+                        }
+
                         // Adaptive Click-through Worker Thread (§3.6)
                         let hit_rect_thread = hit_rect_arc.clone();
                         std::thread::spawn(move || {

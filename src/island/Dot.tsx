@@ -22,26 +22,37 @@ export const Dot: React.FC<DotProps> = ({
       layoutId="island-surface"
       initial={{ scale: 0, opacity: 0 }}
       animate={{
-        scale: 1,
+        scale: isReducedMotion ? 1 : [1, 1.18, 1],
         opacity: 1,
         backgroundColor: color,
-        boxShadow: `0 0 10px ${color}99, 0 0 4px ${color}66`,
+        boxShadow: isReducedMotion
+          ? `0 0 10px 2px ${color}, 0 0 3px #ffffff, 0 0 18px 4px ${color}80`
+          : [
+              `0 0 10px 2px ${color}, 0 0 3px #ffffff, 0 0 18px 4px ${color}80`,
+              `0 0 14px 3px ${color}, 0 0 5px #ffffff, 0 0 24px 6px ${color}99`,
+              `0 0 10px 2px ${color}, 0 0 3px #ffffff, 0 0 18px 4px ${color}80`,
+            ],
       }}
       exit={{ scale: 0, opacity: 0, transition: { duration: motionPreset.dotDisappear.duration } }}
       transition={{
-        scale: motionPreset.dotAppear.scale,
+        scale: isReducedMotion
+          ? motionPreset.dotAppear.scale
+          : { repeat: Infinity, duration: 2.4, ease: "easeInOut" },
+        boxShadow: isReducedMotion
+          ? { duration: motionPreset.dotColor.duration }
+          : { repeat: Infinity, duration: 2.4, ease: "easeInOut" },
         opacity: motionPreset.dotAppear.opacity,
         backgroundColor: { duration: motionPreset.dotColor.duration },
-        boxShadow: { duration: motionPreset.dotColor.duration },
       }}
       style={{
-        width: 10,
-        height: 10,
+        width: 7,
+        height: 7,
         borderRadius: "50%",
-        border: "none",
+        border: "1px solid rgba(255, 255, 255, 0.75)",
         cursor: "pointer",
         padding: 0,
         outline: "none",
+        position: "relative",
       }}
       aria-label="Island Status Dot"
     />

@@ -37,43 +37,43 @@ export interface MotionPresets {
 
 export const standardMotion: MotionPresets = {
   appear: {
-    layout: { type: "spring", stiffness: 380, damping: 30, mass: 0.9 },
+    layout: { type: "spring", stiffness: 150, damping: 20, mass: 1.1 },
     content: {
-      opacity: { duration: 0.16, delay: 0.09, ease: "easeOut" },
-      filter: { duration: 0.16, delay: 0.09 },
+      opacity: { duration: 0.35, delay: 0.18, ease: "easeOut" },
+      filter: { duration: 0.35, delay: 0.18 },
     },
   },
   disappear: {
-    layout: { type: "spring", stiffness: 520, damping: 42, mass: 0.9, delay: 0.06 },
+    layout: { type: "spring", stiffness: 160, damping: 22, mass: 1.0, delay: 0.05 },
     content: {
-      opacity: { duration: 0.10, ease: "easeIn" },
+      opacity: { duration: 0.20, ease: "easeInOut" },
     },
   },
   contentChange: {
-    layout: { type: "spring", stiffness: 420, damping: 34 },
-    crossfade: { duration: 0.12 },
+    layout: { type: "spring", stiffness: 160, damping: 22 },
+    crossfade: { duration: 0.25 },
   },
   queueOpen: {
-    layout: { type: "spring", stiffness: 300, damping: 28, mass: 1 },
-    stagger: 0.025,
-    rowDuration: 0.18,
-    rowDelay: 0.12,
+    layout: { type: "spring", stiffness: 150, damping: 20, mass: 1.1 },
+    stagger: 0.04,
+    rowDuration: 0.30,
+    rowDelay: 0.15,
   },
   queueClose: {
-    layout: { type: "spring", stiffness: 520, damping: 44 },
-    rowDuration: 0.08,
+    layout: { type: "spring", stiffness: 170, damping: 22 },
+    rowDuration: 0.15,
   },
   dotAppear: {
-    scale: { type: "spring", stiffness: 600, damping: 30 },
-    opacity: { duration: 0.12 },
+    scale: { type: "spring", stiffness: 180, damping: 18 },
+    opacity: { duration: 0.35 },
   },
   dotDisappear: {
-    duration: 0.14,
-    ease: "easeIn",
+    duration: 0.30,
+    ease: "easeInOut",
   },
   dotColor: {
-    duration: 0.20,
-    ease: "easeOut",
+    duration: 0.40,
+    ease: "easeInOut",
   },
 };
 

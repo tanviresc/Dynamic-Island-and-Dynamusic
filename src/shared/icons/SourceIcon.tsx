@@ -12,7 +12,7 @@ const SOURCE_COLORS: Record<SourceType, string> = {
   claude: "#D97757",
   chatgpt: "#10A37F",
   gemini: "#4C8DF6",
-  antigravity: "#8AB4F8",
+  antigravity: "#00C2FF",
   gmail: "#EA4335",
 };
 

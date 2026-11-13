@@ -14,10 +14,10 @@ export interface MeasureInput {
 }
 
 export const PILL_MIN_WIDTH = 180;
-export const PILL_MAX_WIDTH = 480;
-export const PILL_HORIZONTAL_PADDING = 32; // 16px left + 16px right
-export const PILL_ONE_LINE_HEIGHT = 40;
-export const PILL_TWO_LINE_HEIGHT = 58;
+export const PILL_MAX_WIDTH = 500;
+export const PILL_HORIZONTAL_PADDING = 28; // 14px left + 14px right ("a little bit padding")
+export const PILL_ONE_LINE_HEIGHT = 38;
+export const PILL_TWO_LINE_HEIGHT = 38; // Always single-line per user requirement
 export const ICON_WIDTH_WITH_GAP = 28; // 20px circle + 8px gap
 export const TAG_GAP = 6;
 
@@ -48,7 +48,7 @@ export function computePillGeometry(
     totalContentWidth = domWidthMeasured;
   } else {
     const titleWidth = estimateTextWidth(input.title, true);
-    const dotWidth = input.text ? 14 : 0; // " · "
+    const dotWidth = input.text ? 14 : 0; // ": "
     const textWidth = estimateTextWidth(input.text, false);
     totalContentWidth = iconSpace + tagSpace + titleWidth + dotWidth + textWidth;
   }
@@ -60,20 +60,17 @@ export function computePillGeometry(
     return {
       width: Math.round(clampedWidth),
       height: PILL_ONE_LINE_HEIGHT,
-      borderRadius: Math.round(Math.min(PILL_ONE_LINE_HEIGHT / 2, 22)),
+      borderRadius: Math.round(PILL_ONE_LINE_HEIGHT / 2),
       isTwoLines: false,
     };
   }
 
-  // Wraps to 2 lines
-  const maxAvailableContent = PILL_MAX_WIDTH - PILL_HORIZONTAL_PADDING - iconSpace;
-  const titleMaxWidth = Math.floor(maxAvailableContent * 0.60);
-
+  // Strictly single-line dynamic island with text ellipsis
   return {
     width: PILL_MAX_WIDTH,
-    height: PILL_TWO_LINE_HEIGHT,
-    borderRadius: 22,
-    isTwoLines: true,
-    titleMaxWidth,
+    height: PILL_ONE_LINE_HEIGHT,
+    borderRadius: Math.round(PILL_ONE_LINE_HEIGHT / 2),
+    isTwoLines: false,
+    titleMaxWidth: 200,
   };
 }

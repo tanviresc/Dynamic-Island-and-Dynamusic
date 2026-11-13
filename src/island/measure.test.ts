@@ -4,7 +4,6 @@ import {
   PILL_MIN_WIDTH,
   PILL_MAX_WIDTH,
   PILL_ONE_LINE_HEIGHT,
-  PILL_TWO_LINE_HEIGHT,
 } from "./measure";
 
 describe("computePillGeometry", () => {
@@ -15,7 +14,7 @@ describe("computePillGeometry", () => {
     });
     expect(geo.width).toBe(PILL_MIN_WIDTH);
     expect(geo.height).toBe(PILL_ONE_LINE_HEIGHT);
-    expect(geo.borderRadius).toBe(20);
+    expect(geo.borderRadius).toBe(Math.round(PILL_ONE_LINE_HEIGHT / 2));
     expect(geo.isTwoLines).toBe(false);
   });
 
@@ -30,16 +29,15 @@ describe("computePillGeometry", () => {
     expect(geo.isTwoLines).toBe(false);
   });
 
-  it("wraps long content into two lines at max width", () => {
+  it("keeps long content on one line at max width", () => {
     const geo = computePillGeometry({
       title: "Antigravity IDE Agent",
-      text: "This is an extremely long notification text that will definitely exceed the 480px maximum pill width",
+      text: "This is an extremely long notification text that will definitely exceed the maximum pill width",
     });
     expect(geo.width).toBe(PILL_MAX_WIDTH);
-    expect(geo.height).toBe(PILL_TWO_LINE_HEIGHT);
-    expect(geo.borderRadius).toBe(22);
-    expect(geo.isTwoLines).toBe(true);
-    expect(geo.titleMaxWidth).toBeDefined();
+    expect(geo.height).toBe(PILL_ONE_LINE_HEIGHT);
+    expect(geo.borderRadius).toBe(Math.round(PILL_ONE_LINE_HEIGHT / 2));
+    expect(geo.isTwoLines).toBe(false);
   });
 
   it("handles category tags accurately", () => {
@@ -49,5 +47,7 @@ describe("computePillGeometry", () => {
       category: "Security",
     });
     expect(geo.width).toBeGreaterThanOrEqual(PILL_MIN_WIDTH);
+    expect(geo.height).toBe(PILL_ONE_LINE_HEIGHT);
+    expect(geo.isTwoLines).toBe(false);
   });
 });
