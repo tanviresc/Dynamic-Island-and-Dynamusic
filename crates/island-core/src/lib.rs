@@ -139,6 +139,7 @@ pub struct IslandCore {
     pub group_window_ms: Millis,
     pub queue_cap: usize,
     pub email_dot_color: String,
+    pub smart_skip_enabled: bool,
 }
 
 impl Default for IslandCore {
@@ -168,6 +169,7 @@ impl Default for IslandCore {
             group_window_ms: DEFAULT_GROUP_WINDOW_MS,
             queue_cap: DEFAULT_QUEUE_CAP,
             email_dot_color: COLOR_GREEN.to_string(),
+            smart_skip_enabled: false,
         }
     }
 }
@@ -416,7 +418,9 @@ impl IslandCore {
                 let event = *event;
 
                 // Smart skip check (§1.8)
-                if self.check_is_looking_raw(event.source, event.surface, &event.target, false) {
+                if self.smart_skip_enabled
+                    && self.check_is_looking_raw(event.source, event.surface, &event.target, false)
+                {
                     tracing::info!(
                         event_id = %event.id,
                         source = ?event.source,
@@ -749,15 +753,9 @@ impl IslandCore {
             }
 
             Input::DotClicked => {
-                self.is_queue_panel_open = false;
-                if let Some(item) = self.unread_queue.first().cloned() {
-                    self.current_display = Some(DisplayingItem {
-                        item,
-                        started_at: now,
-                        deadline: now + self.display_ms.max(5000),
-                        is_hovered: false,
-                        hover_remaining_ms: None,
-                    });
+                self.is_queue_panel_open = !self.is_queue_panel_open;
+                if self.is_queue_panel_open {
+                    self.current_display = None;
                 }
             }
 
@@ -978,7 +976,7 @@ mod tests {
         core.handle_input(Input::DotClicked, 5000);
         assert!(matches!(
             core.current_view_model(5000),
-            ViewModel::Pill { .. }
+            ViewModel::Queue { .. }
         ));
 
         core.handle_input(Input::QueueClear, 5001);
@@ -1131,6 +1129,7 @@ mod tests {
     #[test]
     fn test_smart_skip_not_queued() {
         let mut core = IslandCore::new();
+        core.smart_skip_enabled = true;
 
         // User is currently looking at Claude Desktop
         let state = PlatformState {

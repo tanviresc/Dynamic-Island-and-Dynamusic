@@ -150,34 +150,51 @@ export const IslandRoot: React.FC<IslandRootProps> = ({
   // Report hit rectangle to Rust / layout whenever mode, music state, or size changes
   useEffect(() => {
     const isShowingMusic = isProximityActive && mode !== "pill" && mode !== "queue";
-    if (!surfaceRef.current || (mode === "hidden" && !isShowingMusic)) {
-      onHitRectChange?.(null);
-      invoke("update_hit_rect", { rect: null }).catch(() => {});
-      return;
-    }
+
     const updateRect = () => {
+      if (mode === "hidden" && !isShowingMusic) {
+        // Top edge snap trigger zone: 280px wide centered in 720px window (220 to 500), 28px tall
+        const defaultTriggerHit = {
+          left: 220,
+          top: 0,
+          right: 500,
+          bottom: 28,
+        };
+        onHitRectChange?.({ x: 220, y: 0, width: 280, height: 28 });
+        invoke("update_hit_rect", { rect: defaultTriggerHit }).catch(() => {});
+        return;
+      }
+
       if (surfaceRef.current) {
         const rect = surfaceRef.current.getBoundingClientRect();
-        const hit = {
-          x: Math.round(rect.left),
-          y: Math.round(rect.top),
-          width: Math.round(rect.width),
-          height: Math.round(rect.height),
-        };
-        onHitRectChange?.(hit);
-        invoke("update_hit_rect", {
-          rect: {
-            left: hit.x,
-            top: hit.y,
-            right: hit.x + hit.width,
-            bottom: hit.y + hit.height,
-          },
-        }).catch(() => {});
+        if (mode === "dot") {
+          // Dot: generous hit area around dot button plus top trigger zone
+          const hit = {
+            left: Math.min(220, Math.round(rect.left) - 10),
+            top: 0,
+            right: Math.max(500, Math.round(rect.right) + 10),
+            bottom: Math.max(48, Math.round(rect.bottom) + 8),
+          };
+          onHitRectChange?.({ x: hit.left, y: hit.top, width: hit.right - hit.left, height: hit.bottom - hit.top });
+          invoke("update_hit_rect", { rect: hit }).catch(() => {});
+        } else {
+          const hit = {
+            left: Math.round(rect.left),
+            top: Math.round(rect.top),
+            right: Math.round(rect.right),
+            bottom: Math.round(rect.bottom),
+          };
+          onHitRectChange?.({ x: hit.left, y: hit.top, width: hit.right - hit.left, height: hit.bottom - hit.top });
+          invoke("update_hit_rect", { rect: hit }).catch(() => {});
+        }
       }
     };
+
     updateRect();
     const ro = new ResizeObserver(updateRect);
-    ro.observe(surfaceRef.current);
+    if (surfaceRef.current) {
+      ro.observe(surfaceRef.current);
+    }
     return () => ro.disconnect();
   }, [mode, musicState, isProximityActive, onHitRectChange]);
 
@@ -239,26 +256,7 @@ export const IslandRoot: React.FC<IslandRootProps> = ({
     try {
       invoke("send_island_input", { action: "dot_clicked" });
     } catch {}
-    const top = queueItems[0];
-    if (top) {
-      setCurrentNotification({
-        id: top.id,
-        source: top.source as any,
-        kind: top.kind as any,
-        title: top.title,
-        text: top.text,
-        category: top.category,
-      });
-    } else if (!currentNotification) {
-      setCurrentNotification({
-        id: "idle-status",
-        source: "gemini",
-        kind: "done",
-        title: "Dynamic Island",
-        text: "All tasks completed",
-      });
-    }
-    setMode("pill");
+    setMode((prev) => (prev === "queue" ? (queueItems.length > 0 ? "dot" : "hidden") : "queue"));
   };
 
   const handleHoverEnter = () => {
@@ -347,6 +345,7 @@ export const IslandRoot: React.FC<IslandRootProps> = ({
               key="dot"
               color={dotColor}
               onClick={handleDotClick}
+              onMouseEnter={handleProximityTrigger}
               isReducedMotion={isReducedMotion}
             />
           ) : null}

@@ -12,15 +12,17 @@ export const chatgptConfig: SiteConfig = {
   selectors: {
     generating: [
       'button[data-testid="stop-button"]',
+      'button[data-testid*="stop" i]',
       'button[aria-label*="Stop generating" i]',
       'button[aria-label*="Stop streaming" i]',
-      'button[aria-label*="Stop" i][data-testid*="stop"]',
+      'button[aria-label="Stop"]',
+      'button[aria-label*="Stop" i]',
       '[data-testid="fruitjuice-stop-button"]',
-      "button:has(rect)",
-      "button:has(svg rect)",
-      ".result-streaming",
+      'form button[aria-label*="Stop" i]',
+      'fieldset button[aria-label*="Stop" i]',
+      '.result-streaming',
       '[data-is-streaming="true"]',
-      ".result-thinking",
+      '.result-thinking',
     ],
     needsInput: [
       '[data-testid="confirmation-modal"]',

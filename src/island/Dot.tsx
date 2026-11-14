@@ -5,12 +5,14 @@ import { standardMotion, reducedMotion } from "./motion";
 export interface DotProps {
   color?: string; // hex
   onClick?: () => void;
+  onMouseEnter?: () => void;
   isReducedMotion?: boolean;
 }
 
 export const Dot: React.FC<DotProps> = ({
   color = "#30D158",
   onClick,
+  onMouseEnter,
   isReducedMotion = false,
 }) => {
   const motionPreset = isReducedMotion ? reducedMotion : standardMotion;
@@ -18,6 +20,7 @@ export const Dot: React.FC<DotProps> = ({
   return (
     <button
       onClick={onClick}
+      onMouseEnter={onMouseEnter}
       className="island-interactive"
       style={{
         width: 44,
@@ -43,11 +46,11 @@ export const Dot: React.FC<DotProps> = ({
           opacity: 1,
           backgroundColor: color,
           boxShadow: isReducedMotion
-            ? `0 0 2px 0.5px rgba(255, 255, 255, 0.9), 0 0 5px 1px ${color}`
+            ? `0 0 4px 1px rgba(255, 255, 255, 0.8), 0 0 10px 2px ${color}`
             : [
-                `0 0 2px 0.5px rgba(255, 255, 255, 0.9), 0 0 5px 1px ${color}`,
-                `0 0 3px 0.8px rgba(255, 255, 255, 1), 0 0 7px 1.5px ${color}`,
-                `0 0 2px 0.5px rgba(255, 255, 255, 0.9), 0 0 5px 1px ${color}`,
+                `0 0 4px 1px rgba(255, 255, 255, 0.8), 0 0 10px 2px ${color}`,
+                `0 0 6px 1.5px rgba(255, 255, 255, 1), 0 0 14px 3px ${color}`,
+                `0 0 4px 1px rgba(255, 255, 255, 0.8), 0 0 10px 2px ${color}`,
               ],
         }}
         exit={{ scale: 0, opacity: 0, transition: { duration: motionPreset.dotDisappear.duration } }}
@@ -62,10 +65,10 @@ export const Dot: React.FC<DotProps> = ({
           backgroundColor: { duration: motionPreset.dotColor.duration },
         }}
         style={{
-          width: 1,
-          height: 1,
-          minWidth: 1,
-          minHeight: 1,
+          width: 10,
+          height: 10,
+          minWidth: 10,
+          minHeight: 10,
           borderRadius: "50%",
           pointerEvents: "none",
         }}

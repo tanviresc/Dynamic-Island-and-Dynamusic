@@ -388,7 +388,10 @@ fn find_process_window(target_process: &str) -> Option<(isize, String)> {
             if len > 0 {
                 let full = String::from_utf16_lossy(&buf[..len as usize]);
                 if let Some(file_name) = full.rsplit('\\').next() {
-                    if file_name.eq_ignore_ascii_case(&ctx.proc_name) {
+                    let target_base = ctx.proc_name.trim_end_matches(".exe");
+                    if file_name.eq_ignore_ascii_case(&ctx.proc_name)
+                        || file_name.to_lowercase().starts_with(&target_base.to_lowercase())
+                    {
                         let text_len = GetWindowTextLengthW(hwnd);
                         let mut title = String::new();
                         if text_len > 0 {
@@ -487,6 +490,23 @@ fn probe_window_state(hwnd: isize) -> (bool, Option<String>) {
         );
 
         let target_hwnd = child_ctx.render_hwnd.unwrap_or(HWND(hwnd as _));
+
+        // Signal accessibility initialization to Chromium/Electron/WinUI
+        use windows::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_GETOBJECT};
+        let _ = SendMessageW(
+            target_hwnd,
+            WM_GETOBJECT,
+            windows::Win32::Foundation::WPARAM(0),
+            windows::Win32::Foundation::LPARAM(-4),
+        );
+        if target_hwnd != HWND(hwnd as _) {
+            let _ = SendMessageW(
+                HWND(hwnd as _),
+                WM_GETOBJECT,
+                windows::Win32::Foundation::WPARAM(0),
+                windows::Win32::Foundation::LPARAM(-4),
+            );
+        }
 
         let root_el = match uia.ElementFromHandle(target_hwnd) {
             Ok(el) => el,
