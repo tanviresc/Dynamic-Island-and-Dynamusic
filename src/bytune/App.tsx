@@ -431,15 +431,15 @@ export default function App() {
   useAmbient();
   useAppearance();
 
+  const mobileMode = useMobileMode((s) => s.mode);
+  const isMobileDevice = useMobileMode((s) => s.isMobileDevice);
+
   // First run / reinstall gate — no shell is rendered until a mode is chosen.
   if (!session.loaded) return <div className="h-screen bg-canvas" />;
   if (session.mode === null) return <Onboarding initial={takeOnboardingIntent() ?? "choose"} />;
   if (session.mode === "guest" && session.freshInstall) return <Onboarding initial="resume" />;
   // A fresh Google user must choose their username before entering.
   if (session.mode === "account" && session.needsUsername) return <Onboarding initial="pickusername" />;
-
-  const mobileMode = useMobileMode((s) => s.mode);
-  const isMobileDevice = useMobileMode((s) => s.isMobileDevice);
 
   return (
     <div
