@@ -249,3 +249,4 @@ export const ArtistView: React.FC<{ artistId?: string }> = ({ artistId }) => {
     </div>
   );
 };
+

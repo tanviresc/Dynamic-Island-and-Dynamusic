@@ -71,6 +71,13 @@ const ViewRouter: React.FC = () => {
 const DynamusicMain: React.FC = () => {
   const [isEqOpen, setIsEqOpen] = useState(false);
 
+  React.useEffect(() => {
+    document.body.style.backgroundColor = "#000000";
+    return () => {
+      document.body.style.backgroundColor = "transparent";
+    };
+  }, []);
+
   return (
     <div className="h-screen w-screen flex flex-col bg-black text-white overflow-hidden select-none font-sans">
       <TopBar />

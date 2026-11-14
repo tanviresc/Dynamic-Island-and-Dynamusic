@@ -97,3 +97,4 @@ export const SpotifyView: React.FC = () => {
     </div>
   );
 };
+
