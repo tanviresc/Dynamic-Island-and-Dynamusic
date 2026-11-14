@@ -92,19 +92,22 @@ if (typeof window !== "undefined") {
     /* ignore */
   }
 
-  // Poll / SSE listen for live PC state when running in browser
-  const pollPcState = () => {
-    const host = getBackendHost();
-    fetch(`http://${host}:47822/player/state`)
-      .then((r) => r.json())
-      .then((d) => {
-        if (d.ok && d.state) {
-          useMobileMode.getState().setPcState(d.state);
-        }
-      })
-      .catch(() => undefined);
-  };
+  // Poll / SSE listen for live PC state only when running in browser (mobile client)
+  if (!("__TAURI_INTERNALS__" in window)) {
+    const pollPcState = () => {
+      const host = getBackendHost();
+      fetch(`http://${host}:47822/player/state`)
+        .then((r) => r.json())
+        .then((d) => {
+          if (d.ok && d.state) {
+            useMobileMode.getState().setPcState(d.state);
+          }
+        })
+        .catch(() => undefined);
+    };
 
-  pollPcState();
-  window.setInterval(pollPcState, 3000);
+    pollPcState();
+    window.setInterval(pollPcState, 3000);
+  }
 }
+

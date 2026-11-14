@@ -509,10 +509,10 @@ export default function App() {
       </div>
 
       {/* When in PC Remote Mode on mobile, show the live PC controller bar */}
-      {mobileMode === "pc_remote" ? <PcRemoteBar /> : <PlayerBar />}
+      {!("__TAURI_INTERNALS__" in window) && mobileMode === "pc_remote" ? <PcRemoteBar /> : <PlayerBar />}
 
       {/* Floating Bottom Navigation Bar for Mobile */}
-      <MobileNavBar />
+      {!("__TAURI_INTERNALS__" in window) && <MobileNavBar />}
 
       <NowPlaying />
       <Dialog />

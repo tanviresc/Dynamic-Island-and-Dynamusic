@@ -43,12 +43,12 @@ export class ErrorBoundary extends Component<Props, State> {
             <p className="text-sm text-ink-dim mb-1.5">
               Dynamusic hit an unexpected error. Your library is safe — reloading usually fixes it.
             </p>
-            <details className="text-left mt-4">
+            <details open className="text-left mt-4">
               <summary className="text-xs text-ink-faint cursor-pointer hover:text-ink-dim transition-colors select-none">
                 Technical details
               </summary>
-              <p className="text-xs text-ink-ghost mt-2 break-words bg-ink-hi/[0.06] rounded-lg p-3 border border-ink-hi/[0.05]">
-                {this.state.error.message}
+              <p className="text-xs text-ink-ghost mt-2 break-words bg-ink-hi/[0.06] rounded-lg p-3 border border-ink-hi/[0.05] whitespace-pre-wrap font-mono">
+                {this.state.error.stack || this.state.error.message}
               </p>
             </details>
             <button
