@@ -24,8 +24,14 @@ Island surfaces mission-critical updates without breaking your flow:
   - Dynamic sizing: dynamically measures incoming text and animates smoothly between compact, standard, and two-line layouts (max 480 px width, 2 lines with graceful ellipsis).
   - 60 fps spring-based layout animations powered by the Motion library inside a fixed 640×560 logical window that never resizes during transitions.
   - Full respect for Windows "Reduce motion" accessibility settings.
+- **Dynamusic Music Player (ByTune Integration)**:
+  - Full desktop music player inspired by ByTune: stream YouTube Music's public catalog without ads or login, local audio files (MP3, FLAC, WAV, AAC, OGG), 10-band graphic equalizer with DSP presets, and auto-scrolling word-synced lyrics via LRCLIB.
+  - Dynamic Island integration: Option B Top-Edge Snap Trigger (completely invisible until mouse moves into top-center edge zone, then smoothly springs open the compact pill).
+  - Quick interactive controls: Previous, Play/Pause, Next with live animated waveform visualizer (`ılılı`).
+  - One-click Jump: Click anywhere on the pill body to bring the full Dynamusic desktop window to focus.
+  - Flawless Notification Coexistence: Urgent notifications temporarily surface on the island with spring transitions, returning smoothly to Dynamusic when complete.
 - **Activity-Based State Machine**:
-  - Built with an extensible architecture where notifications are the primary activity type, with clean state boundaries for future activities (such as music).
+  - Built with an extensible architecture where notifications and Dynamusic music activities coexist with clean state boundaries and priority resolution.
 - **Interactive Queue & Status Dot**:
   - Unread notifications collapse into an elegant status dot at the top of your screen.
   - **Green Dot**: Unread completed tasks or incoming emails.

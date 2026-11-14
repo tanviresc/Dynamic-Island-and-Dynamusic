@@ -9,6 +9,7 @@ use island_platform::{
 use island_secrets::{generate_pairing_token, SecretStore, WindowsSecretStore};
 use island_server::{start_server, ServerState, DEFAULT_PORT};
 use island_store::{Store, StoredGmailAccount};
+use serde::{Deserialize, Serialize};
 use source_desktop::{default_desktop_apps, DesktopAppConfig};
 use source_gmail::{
     build_authorization_url, exchange_code_for_tokens, generate_pkce_pair, generate_state,
@@ -23,6 +24,20 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{broadcast, mpsc};
 use tracing::{error, info, warn};
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicState {
+    pub title: String,
+    pub artist: String,
+    pub album: Option<String>,
+    pub album_art: Option<String>,
+    pub is_playing: bool,
+    pub position_ms: u64,
+    pub duration_ms: u64,
+    pub volume: f32,
+    pub lyrics_current_line: Option<String>,
+}
+
 pub struct AppState {
     pub core: Arc<Mutex<IslandCore>>,
     pub store: Store,
@@ -31,6 +46,7 @@ pub struct AppState {
     pub input_tx: mpsc::Sender<Input>,
     pub hit_rect: Arc<Mutex<Option<Rect>>>,
     pub command_tx: broadcast::Sender<WsServerMessage>,
+    pub music_state: Arc<Mutex<Option<MusicState>>>,
 }
 
 fn current_millis() -> Millis {
@@ -437,6 +453,54 @@ async fn set_autostart(enabled: bool) -> Result<(), String> {
     }
 }
 
+#[tauri::command]
+async fn open_dynamusic_window(app_handle: AppHandle) -> Result<(), String> {
+    if let Some(win) = app_handle.get_webview_window("dynamusic") {
+        let _ = win.show();
+        let _ = win.unminimize();
+        let _ = win.set_focus();
+        info!("Dynamusic window opened and focused");
+    } else {
+        warn!("Dynamusic window not found in app handle");
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn update_music_state(
+    state: Option<MusicState>,
+    app_state: State<'_, AppState>,
+    app_handle: AppHandle,
+) -> Result<(), String> {
+    {
+        let mut guard = app_state.music_state.lock().unwrap();
+        *guard = state.clone();
+    }
+    let _ = app_handle.emit("island://music-state", &state);
+    Ok(())
+}
+
+#[tauri::command]
+async fn get_music_state(app_state: State<'_, AppState>) -> Result<Option<MusicState>, String> {
+    let guard = app_state.music_state.lock().unwrap();
+    Ok(guard.clone())
+}
+
+#[tauri::command]
+async fn send_music_command(
+    command: String,
+    payload: Option<serde_json::Value>,
+    app_handle: AppHandle,
+) -> Result<(), String> {
+    #[derive(Serialize)]
+    struct CommandEvent {
+        command: String,
+        payload: Option<serde_json::Value>,
+    }
+    let _ = app_handle.emit("dynamusic://command", &CommandEvent { command, payload });
+    Ok(())
+}
+
 #[cfg(target_os = "windows")]
 fn ensure_single_instance() -> bool {
     use windows::core::w;
@@ -696,12 +760,13 @@ pub fn run() {
             // Tray setup
             let pause_item = CheckMenuItem::with_id(app, "pause", "Pause", true, false, None::<&str>)?;
             let dnd_item = CheckMenuItem::with_id(app, "dnd", "Do Not Disturb", true, false, None::<&str>)?;
+            let dynamusic_item = MenuItem::with_id(app, "dynamusic", "Dynamusic Player...", true, None::<&str>)?;
             let settings_item = MenuItem::with_id(app, "settings", "Settings...", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
 
             let tray_menu = Menu::with_items(
                 app,
-                &[&pause_item, &dnd_item, &settings_item, &quit_item],
+                &[&pause_item, &dnd_item, &dynamusic_item, &settings_item, &quit_item],
             )?;
 
             let input_tx_for_tray = input_tx.clone();
@@ -724,6 +789,13 @@ pub fn run() {
                             tauri::async_runtime::spawn(async move {
                                 let _ = tx.send(Input::DndToggled(true)).await;
                             });
+                        }
+                        "dynamusic" => {
+                            if let Some(win) = app_handle_for_tray.get_webview_window("dynamusic") {
+                                let _ = win.show();
+                                let _ = win.unminimize();
+                                let _ = win.set_focus();
+                            }
                         }
                         "settings" => {
                             if let Some(win) = app_handle_for_tray.get_webview_window("settings") {
@@ -891,6 +963,7 @@ pub fn run() {
             });
 
             // Register State
+            let music_state_arc = Arc::new(Mutex::new(None));
             app.manage(AppState {
                 core: core_arc,
                 store,
@@ -899,6 +972,7 @@ pub fn run() {
                 input_tx,
                 hit_rect: hit_rect_arc,
                 command_tx,
+                music_state: music_state_arc,
             });
 
             Ok(())
@@ -920,7 +994,11 @@ pub fn run() {
             save_gmail_account_settings,
             remove_gmail_account,
             get_autostart,
-            set_autostart
+            set_autostart,
+            open_dynamusic_window,
+            update_music_state,
+            get_music_state,
+            send_music_command
         ])
         .run(tauri::generate_context!())
         .expect("error while running island application");

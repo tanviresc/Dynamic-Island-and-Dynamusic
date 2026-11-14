@@ -36,6 +36,20 @@
         "alwaysOnTop": false,
         "skipTaskbar": false,
         "visible": false
+      },
+      {
+        "label": "dynamusic",
+        "title": "Dynamusic",
+        "width": 1120,
+        "height": 760,
+        "minWidth": 800,
+        "minHeight": 600,
+        "resizable": true,
+        "decorations": true,
+        "transparent": false,
+        "alwaysOnTop": false,
+        "skipTaskbar": false,
+        "visible": false
       }
     ],
     "security": {

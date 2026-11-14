@@ -16,6 +16,11 @@ export interface BrandingConfig {
       width: number;
       height: number;
     };
+    dynamusic: {
+      title: string;
+      width: number;
+      height: number;
+    };
   };
 }
 

@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { IslandRoot } from "./island/IslandRoot";
 import { SettingsShell } from "./settings/SettingsShell";
+import { DynamusicShell } from "./dynamusic/DynamusicShell";
 import "./shared/theme.css";
 
 function App() {
@@ -17,7 +18,7 @@ function App() {
         setIsTauri(true);
       }
     } catch {
-      // In browser development, window can be switched via query param: ?win=settings
+      // In browser development, window can be switched via query param: ?win=settings or ?win=dynamusic
       const params = new URLSearchParams(window.location.search);
       const winParam = params.get("win");
       if (winParam) {
@@ -28,6 +29,10 @@ function App() {
 
   if (windowLabel === "settings") {
     return <SettingsShell />;
+  }
+
+  if (windowLabel === "dynamusic") {
+    return <DynamusicShell />;
   }
 
   return (
@@ -56,6 +61,20 @@ function App() {
             }}
           >
             Island View
+          </a>
+          <a
+            href="?win=dynamusic"
+            style={{
+              padding: "6px 12px",
+              backgroundColor: "#00c2ff",
+              color: "#000",
+              fontWeight: 700,
+              borderRadius: 6,
+              textDecoration: "none",
+              fontSize: 12,
+            }}
+          >
+            Dynamusic View
           </a>
           <a
             href="?win=settings"

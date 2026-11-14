@@ -13,6 +13,11 @@
       "title": "Island Settings",
       "width": 800,
       "height": 650
+    },
+    "dynamusic": {
+      "title": "Dynamusic",
+      "width": 1120,
+      "height": 760
     }
   }
 }

@@ -5,6 +5,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { Dot } from "./Dot";
 import { Pill, PillProps } from "./Pill";
 import { QueuePanel, QueueItem } from "./QueuePanel";
+import { MusicPill } from "./MusicPill";
+import { TopEdgeSnapTrigger } from "./TopEdgeSnapTrigger";
+import { IPCMusicState } from "../dynamusic/types";
 
 export type IslandMode = "hidden" | "dot" | "pill" | "queue";
 
@@ -53,11 +56,16 @@ export const IslandRoot: React.FC<IslandRootProps> = ({
 
   const [queueItems, setQueueItems] = useState<QueueItem[]>([]);
   const [dotColor, setDotColor] = useState<string>("#30D158");
+  const [musicState, setMusicState] = useState<IPCMusicState | null>(null);
+  const [isProximityActive, setIsProximityActive] = useState<boolean>(false);
+  const proximityTimerRef = useRef<NodeJS.Timeout | null>(null);
   const surfaceRef = useRef<HTMLDivElement>(null);
 
-  // Listen to Tauri backend "island://view" event
+  // Listen to Tauri backend "island://view" and "island://music-state" events
   useEffect(() => {
-    let unlisten: (() => void) | undefined;
+    let unlistenView: (() => void) | undefined;
+    let unlistenMusic: (() => void) | undefined;
+
     listen<BackendViewModel>("island://view", (event) => {
       const vm = event.payload;
       setMode(vm.mode);
@@ -88,17 +96,61 @@ export const IslandRoot: React.FC<IslandRootProps> = ({
         );
       }
     }).then((fn) => {
-      unlisten = fn;
+      unlistenView = fn;
     });
 
+    listen<IPCMusicState | null>("island://music-state", (event) => {
+      setMusicState(event.payload);
+    }).then((fn) => {
+      unlistenMusic = fn;
+    });
+
+    // Initial music state query
+    invoke<IPCMusicState | null>("get_music_state")
+      .then((st) => {
+        if (st) setMusicState(st);
+      })
+      .catch(() => {});
+
     return () => {
-      unlisten?.();
+      unlistenView?.();
+      unlistenMusic?.();
     };
   }, []);
 
-  // Report hit rectangle to Rust / layout whenever mode or size changes
+  const handleProximityTrigger = () => {
+    if (proximityTimerRef.current) {
+      clearTimeout(proximityTimerRef.current);
+      proximityTimerRef.current = null;
+    }
+    setIsProximityActive(true);
+  };
+
+  const handleMusicHoverEnter = () => {
+    if (proximityTimerRef.current) {
+      clearTimeout(proximityTimerRef.current);
+      proximityTimerRef.current = null;
+    }
+    setIsProximityActive(true);
+  };
+
+  const handleMusicHoverLeave = () => {
+    if (proximityTimerRef.current) {
+      clearTimeout(proximityTimerRef.current);
+    }
+    proximityTimerRef.current = setTimeout(() => {
+      setIsProximityActive(false);
+    }, 650);
+  };
+
+  const handleOpenDynamusic = () => {
+    invoke("open_dynamusic_window").catch(() => {});
+  };
+
+  // Report hit rectangle to Rust / layout whenever mode, music state, or size changes
   useEffect(() => {
-    if (!surfaceRef.current || mode === "hidden") {
+    const isShowingMusic = musicState && isProximityActive && mode !== "pill" && mode !== "queue";
+    if (!surfaceRef.current || (mode === "hidden" && !isShowingMusic)) {
       onHitRectChange?.(null);
       invoke("update_hit_rect", { rect: null }).catch(() => {});
       return;
@@ -127,7 +179,20 @@ export const IslandRoot: React.FC<IslandRootProps> = ({
     const ro = new ResizeObserver(updateRect);
     ro.observe(surfaceRef.current);
     return () => ro.disconnect();
-  }, [mode, onHitRectChange]);
+  }, [mode, musicState, isProximityActive, onHitRectChange]);
+
+  const handleTopTriggerHitRect = (rect: { x: number; y: number; width: number; height: number } | null) => {
+    if (rect && (!musicState || !isProximityActive) && mode === "hidden") {
+      invoke("update_hit_rect", {
+        rect: {
+          left: rect.x,
+          top: rect.y,
+          right: rect.x + rect.width,
+          bottom: rect.y + rect.height,
+        },
+      }).catch(() => {});
+    }
+  };
 
   // Queue panel focus & Escape / Blur handling (§1.6.6, §3.10)
   useEffect(() => {
@@ -217,18 +282,16 @@ export const IslandRoot: React.FC<IslandRootProps> = ({
 
   return (
     <div className="island-window-container">
+      {/* Option B: Proximity Snap Trigger along top-center edge */}
+      <TopEdgeSnapTrigger
+        onTrigger={handleProximityTrigger}
+        isActive={isProximityActive || mode === "pill" || mode === "queue"}
+        onHitRectReport={handleTopTriggerHitRect}
+      />
+
       <div ref={surfaceRef} style={{ display: "inline-flex", justifyContent: "center" }}>
         <AnimatePresence mode="wait">
-          {mode === "dot" && (
-            <Dot
-              key="dot"
-              color={dotColor}
-              onClick={handleDotClick}
-              isReducedMotion={isReducedMotion}
-            />
-          )}
-
-          {mode === "pill" && currentNotification && (
+          {mode === "pill" && currentNotification ? (
             <Pill
               key="pill"
               {...currentNotification}
@@ -237,9 +300,7 @@ export const IslandRoot: React.FC<IslandRootProps> = ({
               onHoverLeave={handleHoverLeave}
               isReducedMotion={isReducedMotion}
             />
-          )}
-
-          {mode === "queue" && (
+          ) : mode === "queue" ? (
             <QueuePanel
               key="queue"
               items={queueItems}
@@ -248,7 +309,28 @@ export const IslandRoot: React.FC<IslandRootProps> = ({
               onClose={handleCloseQueue}
               isReducedMotion={isReducedMotion}
             />
-          )}
+          ) : musicState && isProximityActive ? (
+            <MusicPill
+              key="music-pill"
+              title={musicState.title}
+              artist={musicState.artist}
+              albumArt={musicState.albumArt}
+              isPlaying={musicState.isPlaying}
+              onHoverEnter={handleMusicHoverEnter}
+              onHoverLeave={handleMusicHoverLeave}
+              onClickBody={handleOpenDynamusic}
+              unreadCount={queueItems.length}
+              onOpenQueue={() => setMode("queue")}
+              isReducedMotion={isReducedMotion}
+            />
+          ) : mode === "dot" || queueItems.length > 0 ? (
+            <Dot
+              key="dot"
+              color={dotColor}
+              onClick={handleDotClick}
+              isReducedMotion={isReducedMotion}
+            />
+          ) : null}
         </AnimatePresence>
       </div>
     </div>

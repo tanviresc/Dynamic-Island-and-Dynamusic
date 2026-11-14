@@ -6,10 +6,10 @@
 
 | Field | Value |
 |---|---|
-| Document version | 1.0 (Phase 0) |
-| Last updated | 2026-11-13 |
+| Document version | 1.1 (Phase 9) |
+| Last updated | 2026-11-14 |
 | Target OS | Windows 10 (1903+) and Windows 11, x64 |
-| Overall status | Phase 0 DONE. Waiting for the single "yes" to start Phase 1 |
+| Overall status | Phase 9 IN PROGRESS — Dynamusic ByTune integration |
 
 ## Table of contents
 
@@ -1022,6 +1022,24 @@ Commit message for the phase-closing commit: `phase-N: complete — <summary>`, 
 
 ---
 
+### Phase 9 — Dynamusic: ByTune Music Player & Dynamic Island Integration · Status: DONE
+
+**Deliverables**
+
+- [x] 9.1 Core contract & IPC: MusicState model (title, artist, album, albumArt, isPlaying, positionMs, durationMs, volume, lyricsCurrentLine), Tauri events and commands for bidirectional state synchronization between Island overlay and Dynamusic.
+- [x] 9.2 Option B Top-Edge Snap Trigger: Invisible proximity trigger zone (240px wide at top-center of screen) that detects cursor entry and smoothly reveals the dot / compact music pill with 600ms exit grace period.
+- [x] 9.3 Dynamic Island Music Pill (`MusicPill.tsx`): ByTune dark glassmorphic styling, album thumbnail with glow, scrolling title/artist, live audio visualizer waves (`ılılı`), and interactive media controls (`[⏮]`, `[⏯]`, `[⏭]`).
+- [x] 9.4 Body Jump Navigation: Clicking anywhere on the pill body (outside media buttons) opens or focuses the full Dynamusic desktop window.
+- [x] 9.5 Notification Coexistence & Split Island: Incoming notifications temporarily take precedence with spring animations (3s timer), then seamlessly restore the Dynamusic compact state; unread notifications badge remains accessible.
+- [x] 9.6 Full Dynamusic Player Application (`src/dynamusic/`): Complete ByTune-style player desktop window with YouTube Music catalog search/stream, local audio file player (MP3, FLAC, WAV, AAC, OGG), 10-band equalizer (Web Audio DSP), and auto-scrolling word-synced lyrics (LRCLIB).
+
+**Tests:** Rust workspace gate, TypeScript typechecks, Vitest unit tests for MusicState and proximity triggers, and live UI verification.
+**Done when:** Dynamusic plays music with full ByTune features, the Dynamic Island smoothly surfaces the music pill on top-edge proximity hover with working media controls, body jump opens the player, and incoming notifications coexist seamlessly.
+**Commit + tag:** `phase-9-complete`.
+**Phase report:** Dynamusic music player and Dynamic Island integration completed. Integrated full ByTune player capabilities into `src/dynamusic/`: YouTube Music catalog search and streaming, local audio drag-and-drop / file loading (MP3, FLAC, WAV, AAC, OGG), Web Audio API 10-band graphic equalizer with presets (-12dB to +12dB), LRCLIB word-synced real-time lyrics viewer, and listen-together room models. Configured secondary Tauri desktop window (`dynamusic`) in `tauri.conf.json` and registered IPC commands (`open_dynamusic_window`, `update_music_state`, `get_music_state`, `send_music_command`) with system tray menu integration. Implemented Option B Top-Edge Snap Trigger (`TopEdgeSnapTrigger.tsx`) providing an invisible 240px proximity hitbox at the top-center edge of the active monitor, gracefully summoning the compact `MusicPill.tsx`. Interactive media buttons (`[⏮]`, `[⏯]`, `[⏭]`) handle playback control via `stopPropagation()`, and clicking the pill body executes Jump navigation to focus the full Dynamusic window. Preserved seamless notification priority and coexistence. All 70 tests (52 Rust workspace + 18 Vitest) and full verification gate (`scripts\check.ps1`) pass cleanly.
+
+---
+
 ## 6. Manual steps for the human
 
 All commands are PowerShell, run from `E:\dynamic island` unless stated otherwise.
@@ -1324,12 +1342,14 @@ Statuses: **CONFIRMED** (stated by the user's requirements) / **DEFAULT (unconfi
 | D-055 | Click-Through Screen Coordinate Mapping & Refined Island Geometry | Window-relative hit rectangles from `surfaceRef` are translated into screen pixels using `GetWindowRect` and `GetDpiForWindow` in the adaptive click-through thread. Everywhere outside the visible capsule or micro-dot has `WS_EX_TRANSPARENT` active, ensuring 100% click-through for desktop and background applications. Island geometry reduced by 30% (height 28px, min-width 130px, max-width 340px, font 10.5px), center-aligned, with 25px margin-top, sharp 5px micro-dot, and 1.5s smooth layout transitions | CONFIRMED |
 | D-056 | 1px Visual Dot with 28px Interactive Hitbox & Blur Guard | Dot visual size set to 1px × 1px with subtle, non-excessive glow aura. The interactive click container is wrapped in a 28×28px transparent hit area so OS hit-testing and cursor detection reliably receive clicks without subpixel truncation. Queue panel blur listener has a 350ms arming guard to avoid instant dismissal on initial window focus acquisition | CONFIRMED |
 | D-057 | Electron/Chromium Child Window & RenderWidgetHostHWND UIA Targeting | `find_process_window` filters for visible windows with dimensions ≥150×150 to ignore invisible 0×0 helper processes. `probe_window_state` inspects `Chrome_RenderWidgetHostHWND` to directly expose the web DOM to UI Automation. Modern streaming selectors added for ChatGPT and Claude web apps, and service worker buffers events during initial load | CONFIRMED |
+| D-058 | Dynamusic Option B Edge Snap Trigger | When music is playing, the island is completely invisible by default. A 240px wide × 10px high transparent snap-trigger hitbox at the top-center edge of the active monitor detects cursor entry and springs the compact MusicPill into view with a 600ms exit grace period | CONFIRMED |
+| D-059 | Dynamusic Pill Interaction Model & Event Propagation | Interactive media buttons (`[⏮]`, `[⏯]`, `[⏭]`) use `stopPropagation()`. Any click anywhere else on the pill body acts as a Jump navigation to open/focus the full Dynamusic desktop window | CONFIRMED |
+| D-060 | Dynamusic Architecture & Secondary Window | Full ByTune music player capabilities (YouTube Music stream playback, local files, Web Audio 10-band equalizer, LRCLIB synced lyrics) run in a dedicated secondary Tauri window (`dynamusic`) with bidirectional state synchronization via Tauri events | CONFIRMED |
 
 ---
 
 ## 10. Out of scope
 
-- **Music player** or any music activity. The activity-based architecture leaves room for it, but nothing music-related is built.
 - **Public distribution:** code signing, store listing, auto-update, telemetry, multi-user support.
 - macOS and Linux. Browsers other than Chrome and Brave (Edge may work but is untested).
 - Antigravity 2.0 desktop app and the Antigravity CLI (only the IDE is supported).
