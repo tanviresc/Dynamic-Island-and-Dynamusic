@@ -30,11 +30,28 @@ export const TopBar: React.FC = () => {
 
   const [inputVal, setInputVal] = useState(searchQuery);
 
+  // Sync internal input value if searchQuery changes elsewhere
+  React.useEffect(() => {
+    setInputVal(searchQuery);
+  }, [searchQuery]);
+
+  // Live debounced search as the user types
+  React.useEffect(() => {
+    if (!inputVal.trim() || inputVal === searchQuery) return;
+    const timer = setTimeout(() => {
+      setSearchQuery(inputVal);
+      performSearch(inputVal);
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [inputVal, searchQuery, setSearchQuery, performSearch]);
+
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (inputVal.trim()) {
       setSearchQuery(inputVal);
       performSearch(inputVal);
+    } else {
+      navigate({ name: "search" });
     }
   };
 
@@ -137,12 +154,13 @@ export const TopBar: React.FC = () => {
               placeholder="What do you want to play?"
               value={inputVal}
               onChange={(e) => setInputVal(e.target.value)}
+              onFocus={() => navigate({ name: "search" })}
               className="bg-transparent border-none outline-none text-[13.5px] text-white placeholder-white/45 w-full font-medium"
             />
             <button
               type="button"
-              onClick={() => navigate({ name: "home" })}
-              title="Explore"
+              onClick={() => navigate({ name: "search" })}
+              title="Explore & Search"
               className="text-white/45 hover:text-white ml-2 transition-colors shrink-0"
             >
               <Compass className="w-4 h-4" />

@@ -123,3 +123,18 @@ describe("Dynamusic Initial Replica Database (Matching ByTune Screenshot)", () =
     expect(PLAYLISTS_FOR_YOU.length).toBeGreaterThanOrEqual(6);
   });
 });
+
+describe("Dynamusic Multi-Source Search Engine", () => {
+  it("finds songs from local catalog when searching", async () => {
+    const { searchYouTubeMusic } = await import("./musicService");
+    const results = await searchYouTubeMusic("Temper City");
+    expect(results.length).toBeGreaterThan(0);
+    expect(results.some((r) => r.artist.includes("Temper City"))).toBe(true);
+  });
+
+  it("returns popular tracks when query is empty", async () => {
+    const { searchYouTubeMusic } = await import("./musicService");
+    const results = await searchYouTubeMusic("");
+    expect(results.length).toBeGreaterThanOrEqual(6);
+  });
+});
