@@ -2,6 +2,7 @@ import React, { useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { SourceIcon, SourceType } from "../shared/icons/SourceIcon";
 import { standardMotion, reducedMotion } from "./motion";
+import { IPCMusicState } from "../dynamusic/types";
 
 export interface QueueItem {
   id: string;
@@ -19,6 +20,9 @@ export interface QueuePanelProps {
   onClear: () => void;
   onClose: () => void;
   isReducedMotion?: boolean;
+  musicState?: IPCMusicState | null;
+  onOpenDynamusic?: () => void;
+  onMusicControl?: (action: "play_pause" | "next" | "previous") => void;
 }
 
 export function formatRelativeTime(dateStr: string): string {
@@ -50,8 +54,14 @@ export const QueuePanel: React.FC<QueuePanelProps> = ({
   onClear,
   onClose,
   isReducedMotion = false,
+  musicState,
+  onOpenDynamusic,
+  onMusicControl,
 }) => {
   const motionPreset = isReducedMotion ? reducedMotion : standardMotion;
+  const hasSong = Boolean(
+    musicState && (musicState.isPlaying || (musicState.title && musicState.title !== "Dynamusic"))
+  );
 
   // Handle Escape key to close
   useEffect(() => {
@@ -72,7 +82,7 @@ export const QueuePanel: React.FC<QueuePanelProps> = ({
       animate={{
         width: 320,
         height: "auto",
-        maxHeight: 280,
+        maxHeight: 340,
         borderRadius: 18,
         opacity: 1,
       }}
@@ -94,6 +104,147 @@ export const QueuePanel: React.FC<QueuePanelProps> = ({
         position: "relative",
       }}
     >
+      {/* Song Preview (shown when a song is playing/loaded) */}
+      {hasSong && musicState && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            padding: "8px 12px",
+            borderBottom: "1px solid rgba(255, 255, 255, 0.1)",
+            backgroundColor: "rgba(255, 255, 255, 0.04)",
+          }}
+        >
+          <div
+            onClick={onOpenDynamusic}
+            style={{
+              width: 32,
+              height: 32,
+              borderRadius: 6,
+              overflow: "hidden",
+              flexShrink: 0,
+              backgroundColor: "rgba(255, 255, 255, 0.1)",
+              cursor: onOpenDynamusic ? "pointer" : "default",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+            title="Open Dynamusic"
+          >
+            {musicState.albumArt ? (
+              <img
+                src={musicState.albumArt}
+                alt={musicState.title}
+                style={{ width: "100%", height: "100%", objectFit: "cover" }}
+              />
+            ) : (
+              <span style={{ fontSize: 13, color: "rgba(255,255,255,0.7)" }}>♪</span>
+            )}
+          </div>
+
+          <div
+            onClick={onOpenDynamusic}
+            style={{
+              flex: 1,
+              minWidth: 0,
+              cursor: onOpenDynamusic ? "pointer" : "default",
+            }}
+          >
+            <div
+              style={{
+                fontSize: 12,
+                fontWeight: 600,
+                color: "#ffffff",
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              }}
+            >
+              {musicState.title}
+            </div>
+            <div
+              style={{
+                fontSize: 10,
+                color: "rgba(255, 255, 255, 0.6)",
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              }}
+            >
+              {musicState.artist || "Dynamusic"}
+            </div>
+          </div>
+
+          {onMusicControl && (
+            <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onMusicControl("previous");
+                }}
+                style={{
+                  background: "none",
+                  border: "none",
+                  color: "rgba(255, 255, 255, 0.75)",
+                  cursor: "pointer",
+                  padding: "4px",
+                  fontSize: 11,
+                  lineHeight: 1,
+                }}
+                aria-label="Previous track"
+                title="Previous"
+              >
+                ⏮
+              </button>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onMusicControl("play_pause");
+                }}
+                style={{
+                  background: "rgba(255, 255, 255, 0.14)",
+                  border: "none",
+                  borderRadius: "50%",
+                  width: 24,
+                  height: 24,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  color: "#ffffff",
+                  cursor: "pointer",
+                  fontSize: 10,
+                  lineHeight: 1,
+                }}
+                aria-label={musicState.isPlaying ? "Pause" : "Play"}
+                title={musicState.isPlaying ? "Pause" : "Play"}
+              >
+                {musicState.isPlaying ? "⏸" : "▶"}
+              </button>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onMusicControl("next");
+                }}
+                style={{
+                  background: "none",
+                  border: "none",
+                  color: "rgba(255, 255, 255, 0.75)",
+                  cursor: "pointer",
+                  padding: "4px",
+                  fontSize: 11,
+                  lineHeight: 1,
+                }}
+                aria-label="Next track"
+                title="Next"
+              >
+                ⏭
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Header */}
       <div
         style={{

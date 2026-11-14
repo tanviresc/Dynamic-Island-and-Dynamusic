@@ -103,6 +103,12 @@ async fn send_island_input(action: String, state: State<'_, AppState>) -> Result
 }
 
 #[tauri::command]
+async fn get_island_view(state: State<'_, AppState>) -> Result<island_core::ViewModel, String> {
+    let guard = state.core.lock().unwrap();
+    Ok(guard.current_view_model(current_millis()))
+}
+
+#[tauri::command]
 async fn update_hit_rect(rect: Option<Rect>, state: State<'_, AppState>) -> Result<(), String> {
     let mut guard = state.hit_rect.lock().unwrap();
     *guard = rect;
@@ -720,8 +726,11 @@ pub fn run() {
                                     .is_some_and(|r| r.contains_point(cursor_pt.0, cursor_pt.1));
 
                                 if inside != last_inside {
-                                    let _ = win_clone.set_ignore_cursor_events(!inside);
-                                    update_window_clickthrough(raw_hwnd, inside);
+                                    let win_main = win_clone.clone();
+                                    let _ = win_clone.run_on_main_thread(move || {
+                                        let _ = win_main.set_ignore_cursor_events(!inside);
+                                        update_window_clickthrough(raw_hwnd, inside);
+                                    });
                                     last_inside = inside;
                                 }
 
@@ -1103,6 +1112,7 @@ pub fn run() {
             get_pairing_token,
             regenerate_pairing_token,
             send_island_input,
+            get_island_view,
             update_hit_rect,
             get_monitors,
             set_monitor_settings,

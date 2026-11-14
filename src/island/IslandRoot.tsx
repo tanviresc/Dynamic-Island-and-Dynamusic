@@ -40,19 +40,12 @@ export interface IslandRootProps {
 }
 
 export const IslandRoot: React.FC<IslandRootProps> = ({
-  initialMode = "pill",
+  initialMode = "hidden",
   isReducedMotion = false,
   onHitRectChange,
 }) => {
   const [mode, setMode] = useState<IslandMode>(initialMode);
-  const [currentNotification, setCurrentNotification] = useState<PillProps | null>({
-    id: "sample-1",
-    source: "claude",
-    kind: "done",
-    title: "Claude finished",
-    text: "Refactor plan for auth module ready for review",
-    category: undefined,
-  });
+  const [currentNotification, setCurrentNotification] = useState<PillProps | null>(null);
 
   const [queueItems, setQueueItems] = useState<QueueItem[]>([]);
   const [dotColor, setDotColor] = useState<string>("#30D158");
@@ -61,40 +54,43 @@ export const IslandRoot: React.FC<IslandRootProps> = ({
   const proximityTimerRef = useRef<NodeJS.Timeout | null>(null);
   const surfaceRef = useRef<HTMLDivElement>(null);
 
+  const applyViewModel = (vm: BackendViewModel) => {
+    setMode(vm.mode);
+    if (vm.color) {
+      setDotColor(vm.color);
+    }
+    if (vm.notification) {
+      setCurrentNotification({
+        id: vm.notification.id,
+        source: vm.notification.source as any,
+        kind: vm.notification.kind as any,
+        title: vm.notification.title,
+        text: vm.notification.text,
+        category: vm.notification.category,
+      });
+    }
+    if (vm.items) {
+      setQueueItems(
+        vm.items.map((it) => ({
+          id: it.id,
+          source: it.source as any,
+          kind: it.kind as any,
+          title: it.title,
+          text: it.text,
+          category: it.category,
+          createdAt: it.createdAt,
+        }))
+      );
+    }
+  };
+
   // Listen to Tauri backend "island://view" and "island://music-state" events
   useEffect(() => {
     let unlistenView: (() => void) | undefined;
     let unlistenMusic: (() => void) | undefined;
 
     listen<BackendViewModel>("island://view", (event) => {
-      const vm = event.payload;
-      setMode(vm.mode);
-      if (vm.color) {
-        setDotColor(vm.color);
-      }
-      if (vm.notification) {
-        setCurrentNotification({
-          id: vm.notification.id,
-          source: vm.notification.source as any,
-          kind: vm.notification.kind as any,
-          title: vm.notification.title,
-          text: vm.notification.text,
-          category: vm.notification.category,
-        });
-      }
-      if (vm.items) {
-        setQueueItems(
-          vm.items.map((it) => ({
-            id: it.id,
-            source: it.source as any,
-            kind: it.kind as any,
-            title: it.title,
-            text: it.text,
-            category: it.category,
-            createdAt: it.createdAt,
-          }))
-        );
-      }
+      applyViewModel(event.payload);
     }).then((fn) => {
       unlistenView = fn;
     });
@@ -105,7 +101,13 @@ export const IslandRoot: React.FC<IslandRootProps> = ({
       unlistenMusic = fn;
     });
 
-    // Initial music state query
+    // Initial island view & music state query
+    invoke<BackendViewModel>("get_island_view")
+      .then((vm) => {
+        if (vm) applyViewModel(vm);
+      })
+      .catch(() => {});
+
     invoke<IPCMusicState | null>("get_music_state")
       .then((st) => {
         if (st) setMusicState(st);
@@ -147,12 +149,17 @@ export const IslandRoot: React.FC<IslandRootProps> = ({
     invoke("open_dynamusic_window").catch(() => {});
   };
 
+  const handleMusicControl = (action: "play_pause" | "next" | "previous") => {
+    invoke("send_music_control", { action }).catch(() => {});
+  };
+
   // Report hit rectangle to Rust / layout whenever mode, music state, or size changes
   useEffect(() => {
     const isShowingMusic = isProximityActive && mode !== "pill" && mode !== "queue";
+    const isShowingDot = !isShowingMusic && (mode === "dot" || (mode === "hidden" && queueItems.length > 0));
 
     const updateRect = () => {
-      if (mode === "hidden" && !isShowingMusic) {
+      if (mode === "hidden" && !isShowingMusic && queueItems.length === 0) {
         // Top edge snap trigger zone: 280px wide centered in 720px window (220 to 500), 28px tall
         const defaultTriggerHit = {
           left: 220,
@@ -167,13 +174,12 @@ export const IslandRoot: React.FC<IslandRootProps> = ({
 
       if (surfaceRef.current) {
         const rect = surfaceRef.current.getBoundingClientRect();
-        if (mode === "dot") {
-          // Dot: generous hit area around dot button plus top trigger zone
+        if (isShowingDot) {
           const hit = {
-            left: Math.min(220, Math.round(rect.left) - 10),
-            top: 0,
-            right: Math.max(500, Math.round(rect.right) + 10),
-            bottom: Math.max(48, Math.round(rect.bottom) + 8),
+            left: Math.round(rect.left) - 8,
+            top: Math.max(0, Math.round(rect.top) - 8),
+            right: Math.round(rect.right) + 8,
+            bottom: Math.round(rect.bottom) + 8,
           };
           onHitRectChange?.({ x: hit.left, y: hit.top, width: hit.right - hit.left, height: hit.bottom - hit.top });
           invoke("update_hit_rect", { rect: hit }).catch(() => {});
@@ -196,7 +202,7 @@ export const IslandRoot: React.FC<IslandRootProps> = ({
       ro.observe(surfaceRef.current);
     }
     return () => ro.disconnect();
-  }, [mode, musicState, isProximityActive, onHitRectChange]);
+  }, [mode, musicState, isProximityActive, queueItems.length, onHitRectChange]);
 
   const handleTopTriggerHitRect = (rect: { x: number; y: number; width: number; height: number } | null) => {
     if (rect && !isProximityActive && mode === "hidden") {
@@ -302,7 +308,7 @@ export const IslandRoot: React.FC<IslandRootProps> = ({
       {/* Option B: Proximity Snap Trigger along top-center edge */}
       <TopEdgeSnapTrigger
         onTrigger={handleProximityTrigger}
-        isActive={isProximityActive || mode === "pill" || mode === "queue"}
+        isActive={isProximityActive || mode === "pill" || mode === "queue" || mode === "dot" || queueItems.length > 0}
         onHitRectReport={handleTopTriggerHitRect}
       />
 
@@ -325,6 +331,9 @@ export const IslandRoot: React.FC<IslandRootProps> = ({
               onClear={handleClearQueue}
               onClose={handleCloseQueue}
               isReducedMotion={isReducedMotion}
+              musicState={musicState}
+              onOpenDynamusic={handleOpenDynamusic}
+              onMusicControl={handleMusicControl}
             />
           ) : isProximityActive ? (
             <MusicPill
@@ -345,7 +354,6 @@ export const IslandRoot: React.FC<IslandRootProps> = ({
               key="dot"
               color={dotColor}
               onClick={handleDotClick}
-              onMouseEnter={handleProximityTrigger}
               isReducedMotion={isReducedMotion}
             />
           ) : null}

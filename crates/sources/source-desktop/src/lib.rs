@@ -347,7 +347,7 @@ fn find_process_window(target_process: &str) -> Option<(isize, String)> {
     use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
     use windows::Win32::UI::WindowsAndMessaging::{
         EnumWindows, GetWindowRect, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
-        IsWindowVisible,
+        IsIconic, IsWindowVisible,
     };
 
     struct Candidate {
@@ -372,7 +372,8 @@ fn find_process_window(target_process: &str) -> Option<(isize, String)> {
         let _ = GetWindowRect(hwnd, &mut rect);
         let width = rect.right - rect.left;
         let height = rect.bottom - rect.top;
-        if width < 150 || height < 150 {
+        let is_minimized = IsIconic(hwnd).as_bool();
+        if !is_minimized && (width < 150 || height < 150) {
             return BOOL(1);
         }
 
@@ -463,9 +464,9 @@ fn probe_window_state(hwnd: isize) -> (bool, Option<String>) {
             Err(_) => return (false, None),
         };
 
-        // Recursively find Chrome_RenderWidgetHostHWND for Chromium/Electron apps (Claude, ChatGPT)
+        // Recursively find all Chrome_RenderWidgetHostHWND for Chromium/Electron apps (Claude, ChatGPT)
         struct ChildSearchCtx {
-            render_hwnd: Option<HWND>,
+            render_hwnds: Vec<HWND>,
         }
 
         unsafe extern "system" fn child_enum_cb(child: HWND, lparam: LPARAM) -> BOOL {
@@ -475,46 +476,23 @@ fn probe_window_state(hwnd: isize) -> (bool, Option<String>) {
             if len > 0 {
                 let class_str = String::from_utf16_lossy(&class_buf[..len as usize]);
                 if class_str.contains("RenderWidgetHost") {
-                    ctx.render_hwnd = Some(child);
-                    return BOOL(0); // Found target render widget
+                    ctx.render_hwnds.push(child);
                 }
             }
             BOOL(1)
         }
 
-        let mut child_ctx = ChildSearchCtx { render_hwnd: None };
+        let mut child_ctx = ChildSearchCtx {
+            render_hwnds: Vec::new(),
+        };
         let _ = EnumChildWindows(
             HWND(hwnd as _),
             Some(child_enum_cb),
             LPARAM(&mut child_ctx as *mut _ as _),
         );
 
-        let target_hwnd = child_ctx.render_hwnd.unwrap_or(HWND(hwnd as _));
-
-        // Signal accessibility initialization to Chromium/Electron/WinUI
-        use windows::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_GETOBJECT};
-        let _ = SendMessageW(
-            target_hwnd,
-            WM_GETOBJECT,
-            windows::Win32::Foundation::WPARAM(0),
-            windows::Win32::Foundation::LPARAM(-4),
-        );
-        if target_hwnd != HWND(hwnd as _) {
-            let _ = SendMessageW(
-                HWND(hwnd as _),
-                WM_GETOBJECT,
-                windows::Win32::Foundation::WPARAM(0),
-                windows::Win32::Foundation::LPARAM(-4),
-            );
-        }
-
-        let root_el = match uia.ElementFromHandle(target_hwnd) {
-            Ok(el) => el,
-            Err(_) => match uia.ElementFromHandle(HWND(hwnd as _)) {
-                Ok(el) => el,
-                Err(_) => return (false, None),
-            },
-        };
+        let mut targets = child_ctx.render_hwnds;
+        targets.push(HWND(hwnd as _));
 
         let val = windows::core::VARIANT::from(UIA_ButtonControlTypeId.0);
         let condition = match uia.CreatePropertyCondition(UIA_ControlTypePropertyId, &val) {
@@ -525,37 +503,62 @@ fn probe_window_state(hwnd: isize) -> (bool, Option<String>) {
         let mut is_generating = false;
         let mut needs_input = None;
 
-        if let Ok(elements) = root_el.FindAll(TreeScope_Descendants, &condition) {
-            if let Ok(count) = elements.Length() {
-                for i in 0..count {
-                    if let Ok(btn) = elements.GetElement(i) {
-                        let name_str = btn.CurrentName().map(|n| n.to_string()).unwrap_or_default();
-                        let auto_id = btn
-                            .CurrentAutomationId()
-                            .map(|n| n.to_string())
-                            .unwrap_or_default();
-                        let help_text = btn
-                            .CurrentHelpText()
-                            .map(|n| n.to_string())
-                            .unwrap_or_default();
+        use windows::Win32::UI::WindowsAndMessaging::{
+            SendMessageTimeoutW, SMTO_ABORTIFHUNG, WM_GETOBJECT,
+        };
 
-                        let lower =
-                            format!("{} {} {}", name_str, auto_id, help_text).to_lowercase();
-                        if lower.contains("stop") || lower.contains("cancel") {
-                            is_generating = true;
-                        } else if lower.contains("allow")
-                            || lower.contains("approve")
-                            || lower.contains("confirm")
-                            || lower.contains("permission")
-                        {
-                            needs_input = Some(if !name_str.is_empty() {
-                                name_str
-                            } else {
-                                "Action requires confirmation".to_string()
-                            });
+        for target_hwnd in targets {
+            let mut res: usize = 0;
+            let _ = SendMessageTimeoutW(
+                target_hwnd,
+                WM_GETOBJECT,
+                windows::Win32::Foundation::WPARAM(0),
+                windows::Win32::Foundation::LPARAM(-4),
+                SMTO_ABORTIFHUNG,
+                100,
+                Some(&mut res),
+            );
+
+            let Ok(root_el) = uia.ElementFromHandle(target_hwnd) else {
+                continue;
+            };
+
+            if let Ok(elements) = root_el.FindAll(TreeScope_Descendants, &condition) {
+                if let Ok(count) = elements.Length() {
+                    for i in 0..count {
+                        if let Ok(btn) = elements.GetElement(i) {
+                            let name_str = btn.CurrentName().map(|n| n.to_string()).unwrap_or_default();
+                            let auto_id = btn
+                                .CurrentAutomationId()
+                                .map(|n| n.to_string())
+                                .unwrap_or_default();
+                            let help_text = btn
+                                .CurrentHelpText()
+                                .map(|n| n.to_string())
+                                .unwrap_or_default();
+
+                            let lower =
+                                format!("{} {} {}", name_str, auto_id, help_text).to_lowercase();
+                            if lower.contains("stop") || lower.contains("cancel") {
+                                is_generating = true;
+                            } else if lower.contains("allow")
+                                || lower.contains("approve")
+                                || lower.contains("confirm")
+                                || lower.contains("permission")
+                            {
+                                needs_input = Some(if !name_str.is_empty() {
+                                    name_str
+                                } else {
+                                    "Action requires confirmation".to_string()
+                                });
+                            }
                         }
                     }
                 }
+            }
+
+            if is_generating && needs_input.is_some() {
+                break;
             }
         }
 

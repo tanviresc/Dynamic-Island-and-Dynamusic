@@ -110,7 +110,7 @@ import { DEFAULT_SETTINGS, ExtensionSettings, Source } from "../types";
       childList: true,
       subtree: true,
       attributes: true,
-      attributeFilter: ["aria-label", "data-testid", "data-test-id", "disabled", "class"],
+      attributeFilter: ["aria-label", "data-testid", "data-test-id", "data-is-streaming", "disabled", "class"],
     });
 
     // 4. Fallback polling tick (500 ms)
