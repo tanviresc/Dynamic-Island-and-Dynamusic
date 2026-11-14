@@ -15,3 +15,4 @@ export function SpotifyIcon({ className = "w-5 h-5", style }: { className?: stri
     </svg>
   );
 }
+

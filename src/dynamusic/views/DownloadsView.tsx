@@ -31,3 +31,4 @@ export const DownloadsView: React.FC = () => {
     </div>
   );
 };
+

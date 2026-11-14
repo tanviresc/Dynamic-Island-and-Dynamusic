@@ -63,3 +63,4 @@ export const SearchView: React.FC = () => {
     </div>
   );
 };
+

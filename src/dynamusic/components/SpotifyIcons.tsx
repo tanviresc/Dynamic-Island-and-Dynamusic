@@ -124,3 +124,4 @@ export function SpVolumeOff({ className, style }: IconProps) {
     </Svg>
   );
 }
+

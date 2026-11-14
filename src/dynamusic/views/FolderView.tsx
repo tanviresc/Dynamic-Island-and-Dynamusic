@@ -98,3 +98,4 @@ export const FolderView: React.FC<{ folderId?: string }> = ({ folderId }) => {
     </div>
   );
 };
+
