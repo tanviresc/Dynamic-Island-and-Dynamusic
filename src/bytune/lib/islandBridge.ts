@@ -3,8 +3,38 @@
  * via Tauri IPC (`update_music_state` command and `dynamusic://command` events).
  */
 import { shownTrack, usePlayer } from "../stores/player";
+import { useUI } from "../stores/ui";
+import { flushCoalescedStorage } from "./persist";
 
 let initialized = false;
+
+export function resetDynamusicToHome(): void {
+  useUI.setState({
+    view: { name: "home" },
+    navPast: [],
+    navFuture: [],
+    pendingScroll: 0,
+    nowPlayingOpen: false,
+    lyricsCenter: false,
+    rightPanel: "details",
+    contextMenu: null,
+    dialog: null,
+    playlistPicker: null,
+  });
+  if (typeof document !== "undefined") {
+    const scroller = document.getElementById("view-scroll");
+    if (scroller) scroller.scrollTop = 0;
+  }
+}
+
+export function prepareDynamusicClose(): void {
+  const p = usePlayer.getState();
+  if (p.playing) {
+    p.setPlaying(false);
+  }
+  resetDynamusicToHome();
+  flushCoalescedStorage();
+}
 
 export function initIslandBridge(): void {
   if (initialized || typeof window === "undefined") return;
@@ -85,6 +115,12 @@ export function initIslandBridge(): void {
               break;
             case "prev":
               p.prev();
+              break;
+            case "close_stop":
+              prepareDynamusicClose();
+              break;
+            case "reopen_home":
+              resetDynamusicToHome();
               break;
           }
         })

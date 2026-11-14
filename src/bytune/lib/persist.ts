@@ -77,6 +77,12 @@ const POSITION_WRITE_MS = 10_000;
 
 type Value = StorageValue<Record<string, unknown>>;
 
+let flushAllCoalesced: (() => void) | null = null;
+
+export function flushCoalescedStorage(): void {
+  flushAllCoalesced?.();
+}
+
 // Shared by stores of different shapes, hence `any`.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const coalescedStorage: PersistStorage<any> = (() => {
@@ -125,10 +131,12 @@ export const coalescedStorage: PersistStorage<any> = (() => {
     void write(name, { ...value, state });
   };
 
-  if (typeof window !== "undefined") {
-    const flushAll = (): void => {
-      for (const name of [...pending.keys()]) flush(name);
-    };
+  const flushAll = (): void => {
+    for (const name of [...pending.keys()]) flush(name);
+  };
+  flushAllCoalesced = flushAll;
+
+  if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
     window.addEventListener("pagehide", flushAll);
     window.addEventListener("beforeunload", flushAll);
   }

@@ -8,9 +8,9 @@ import * as fs from "fs";
 import * as http from "http";
 import * as os from "os";
 import * as path from "path";
-import { emitProtocolUrl, invokeIpcChannel, onWebContentsSend } from "./electron-shim";
+import { app, emitProtocolUrl, invokeIpcChannel, onWebContentsSend } from "./electron-shim";
 import * as locallib from "../src/electron/local-library";
-import { getYT } from "../src/electron/music-service";
+import { getYT, resolveStream } from "../src/electron/music-service";
 
 const PORT = Number(process.env.BYTUNE_BACKEND_PORT || 47822);
 const bootDeepLink = process.argv.slice(1).find((a) => /^bytune:\/\//i.test(a));
@@ -20,6 +20,97 @@ import "../src/electron/main";
 
 // Pre-warm YouTube Music InnerTube session immediately on startup so search & playback are instant
 void getYT().catch(() => undefined);
+
+const VAULT_DIR = path.join(app.getPath("userData"), "offline-vault");
+try {
+  fs.mkdirSync(VAULT_DIR, { recursive: true });
+} catch {
+  /* ignore */
+}
+
+function safeVaultId(id: string): string {
+  return id.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 64);
+}
+
+function vaultPaths(id: string): { bin: string; meta: string } {
+  const safe = safeVaultId(id);
+  return {
+    bin: path.join(VAULT_DIR, `${safe}.bin`),
+    meta: path.join(VAULT_DIR, `${safe}.json`),
+  };
+}
+
+function listVaultIds(): string[] {
+  try {
+    const files = fs.readdirSync(VAULT_DIR);
+    const ids: string[] = [];
+    for (const f of files) {
+      if (!f.endsWith(".json")) continue;
+      try {
+        const meta = JSON.parse(fs.readFileSync(path.join(VAULT_DIR, f), "utf8"));
+        if (meta && typeof meta.id === "string" && fs.existsSync(path.join(VAULT_DIR, f.replace(/\.json$/, ".bin")))) {
+          ids.push(meta.id);
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    return ids;
+  } catch {
+    return [];
+  }
+}
+
+const vaultInFlight = new Map<string, Promise<{ binPath: string; mime: string } | null>>();
+
+async function ensureTrackInServerVault(trackId: string): Promise<{ binPath: string; mime: string } | null> {
+  const { bin, meta } = vaultPaths(trackId);
+  try {
+    if (fs.existsSync(bin) && fs.statSync(bin).size > 4096) {
+      let mime = "audio/mp4";
+      try {
+        const parsed = JSON.parse(fs.readFileSync(meta, "utf8"));
+        if (typeof parsed.mime === "string") mime = parsed.mime;
+      } catch {
+        /* default */
+      }
+      return { binPath: bin, mime };
+    }
+  } catch {
+    /* continue to download */
+  }
+
+  const existing = vaultInFlight.get(trackId);
+  if (existing) return existing;
+
+  const task = (async () => {
+    try {
+      const stream = await resolveStream(trackId, false);
+      const upstream = await fetch(stream.url, {
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        },
+        signal: AbortSignal.timeout(45_000),
+      });
+      if (!upstream.ok) return null;
+      const mime = upstream.headers.get("content-type") || "audio/mp4";
+      const buf = Buffer.from(await upstream.arrayBuffer());
+      if (buf.byteLength < 4096) return null;
+      fs.writeFileSync(bin, buf);
+      fs.writeFileSync(meta, JSON.stringify({ id: trackId, mime, size: buf.byteLength, savedAt: Date.now() }));
+      broadcastSse("vault:saved", { id: trackId });
+      return { binPath: bin, mime };
+    } catch {
+      return null;
+    } finally {
+      vaultInFlight.delete(trackId);
+    }
+  })();
+
+  vaultInFlight.set(trackId, task);
+  return task;
+}
 
 function getLanUrls(): string[] {
   const urls: string[] = [];
@@ -107,7 +198,7 @@ function decodeBinaryInput(val: any): any {
 
 const sseClients = new Set<http.ServerResponse>();
 
-onWebContentsSend((channel, ...args) => {
+function broadcastSse(channel: string, ...args: any[]): void {
   const payload = JSON.stringify({ channel, args: encodeBinaryResult(args) });
   for (const res of sseClients) {
     try {
@@ -116,11 +207,15 @@ onWebContentsSend((channel, ...args) => {
       sseClients.delete(res);
     }
   }
+}
+
+onWebContentsSend((channel, ...args) => {
+  broadcastSse(channel, ...args);
 });
 
 const server = http.createServer(async (req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
   if (req.method === "OPTIONS") {
@@ -141,6 +236,60 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ ok: true, port: PORT, urls: getLanUrls() }));
     return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/vault-list") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: true, ids: listVaultIds() }));
+    return;
+  }
+
+  if (url.pathname.startsWith("/vault/")) {
+    const id = decodeURIComponent(url.pathname.slice("/vault/".length)).replace(/^\/+|\/+$/g, "");
+    if (!id) {
+      res.writeHead(400);
+      res.end("missing id");
+      return;
+    }
+    if (req.method === "DELETE") {
+      const { bin, meta } = vaultPaths(id);
+      try {
+        if (fs.existsSync(bin)) fs.unlinkSync(bin);
+        if (fs.existsSync(meta)) fs.unlinkSync(meta);
+      } catch {
+        /* ignore */
+      }
+      broadcastSse("vault:removed", { id });
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+    if (req.method === "GET" || req.method === "POST") {
+      const saved = await ensureTrackInServerVault(id);
+      if (!saved) {
+        res.writeHead(404);
+        res.end("unable to cache track");
+        return;
+      }
+      if (req.method === "POST") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, id, mime: saved.mime }));
+        return;
+      }
+      try {
+        const size = fs.statSync(saved.binPath).size;
+        res.writeHead(200, {
+          "Content-Type": saved.mime,
+          "Content-Length": String(size),
+          "Cache-Control": "public, max-age=31536000",
+        });
+        fs.createReadStream(saved.binPath).pipe(res);
+      } catch {
+        res.writeHead(404);
+        res.end("missing vault file");
+      }
+      return;
+    }
   }
 
   if (req.method === "POST" && url.pathname === "/oauth-callback") {
@@ -220,6 +369,9 @@ const server = http.createServer(async (req, res) => {
         const channel = String(body.channel || "");
         const args = Array.isArray(body.args) ? decodeBinaryInput(body.args) : [];
         const result = await invokeIpcChannel(channel, args);
+        if (channel === "data:write" && typeof args[0] === "string" && args[0] === "library") {
+          broadcastSse("store:updated", { name: "library", updatedAt: Date.now() });
+        }
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ ok: true, result: encodeBinaryResult(result) }));
       } catch (err) {

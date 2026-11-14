@@ -1,7 +1,7 @@
 /** Library state: liked tracks, playlists, history and download registry. */
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import { coalescedStorage } from "../lib/persist";
+import { coalescedStorage, flushCoalescedStorage } from "../lib/persist";
 import { recordDeletionChanges } from "../lib/deletion-sync";
 import type { DeletionChange, DeletionSync } from "../lib/deletion-sync";
 import {
@@ -169,10 +169,12 @@ export const useLibrary = create<LibraryState>()(
         if (wasLiked) {
           withChanges(set, get, { liked: liked.filter((t) => t.id !== track.id) },
             [{ kind: "delete", group: "liked", id: track.id }]);
+          flushCoalescedStorage();
           void removeTrackFromOfflineVault(track.id);
         } else {
           withChanges(set, get, { liked: [track, ...liked] },
             [{ kind: "add", group: "liked", id: track.id }]);
+          flushCoalescedStorage();
           void saveTrackToOfflineVault(track);
         }
       },

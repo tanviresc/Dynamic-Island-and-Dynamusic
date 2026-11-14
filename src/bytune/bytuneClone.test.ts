@@ -1,9 +1,11 @@
 import { describe, it, expect } from "vitest";
 import { initBytuneBridge } from "./lib/initBytuneBridge";
+import { prepareDynamusicClose } from "./lib/islandBridge";
 import { useLibrary } from "./stores/library";
 import { useListening } from "./stores/listening";
 import { useRecents } from "./stores/recents";
 import { usePlayer } from "./stores/player";
+import { useUI } from "./stores/ui";
 
 describe("Dynamusic 1:1 ByTune Clone Verification", () => {
   it("initializes window.bytune bridge with full ByTuneApi surface", () => {
@@ -64,5 +66,33 @@ describe("Dynamusic 1:1 ByTune Clone Verification", () => {
     expect(recents.searches).toEqual([]);
     expect(useLibrary.getState().history).toEqual([]);
     expect(player.queue).toEqual([]);
+  });
+
+  it("closing Dynamusic stops playback, preserves exact playback position, and resets view to Home", () => {
+    const sampleTrack = {
+      id: "dQw4w9WgXcQ",
+      title: "Never Gonna Give You Up",
+      artist: "Rick Astley",
+      duration: 213,
+      thumb: "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg",
+    };
+    usePlayer.setState({
+      queue: [sampleTrack],
+      index: 0,
+      playing: true,
+      position: 84.5,
+      duration: 213,
+    });
+    useUI.getState().navigate({ name: "search" });
+    expect(useUI.getState().view.name).toBe("search");
+
+    prepareDynamusicClose();
+
+    const afterPlayer = usePlayer.getState();
+    expect(afterPlayer.playing).toBe(false);
+    expect(afterPlayer.queue[afterPlayer.index]?.id).toBe("dQw4w9WgXcQ");
+    expect(afterPlayer.position).toBe(84.5);
+    expect(useUI.getState().view.name).toBe("home");
+    expect(useUI.getState().navPast).toEqual([]);
   });
 });

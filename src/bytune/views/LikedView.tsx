@@ -4,7 +4,7 @@
  * (App's panel drop).
  */
 import { useEffect, useState } from "react";
-import { Check, Download, Heart, Play, Shuffle } from "lucide-react";
+import { Check, Download, Heart, Play, Shuffle, Smartphone } from "lucide-react";
 import { CollectionHero, HERO_PLAY } from "../components/CollectionHero";
 import { HERO_ROUND } from "../components/PlaylistHero";
 import { TrackList } from "../components/TrackList";
@@ -24,10 +24,21 @@ export function LikedView() {
   const liked = useLibrary((s) => s.liked);
   const navigate = useUI((s) => s.navigate);
   const toast = useUI((s) => s.toast);
+  const openDialog = useUI((s) => s.openDialog);
   const [, setVaultTick] = useState(0);
+  const [lanUrl, setLanUrl] = useState<string>("http://192.168.0.2:47822");
 
   useEffect(() => {
     return subscribeOfflineVault(() => setVaultTick((n) => n + 1));
+  }, []);
+
+  useEffect(() => {
+    fetch("http://127.0.0.1:47822/lan-info")
+      .then((r) => r.json())
+      .then((d: { urls?: string[] }) => {
+        if (Array.isArray(d?.urls) && d.urls[0]) setLanUrl(d.urls[0]);
+      })
+      .catch(() => undefined);
   }, []);
 
   useEffect(() => {
@@ -49,7 +60,22 @@ export function LikedView() {
     if (!liked.length) return;
     void syncLikedSongsToOfflineVault(liked);
     downloadAll(liked, "Liked Songs");
-    toast("Saving Liked Songs inside the app for offline listening");
+    toast("Saving Liked Songs offline on PC & Mobile vault");
+  };
+
+  const handleShowPhoneSync = (): void => {
+    try {
+      void navigator.clipboard?.writeText(lanUrl);
+    } catch {
+      /* ignore */
+    }
+    openDialog({
+      title: "Dynamusic on Your Phone (Offline Sync)",
+      body: `Open ${lanUrl} in your phone's browser on the same Wi-Fi and tap "Add to Home Screen / Install App". Every song you like on PC or Mobile is saved inside the app so you can listen offline anywhere outside home. (Link copied to clipboard)`,
+      confirmLabel: "Got it",
+      notice: true,
+      onConfirm: () => undefined,
+    });
   };
 
   return (
@@ -97,6 +123,15 @@ export function LikedView() {
           onClick={handleSaveAllOffline}
         >
           {allSavedOffline ? <Check className="w-5 h-5 text-emerald-400" /> : <Download className="w-5 h-5" />}
+        </button>
+        <button
+          type="button"
+          className={HERO_ROUND}
+          aria-label="Phone offline sync link"
+          title={`Open on Phone (${lanUrl})`}
+          onClick={handleShowPhoneSync}
+        >
+          <Smartphone className="w-5 h-5" />
         </button>
       </CollectionHero>
 

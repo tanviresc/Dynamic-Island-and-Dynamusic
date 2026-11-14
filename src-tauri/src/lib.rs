@@ -454,11 +454,12 @@ async fn set_autostart(enabled: bool) -> Result<(), String> {
 }
 
 fn show_or_recreate_dynamusic(app_handle: &AppHandle) {
+    let _ = app_handle.emit("dynamusic://command", "reopen_home");
     if let Some(win) = app_handle.get_webview_window("dynamusic") {
         let _ = win.show();
         let _ = win.unminimize();
         let _ = win.set_focus();
-        info!("Dynamusic window shown and focused");
+        info!("Dynamusic window shown and focused on Home");
     } else {
         match tauri::WebviewWindowBuilder::new(
             app_handle,
@@ -491,7 +492,7 @@ async fn open_dynamusic_window(app_handle: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn dynamusic_window_action(action: String, app_handle: AppHandle) -> Result<bool, String> {
+async fn dynamusic_window_action(action: String, app_handle: AppHandle, state: State<'_, AppState>) -> Result<bool, String> {
     if action == "open" {
         show_or_recreate_dynamusic(&app_handle);
         return Ok(true);
@@ -515,6 +516,13 @@ async fn dynamusic_window_action(action: String, app_handle: AppHandle) -> Resul
             }
         }
         "close" => {
+            let _ = app_handle.emit("dynamusic://command", "close_stop");
+            if let Ok(mut guard) = state.music_state.lock() {
+                if let Some(ref mut ms) = *guard {
+                    ms.is_playing = false;
+                }
+                let _ = app_handle.emit("island://music-state", guard.clone());
+            }
             let _ = win.hide();
             Ok(true)
         }
@@ -608,7 +616,11 @@ pub fn run() {
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let label = window.label();
-                if label == "dynamusic" || label == "settings" {
+                if label == "dynamusic" {
+                    api.prevent_close();
+                    let _ = window.app_handle().emit("dynamusic://command", "close_stop");
+                    let _ = window.hide();
+                } else if label == "settings" {
                     api.prevent_close();
                     let _ = window.hide();
                 }

@@ -6,6 +6,22 @@
  * 100% offline with zero network connection—both on Desktop and on Phone (PWA / Mobile).
  */
 import type { Track } from "../types";
+import { fallbackMobileStreamUrl } from "./mobileStandaloneFallback";
+
+function getVaultBaseUrl(): string {
+  if (
+    typeof window !== "undefined" &&
+    window.location &&
+    typeof window.location.hostname === "string" &&
+    window.location.hostname &&
+    window.location.hostname !== "localhost" &&
+    window.location.hostname !== "127.0.0.1" &&
+    !String(window.location.protocol || "").startsWith("tauri")
+  ) {
+    return `http://${window.location.hostname}:47822`;
+  }
+  return "http://127.0.0.1:47822";
+}
 
 const DB_NAME = "dynamusic-offline-vault";
 const STORE_NAME = "tracks";
@@ -147,14 +163,39 @@ export async function saveTrackToOfflineVault(
       const db = await openVaultDb();
       if (!db) return false;
 
-      const streamUrl = resolveNetworkStreamUrl
-        ? await resolveNetworkStreamUrl(track.id)
-        : await window.bytune?.getStreamUrl(track.id, false, "high");
-      if (!streamUrl || streamUrl.startsWith("blob:")) return streamUrl?.startsWith("blob:") ?? false;
+      let blob: Blob | null = null;
 
-      const res = await fetch(streamUrl);
-      if (!res.ok) return false;
-      const blob = await res.blob();
+      // 1. Try the shared PC/Mobile server vault first (`GET /vault/:id` caches on PC disk and streams bytes to this device)
+      try {
+        const vaultRes = await fetch(`${getVaultBaseUrl()}/vault/${encodeURIComponent(track.id)}`, {
+          signal: AbortSignal.timeout(30_000),
+        });
+        if (vaultRes.ok) {
+          const candidate = await vaultRes.blob();
+          if (candidate && candidate.size >= 4096) {
+            blob = candidate;
+          }
+        }
+      } catch {
+        /* fallback to direct stream resolution (e.g. mobile outside home) */
+      }
+
+      // 2. Fallback: resolve stream via bridge or mobile standalone Piped resolver
+      if (!blob) {
+        const streamUrl = resolveNetworkStreamUrl
+          ? await resolveNetworkStreamUrl(track.id)
+          : (await window.bytune?.getStreamUrl(track.id, false, "high").catch(() => null)) ||
+            (await fallbackMobileStreamUrl(track.id));
+        if (!streamUrl || streamUrl.startsWith("blob:")) return streamUrl?.startsWith("blob:") ?? false;
+
+        const res = await fetch(streamUrl);
+        if (!res.ok) return false;
+        const candidate = await res.blob();
+        if (candidate && candidate.size >= 4096) {
+          blob = candidate;
+        }
+      }
+
       if (!blob || blob.size < 4096) return false;
 
       await new Promise<void>((resolve, reject) => {
@@ -162,8 +203,8 @@ export async function saveTrackToOfflineVault(
         const store = tx.objectStore(STORE_NAME);
         const record: StoredTrackAudio = {
           id: track.id,
-          blob,
-          mime: blob.type || "audio/mp4",
+          blob: blob!,
+          mime: blob!.type || "audio/mp4",
           savedAt: Date.now(),
           title: track.title,
           artist: track.artist,
@@ -195,6 +236,11 @@ export async function removeTrackFromOfflineVault(trackId: string): Promise<void
   }
   savedIds.delete(trackId);
   notifyListeners();
+
+  void fetch(`${getVaultBaseUrl()}/vault/${encodeURIComponent(trackId)}`, {
+    method: "DELETE",
+    signal: AbortSignal.timeout(3000),
+  }).catch(() => undefined);
 
   const db = await openVaultDb();
   if (!db) return;

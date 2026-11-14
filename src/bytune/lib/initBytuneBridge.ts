@@ -21,6 +21,14 @@ import type {
 import type { LocalTrack } from "../../electron/local-library";
 import type { UpdateState } from "../../electron/updater";
 import { getOfflineVaultUrl } from "./offlineAudioVault";
+import {
+  fallbackMobileSearch,
+  fallbackMobileSearchPage,
+  fallbackMobileStreamUrl,
+  fallbackMobileSuggestions,
+} from "./mobileStandaloneFallback";
+
+let lastLocalLibraryWriteAt = 0;
 
 function getBackendHost(): string {
   if (
@@ -157,6 +165,12 @@ function connectEventStream(): void {
             window.location.reload();
             return;
           }
+          if (parsed.channel === "store:updated") {
+            const info = (parsed.args?.[0] ?? {}) as { name?: string };
+            if (info.name === "library" && Date.now() - lastLocalLibraryWriteAt > 600) {
+              emitBackendEvent("sync:restored", { stores: ["library"], seq: Date.now() });
+            }
+          }
           const decodedArgs = decodeBinaryOutput(parsed.args ?? []) as any[];
           emitBackendEvent(parsed.channel, ...decodedArgs);
         } catch {
@@ -257,11 +271,15 @@ export function initBytuneBridge(): void {
     },
 
     // Music
-    search: (query: string, light = false) => rpcInvoke("music:search", query, light),
-    searchPage: (query: string, filter: string) => rpcInvoke("music:searchPage", query, filter),
+    search: (query: string, light = false) =>
+      rpcInvoke("music:search", query, light).catch(() => fallbackMobileSearch(query)),
+    searchPage: (query: string, filter: string) =>
+      rpcInvoke("music:searchPage", query, filter).catch(() => fallbackMobileSearchPage(query)),
     searchMore: (token: string, filter: string) => rpcInvoke("music:searchMore", token, filter),
     suggestions: (query: string): Promise<{ items: SearchSuggestion[] }> =>
-      rpcInvoke("music:suggestions", query),
+      rpcInvoke<{ items: SearchSuggestion[] }>("music:suggestions", query).catch(() =>
+        fallbackMobileSuggestions(query)
+      ),
     getAlbum: (id: string) => rpcInvoke("music:album", id),
     getArtist: (id: string) => rpcInvoke("music:artist", id),
     getPlaylist: (id: string) => rpcInvoke("music:playlist", id),
@@ -287,12 +305,18 @@ export function initBytuneBridge(): void {
         const offlineUrl = await getOfflineVaultUrl(id);
         if (offlineUrl) return offlineUrl;
       }
-      const rawUrl = await rpcInvoke<string>("music:stream", id, forceRotate, quality);
-      const host = getBackendHost();
-      if (host !== "127.0.0.1" && typeof rawUrl === "string") {
-        return rawUrl.replace("http://127.0.0.1:", `http://${host}:`);
+      try {
+        const rawUrl = await rpcInvoke<string>("music:stream", id, forceRotate, quality);
+        const host = getBackendHost();
+        if (host !== "127.0.0.1" && typeof rawUrl === "string") {
+          return rawUrl.replace("http://127.0.0.1:", `http://${host}:`);
+        }
+        return rawUrl;
+      } catch {
+        const fallback = await fallbackMobileStreamUrl(id);
+        if (fallback) return fallback;
+        throw new Error(`Unable to resolve stream for ${id}`);
       }
-      return rawUrl;
     },
     localLibrary: () => rpcInvoke("library:get"),
     scanLibrary: (filterNonMusic = true) => rpcInvoke("library:scan", filterNonMusic),
@@ -355,6 +379,9 @@ export function initBytuneBridge(): void {
       });
     },
     windowClose: () => {
+      void import("./islandBridge")
+        .then((m) => m.prepareDynamusicClose())
+        .catch(() => undefined);
       void tauriWindowAction("close").then((res) => {
         if (res === null) {
           void getTauriWindow().then((w) => (w ? w.hide() : rpcSend("window:close")));
@@ -410,7 +437,36 @@ export function initBytuneBridge(): void {
     // Persistence (Node sidecar JSON files in userData, with localStorage mirror fallback)
     readData: async (name: string) => {
       try {
-        const val = await rpcInvoke("data:read", name, await documentScope());
+        const scope = await documentScope();
+        let val = (await rpcInvoke("data:read", name, scope)) as any;
+        if (name === "library") {
+          try {
+            const dirtyRaw = localStorage.getItem("dynamusic:offline_dirty_library");
+            if (dirtyRaw) {
+              const dirty = JSON.parse(dirtyRaw);
+              const dirtyLiked: Track[] = Array.isArray(dirty?.state?.liked) ? dirty.state.liked : [];
+              const serverLiked: Track[] = Array.isArray(val?.state?.liked) ? val.state.liked : [];
+              if (dirtyLiked.length > 0) {
+                const seen = new Set(serverLiked.map((t) => t.id));
+                const added = dirtyLiked.filter((t) => t?.id && !seen.has(t.id));
+                if (added.length > 0) {
+                  val = {
+                    ...(val || { version: 1 }),
+                    state: {
+                      ...(val?.state || {}),
+                      liked: [...added, ...serverLiked],
+                    },
+                  };
+                  lastLocalLibraryWriteAt = Date.now();
+                  await rpcInvoke("data:write", "library", val, scope).catch(() => undefined);
+                }
+              }
+              localStorage.removeItem("dynamusic:offline_dirty_library");
+            }
+          } catch {
+            /* ignore merge error */
+          }
+        }
         if (val !== null && val !== undefined) {
           try {
             localStorage.setItem(`dynamusic:store:${name}`, JSON.stringify(val));
@@ -420,7 +476,7 @@ export function initBytuneBridge(): void {
           return val;
         }
       } catch {
-        /* fallback to localStorage if sidecar is still booting */
+        /* fallback to localStorage if sidecar is unreachable */
       }
       try {
         const raw = localStorage.getItem(`dynamusic:store:${name}`);
@@ -430,6 +486,9 @@ export function initBytuneBridge(): void {
       }
     },
     writeData: async (name: string, data: unknown) => {
+      if (name === "library") {
+        lastLocalLibraryWriteAt = Date.now();
+      }
       try {
         localStorage.setItem(`dynamusic:store:${name}`, JSON.stringify(data));
       } catch {
@@ -438,8 +497,22 @@ export function initBytuneBridge(): void {
       try {
         const scope = await documentScope();
         await rpcInvoke("data:write", name, data, scope);
+        if (name === "library") {
+          try {
+            localStorage.removeItem("dynamusic:offline_dirty_library");
+          } catch {
+            /* ignore */
+          }
+        }
       } catch {
-        /* saved in localStorage mirror */
+        /* saved in localStorage mirror; mark dirty if library changed while offline */
+        if (name === "library") {
+          try {
+            localStorage.setItem("dynamusic:offline_dirty_library", JSON.stringify(data));
+          } catch {
+            /* ignore */
+          }
+        }
       }
     },
     resetData: async () => {
