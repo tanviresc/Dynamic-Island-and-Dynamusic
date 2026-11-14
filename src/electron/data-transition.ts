@@ -37,6 +37,9 @@ export function initializeOwner(): void {
   owner = saved?.owner ?? (profile?.mode === "account" ? profile.userId : undefined) ?? meta?.lastUserId ?? "guest";
 }
 
+// Ensure the active owner is initialized on startup from saved disk state
+initializeOwner();
+
 export function documentScope(): string {
   const token = `${generation}:${randomUUID()}`;
   documents.set(token, owner);

@@ -127,7 +127,7 @@ async function fetchBatch(gen: number): Promise<Track[]> {
     if (picked.length) return picked;
   }
 
-  // 3. Last resort, as AutoPlay worked before: something new from the Home feed.
+  // 3. Last resort, as AutoPlay worked before: something new from the Home feed or library.
   useAutoplayInfo.setState({ seedTitle: null });
   const shelves = await requireBridge()
     .getHome()
@@ -136,6 +136,12 @@ async function fetchBatch(gen: number): Promise<Track[]> {
   const pool: Track[] = [];
   for (const shelf of shelves ?? []) {
     for (const item of shelf.items ?? []) if (item.kind === "track" && item.track) pool.push(item.track);
+  }
+  if (!pool.length) {
+    const lib = useLibrary.getState();
+    const history = lib.history ?? [];
+    const liked = lib.liked ?? [];
+    pool.push(...liked, ...history);
   }
   return pick(pool).slice(0, 10);
 }

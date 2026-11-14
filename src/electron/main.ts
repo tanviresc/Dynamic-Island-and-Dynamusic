@@ -912,10 +912,20 @@ function registerIpc(): void {
       /* window gone */
     }
   });
-  // Downloaded songs play from their files — only from approved folders, and only formats that play.
+  // Downloaded songs play from their files — only from approved folders, or the offline vault.
   setDownloadedFileLookup((id) => {
     const file = downloaded.downloadedFilePath(id);
-    return file && isApprovedPath(file) && isPlayableAudio(file) ? file : null;
+    if (file && isApprovedPath(file) && isPlayableAudio(file)) return file;
+    const safe = id.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 64);
+    const vaultBin = path.join(app.getPath("userData"), "offline-vault", `${safe}.bin`);
+    try {
+      if (fs.existsSync(vaultBin) && fs.statSync(vaultBin).size > 4096) {
+        return vaultBin;
+      }
+    } catch {
+      /* ignore */
+    }
+    return null;
   });
 
   ipc.handle("backup:export", () => backupExport(mainWindow));

@@ -70,7 +70,14 @@ const EXPIRED = "Your Spotify session has ended. Connect Spotify again.";
 
 const saved = (): Saved => (persist.readData(STORE) as Saved | null) ?? {};
 const save = (patch: Partial<Saved>): Promise<void> => persist.writeData(STORE, { ...saved(), ...patch });
-const account = (owner = currentOwner()): Account => saved().owners?.[owner] ?? {};
+const account = (owner = currentOwner()): Account => {
+  const allOwners = saved().owners || {};
+  if (allOwners[owner]?.cookie) return allOwners[owner];
+  // Fallback: if another owner profile (e.g. Google user vs guest) has a saved Spotify cookie, preserve it
+  const firstWithCookie = Object.values(allOwners).find((a) => Boolean(a?.cookie));
+  if (firstWithCookie) return firstWithCookie;
+  return {};
+};
 /** Updates one owner's record (null removes it). */
 function saveAccount(patch: Partial<Account> | null, owner = currentOwner()): Promise<void> {
   const owners = { ...saved().owners };

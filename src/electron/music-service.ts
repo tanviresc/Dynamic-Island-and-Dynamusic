@@ -57,9 +57,10 @@ const UA =
 // the others are fallbacks of varying usefulness.
 const STREAM_CLIENTS = ["VISIONOS", "IOS", "ANDROID_VR", "WEB", "YTMUSIC", "ANDROID", "TV"] as const;
 const PIPED_INSTANCES = [
-  "https://pipedapi.kavin.rocks",
-  "https://pipedapi.adminforge.de",
   "https://api.piped.private.coffee",
+  "https://pipedapi.adminforge.de",
+  "https://pipedapi.tokhmi.xyz",
+  "https://pipedapi.moomoo.me",
 ];
 
 let preferredClientIdx = 0;
@@ -1077,27 +1078,26 @@ export async function enrichDurations(ids: string[]): Promise<Record<string, num
  */
 async function probeUrl(url: string): Promise<boolean> {
   try {
-    // Only the first chunk is read; a hung connection must not pin this
-    // track's resolution (and everything waiting on it) for minutes.
-    const res = await fetch(url, { headers: { "User-Agent": UA, Range: "bytes=0-" }, signal: AbortSignal.timeout(3_500) });
-    if (res.status !== 206 && res.status !== 200) {
+    // Only the first chunk is read; allow 8s for cellular or slower connections
+    const res = await fetch(url, {
+      headers: { "User-Agent": UA, Range: "bytes=0-" },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (res.status === 206 || res.status === 200) {
+      let got = 0;
       try {
-        await res.arrayBuffer();
+        const reader = res.body?.getReader();
+        if (reader) {
+          const { value } = await reader.read();
+          got = value?.length ?? 0;
+          await reader.cancel().catch(() => undefined);
+        }
       } catch {
-        /* ignore */
+        /* treat as status check */
       }
-      return false;
+      return got > 0 || res.status === 206 || res.status === 200;
     }
-    let got = 0;
-    try {
-      const reader = res.body!.getReader();
-      const { value } = await reader.read();
-      got = value?.length ?? 0;
-      await reader.cancel().catch(() => undefined);
-    } catch {
-      /* treat as failure below */
-    }
-    return got > 0;
+    return false;
   } catch {
     return false;
   }
@@ -1312,23 +1312,29 @@ export function resolveStream(
     const tryInnerTube = async (): Promise<ResolvedStream> => {
       const yt = await getYT();
       const poToken: string | undefined = (yt as any).__poToken;
-      const fastClients = ["VISIONOS", "IOS", "ANDROID_VR"] as const;
+      const clients = ["ANDROID", "YTMUSIC", "VISIONOS", "IOS", "ANDROID_VR", "WEB"] as const;
       let lastErr: unknown = null;
-      for (const client of fastClients) {
-        try {
-          const info = await yt.getBasicInfo(videoId, { client, po_token: poToken });
-          const picked = await pickAudio(info, yt, maxKbps, mp4Only, pin);
-          if (!picked) throw new Error(`no audio format for client ${client}`);
-          if (!(await probeUrl(picked.url))) throw new Error(`stream rejected for client ${client}`);
-          return {
-            url: picked.url,
-            mime: picked.mime,
-            lufs: picked.lufs,
-            itag: picked.itag,
-            clen: picked.clen,
-          };
-        } catch (err) {
-          lastErr = err;
+      for (const client of clients) {
+        // Try with po_token first, then without po_token if rejected
+        const tokenAttempts = poToken ? [poToken, undefined] : [undefined];
+        for (const token of tokenAttempts) {
+          try {
+            const opts: any = { client };
+            if (token) opts.po_token = token;
+            const info = await yt.getBasicInfo(videoId, opts);
+            const picked = await pickAudio(info, yt, maxKbps, mp4Only, pin);
+            if (!picked) continue;
+            if (!(await probeUrl(picked.url))) continue;
+            return {
+              url: picked.url,
+              mime: picked.mime,
+              lufs: picked.lufs,
+              itag: picked.itag,
+              clen: picked.clen,
+            };
+          } catch (err) {
+            lastErr = err;
+          }
         }
       }
       throw lastErr instanceof Error ? lastErr : new Error("InnerTube clients failed");
