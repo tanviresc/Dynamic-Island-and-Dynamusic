@@ -221,6 +221,19 @@ impl IslandCore {
             return ViewModel::Hidden;
         }
 
+        if let Some(ref disp) = self.current_display {
+            return ViewModel::Pill {
+                notification: NotificationView {
+                    id: disp.item.id,
+                    source: disp.item.source,
+                    kind: disp.item.kind,
+                    title: disp.item.title.clone(),
+                    text: disp.item.text.clone(),
+                    category: disp.item.category.clone(),
+                },
+            };
+        }
+
         if self.is_queue_panel_open {
             let items: Vec<QueueItemView> = self
                 .unread_queue
@@ -714,6 +727,7 @@ impl IslandCore {
                 if let Some(disp) = self.current_display.take() {
                     effects.push(Effect::Jump(disp.item.target));
                     effects.push(Effect::PersistRemove(disp.item.id, "clicked"));
+                    self.unread_queue.retain(|it| it.id != disp.item.id);
 
                     // Next item in display queue
                     if let Some(next_item) = self.display_queue.pop_front() {
@@ -735,7 +749,16 @@ impl IslandCore {
             }
 
             Input::DotClicked => {
-                self.is_queue_panel_open = true;
+                self.is_queue_panel_open = false;
+                if let Some(item) = self.unread_queue.first().cloned() {
+                    self.current_display = Some(DisplayingItem {
+                        item,
+                        started_at: now,
+                        deadline: now + self.display_ms.max(5000),
+                        is_hovered: false,
+                        hover_remaining_ms: None,
+                    });
+                }
             }
 
             Input::QueueItemClicked(id) => {
@@ -758,6 +781,7 @@ impl IslandCore {
 
             Input::QueueClear => {
                 self.unread_queue.clear();
+                self.current_display = None;
                 self.is_queue_panel_open = false;
                 effects.push(Effect::PersistClearAll("cleared"));
                 if let Some(target) = self.deferred_monitor_move.take() {
@@ -954,7 +978,7 @@ mod tests {
         core.handle_input(Input::DotClicked, 5000);
         assert!(matches!(
             core.current_view_model(5000),
-            ViewModel::Queue { .. }
+            ViewModel::Pill { .. }
         ));
 
         core.handle_input(Input::QueueClear, 5001);

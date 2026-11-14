@@ -11,9 +11,12 @@ export const geminiConfig: SiteConfig = {
   status: "UNVERIFIED",
   selectors: {
     generating: [
+      'button[aria-label*="Stop" i]',
       'button[aria-label*="Stop response" i]',
-      'button[aria-label*="Stop" i][data-test-id*="stop"]',
+      'button[data-test-id*="stop"]',
       '[data-test-id="stop-button"]',
+      'button:has(rect)',
+      'button:has(svg rect)',
       'mat-progress-bar',
       '.sparkle-generating',
     ],

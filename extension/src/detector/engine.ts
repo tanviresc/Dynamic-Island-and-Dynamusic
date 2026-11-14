@@ -95,8 +95,12 @@ export class DetectorEngine {
 
   private checkIsGenerating(): boolean {
     for (const selector of this.config.selectors.generating) {
-      if (this.querySelector(selector) !== null) {
-        return true;
+      try {
+        if (this.querySelector(selector) !== null) {
+          return true;
+        }
+      } catch {
+        continue;
       }
     }
     return false;
@@ -104,29 +108,33 @@ export class DetectorEngine {
 
   private checkNeedsInput(): void {
     for (const selector of this.config.selectors.needsInput) {
-      const el = this.querySelector(selector);
-      if (el) {
-        // Find or create prompt ID
-        let promptId = el.getAttribute("data-island-prompt-id");
-        if (!promptId) {
-          this.promptCounter += 1;
-          promptId = `prompt-${this.promptCounter}`;
-          try {
-            el.setAttribute("data-island-prompt-id", promptId);
-          } catch {
-            // In case element is not mock-settable
+      try {
+        const el = this.querySelector(selector);
+        if (el) {
+          // Find or create prompt ID
+          let promptId = el.getAttribute("data-island-prompt-id");
+          if (!promptId) {
+            this.promptCounter += 1;
+            promptId = `prompt-${this.promptCounter}`;
+            try {
+              el.setAttribute("data-island-prompt-id", promptId);
+            } catch {
+              // In case element is not mock-settable
+            }
           }
-        }
 
-        if (!this.seenPromptIds.has(promptId)) {
-          this.seenPromptIds.add(promptId);
-          const promptText = el.getAttribute("aria-label") || undefined;
-          this.callbacks.onNeedsInput({
-            promptId,
-            promptText,
-          });
+          if (!this.seenPromptIds.has(promptId)) {
+            this.seenPromptIds.add(promptId);
+            const promptText = el.getAttribute("aria-label") || undefined;
+            this.callbacks.onNeedsInput({
+              promptId,
+              promptText,
+            });
+          }
+          return;
         }
-        return;
+      } catch {
+        continue;
       }
     }
   }

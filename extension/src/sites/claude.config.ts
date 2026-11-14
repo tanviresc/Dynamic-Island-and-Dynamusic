@@ -12,16 +12,16 @@ export const claudeConfig: SiteConfig = {
   selectors: {
     generating: [
       'button[aria-label*="Stop" i]',
+      'button[aria-label*="Stop response" i]',
       'button[aria-label*="Cancel" i]',
       '[data-testid="stop-button"]',
+      '[data-testid*="stop"]',
       'button.stop-button',
       '[aria-label="Stop Response"]',
       "button:has(rect)",
       "button:has(svg rect)",
       "button:has(svg.lucide-square)",
       '[data-is-streaming="true"]',
-      '[class*="streaming"]',
-      '[class*="Thinking"]',
     ],
     needsInput: [
       '[data-testid="tool-approval"]',

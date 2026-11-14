@@ -87,7 +87,11 @@ pub fn default_desktop_apps() -> Vec<DesktopAppConfig> {
             id: "claude-desktop".to_string(),
             display_name: "Claude".to_string(),
             source: Source::Claude,
-            process_names: vec!["claude.exe".to_string(), "claude-desktop.exe".to_string()],
+            process_names: vec![
+                "claude.exe".to_string(),
+                "claude-desktop.exe".to_string(),
+                "anthropicclaude.exe".to_string(),
+            ],
             enabled: true,
             detection: DetectionMode::Uia,
             window_title_contains: None,
@@ -96,7 +100,12 @@ pub fn default_desktop_apps() -> Vec<DesktopAppConfig> {
             id: "chatgpt-desktop".to_string(),
             display_name: "ChatGPT".to_string(),
             source: Source::Chatgpt,
-            process_names: vec!["chatgpt.exe".to_string(), "openai.exe".to_string()],
+            process_names: vec![
+                "chatgpt.exe".to_string(),
+                "openai.exe".to_string(),
+                "chatgpt-desktop.exe".to_string(),
+                "openai.chatgpt.exe".to_string(),
+            ],
             enabled: true,
             detection: DetectionMode::Uia,
             window_title_contains: None,
@@ -105,7 +114,11 @@ pub fn default_desktop_apps() -> Vec<DesktopAppConfig> {
             id: "gemini-desktop".to_string(),
             display_name: "Gemini".to_string(),
             source: Source::Gemini,
-            process_names: vec!["gemini.exe".to_string(), "google-gemini.exe".to_string()],
+            process_names: vec![
+                "gemini.exe".to_string(),
+                "google-gemini.exe".to_string(),
+                "gemini-desktop.exe".to_string(),
+            ],
             enabled: true,
             detection: DetectionMode::Uia,
             window_title_contains: None,
@@ -428,7 +441,7 @@ fn find_process_window(target_process: &str) -> Option<(isize, String)> {
 
 #[cfg(windows)]
 fn probe_window_state(hwnd: isize) -> (bool, Option<String>) {
-    use windows::Win32::Foundation::HWND;
+    use windows::Win32::Foundation::{BOOL, HWND, LPARAM};
     use windows::Win32::System::Com::{
         CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
     };
@@ -436,7 +449,7 @@ fn probe_window_state(hwnd: isize) -> (bool, Option<String>) {
         CUIAutomation, IUIAutomation, TreeScope_Descendants, UIA_ButtonControlTypeId,
         UIA_ControlTypePropertyId,
     };
-    use windows::Win32::UI::WindowsAndMessaging::FindWindowExW;
+    use windows::Win32::UI::WindowsAndMessaging::{EnumChildWindows, GetClassNameW};
 
     unsafe {
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
@@ -447,16 +460,33 @@ fn probe_window_state(hwnd: isize) -> (bool, Option<String>) {
             Err(_) => return (false, None),
         };
 
-        // If this is an Electron/Chromium app, search for the Chrome_RenderWidgetHostHWND child window
-        let target_hwnd = match FindWindowExW(
+        // Recursively find Chrome_RenderWidgetHostHWND for Chromium/Electron apps (Claude, ChatGPT)
+        struct ChildSearchCtx {
+            render_hwnd: Option<HWND>,
+        }
+
+        unsafe extern "system" fn child_enum_cb(child: HWND, lparam: LPARAM) -> BOOL {
+            let ctx = &mut *(lparam.0 as *mut ChildSearchCtx);
+            let mut class_buf = [0u16; 256];
+            let len = GetClassNameW(child, &mut class_buf);
+            if len > 0 {
+                let class_str = String::from_utf16_lossy(&class_buf[..len as usize]);
+                if class_str.contains("RenderWidgetHost") {
+                    ctx.render_hwnd = Some(child);
+                    return BOOL(0); // Found target render widget
+                }
+            }
+            BOOL(1)
+        }
+
+        let mut child_ctx = ChildSearchCtx { render_hwnd: None };
+        let _ = EnumChildWindows(
             HWND(hwnd as _),
-            HWND(std::ptr::null_mut()),
-            windows::core::w!("Chrome_RenderWidgetHostHWND"),
-            None,
-        ) {
-            Ok(child) if !child.0.is_null() => child,
-            _ => HWND(hwnd as _),
-        };
+            Some(child_enum_cb),
+            LPARAM(&mut child_ctx as *mut _ as _),
+        );
+
+        let target_hwnd = child_ctx.render_hwnd.unwrap_or(HWND(hwnd as _));
 
         let root_el = match uia.ElementFromHandle(target_hwnd) {
             Ok(el) => el,
@@ -517,48 +547,60 @@ pub fn start_desktop_watcher(
     event_tx: tokio::sync::mpsc::Sender<Event>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let apps = default_desktop_apps();
-        let mut detectors: HashMap<String, UiaSignalDetector> = HashMap::new();
-        for app in apps {
-            if app.enabled {
-                detectors.insert(app.id.clone(), UiaSignalDetector::new(app));
-            }
-        }
+        let (thread_tx, mut thread_rx) = tokio::sync::mpsc::channel::<Event>(32);
 
-        let mut ticker = tokio::time::interval(std::time::Duration::from_millis(400));
-        loop {
-            ticker.tick().await;
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64;
-
-            #[cfg(windows)]
-            {
-                for detector in detectors.values_mut() {
-                    let mut found_window = None;
-                    for proc_name in &detector.app.process_names {
-                        if let Some((hwnd, title)) = find_process_window(proc_name) {
-                            found_window = Some((hwnd, title));
-                            break;
-                        }
+        // Spawn dedicated OS thread for COM UIAutomation polling
+        let _ = std::thread::Builder::new()
+            .name("island-desktop-watcher".to_string())
+            .spawn(move || {
+                let apps = default_desktop_apps();
+                let mut detectors: HashMap<String, UiaSignalDetector> = HashMap::new();
+                for app in apps {
+                    if app.enabled {
+                        detectors.insert(app.id.clone(), UiaSignalDetector::new(app));
                     }
+                }
 
-                    if let Some((hwnd, title)) = found_window {
-                        let (is_gen, needs_input) = probe_window_state(hwnd);
-                        if let Some(mut ev) = detector.tick(is_gen, needs_input, now) {
-                            let clean_title = title.trim();
-                            if !clean_title.is_empty()
-                                && clean_title.to_lowercase() != "claude"
-                                && clean_title.to_lowercase() != "chatgpt"
-                            {
-                                ev.text = clean_title.to_string();
+                loop {
+                    std::thread::sleep(std::time::Duration::from_millis(400));
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+
+                    #[cfg(windows)]
+                    {
+                        for detector in detectors.values_mut() {
+                            let mut found_window = None;
+                            for proc_name in &detector.app.process_names {
+                                if let Some((hwnd, title)) = find_process_window(proc_name) {
+                                    found_window = Some((hwnd, title));
+                                    break;
+                                }
                             }
-                            let _ = event_tx.send(ev).await;
+
+                            if let Some((hwnd, title)) = found_window {
+                                let (is_gen, needs_input) = probe_window_state(hwnd);
+                                if let Some(mut ev) = detector.tick(is_gen, needs_input, now) {
+                                    let clean_title = title.trim();
+                                    if !clean_title.is_empty()
+                                        && clean_title.to_lowercase() != "claude"
+                                        && clean_title.to_lowercase() != "chatgpt"
+                                    {
+                                        ev.text = clean_title.to_string();
+                                    }
+                                    if thread_tx.blocking_send(ev).is_err() {
+                                        return;
+                                    }
+                                }
+                            }
                         }
                     }
                 }
-            }
+            });
+
+        while let Some(ev) = thread_rx.recv().await {
+            let _ = event_tx.send(ev).await;
         }
     })
 }

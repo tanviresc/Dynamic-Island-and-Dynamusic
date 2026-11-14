@@ -20,8 +20,8 @@ export const Dot: React.FC<DotProps> = ({
       onClick={onClick}
       className="island-interactive"
       style={{
-        width: 24,
-        height: 24,
+        width: 44,
+        height: 44,
         display: "inline-flex",
         alignItems: "center",
         justifyContent: "center",
@@ -31,6 +31,7 @@ export const Dot: React.FC<DotProps> = ({
         padding: 0,
         outline: "none",
         position: "relative",
+        pointerEvents: "auto",
       }}
       aria-label="Island Status Dot"
     >

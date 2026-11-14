@@ -239,7 +239,26 @@ export const IslandRoot: React.FC<IslandRootProps> = ({
     try {
       invoke("send_island_input", { action: "dot_clicked" });
     } catch {}
-    setMode("queue");
+    const top = queueItems[0];
+    if (top) {
+      setCurrentNotification({
+        id: top.id,
+        source: top.source as any,
+        kind: top.kind as any,
+        title: top.title,
+        text: top.text,
+        category: top.category,
+      });
+    } else if (!currentNotification) {
+      setCurrentNotification({
+        id: "idle-status",
+        source: "gemini",
+        kind: "done",
+        title: "Dynamic Island",
+        text: "All tasks completed",
+      });
+    }
+    setMode("pill");
   };
 
   const handleHoverEnter = () => {

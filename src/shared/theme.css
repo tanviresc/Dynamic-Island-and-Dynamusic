@@ -18,6 +18,19 @@
   --accent-gemini: #4C8DF6;
   --accent-antigravity: #00C2FF;
   --accent-gmail: #EA4335;
+
+  /* ByTune Theme Tokens */
+  --base: 0 0 0;
+  --surface: 13 13 15;
+  --panel: 28 28 30;
+  --elevated: 44 44 46;
+  --primary: 255 255 255;
+  --on-primary: 0 0 0;
+  --ink-hi: 255 255 255;
+  --ink: 255 255 255;
+  --ink-dim: 142 142 147;
+  --ink-faint: rgba(255, 255, 255, 0.55);
+  --ink-ghost: rgba(255, 255, 255, 0.34);
 }
 
 * {

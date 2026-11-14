@@ -80,7 +80,8 @@ pub fn get_adaptive_poll_interval_ms(point: (i32, i32), hit_rect: Option<&Rect>)
 pub fn update_window_clickthrough(hwnd: isize, cursor_in_hit_rect: bool) {
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::WindowsAndMessaging::{
-        GetWindowLongW, SetWindowLongW, GWL_EXSTYLE, WS_EX_TRANSPARENT,
+        GetWindowLongW, SetWindowLongW, SetWindowPos, GWL_EXSTYLE, SWP_FRAMECHANGED,
+        SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_EX_TRANSPARENT,
     };
 
     let hwnd = HWND(hwnd as _);
@@ -91,9 +92,27 @@ pub fn update_window_clickthrough(hwnd: isize, cursor_in_hit_rect: bool) {
         if cursor_in_hit_rect && has_transparent {
             // Remove WS_EX_TRANSPARENT so window receives mouse events
             SetWindowLongW(hwnd, GWL_EXSTYLE, ex_style & !(WS_EX_TRANSPARENT.0 as i32));
+            let _ = SetWindowPos(
+                hwnd,
+                HWND(std::ptr::null_mut()),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            );
         } else if !cursor_in_hit_rect && !has_transparent {
             // Add WS_EX_TRANSPARENT so mouse events pass through to apps underneath
             SetWindowLongW(hwnd, GWL_EXSTYLE, ex_style | WS_EX_TRANSPARENT.0 as i32);
+            let _ = SetWindowPos(
+                hwnd,
+                HWND(std::ptr::null_mut()),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            );
         }
     }
 }
