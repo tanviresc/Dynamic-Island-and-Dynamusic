@@ -298,7 +298,7 @@ async function runDownload(track: Track, dirOverride?: string, maxKbps?: number,
     // the resolver still falls back to the best available if a track has none,
     // so the file is named from the mime it actually returned.
     // A fresh URL: an hours-old URL may be tied to an old address.
-    let stream = await abortable(resolveStream(track.id, true, maxKbps, true), ctrl.signal);
+    let stream = await abortable(resolveStream(track.id, true, maxKbps, true, track.title, track.artist), ctrl.signal);
     checkCancelled();
     // Named by the track id, the part is this song's own: one left by a download the app
     // was quit in the middle of is simply started over.
@@ -331,7 +331,7 @@ async function runDownload(track: Track, dirOverride?: string, maxKbps?: number,
         console.warn(`[bytune] download ${track.id}: ${err instanceof Error ? err.message : err}; trying again`);
         await abortable(new Promise((r) => setTimeout(r, attempt * 1500)), ctrl.signal);
         // A fresh URL. The same file (rendition and length) resumes; another one starts over.
-        const next = await abortable(resolveStream(track.id, true, maxKbps, true), ctrl.signal);
+        const next = await abortable(resolveStream(track.id, true, maxKbps, true, track.title, track.artist), ctrl.signal);
         if (next.itag !== stream.itag || next.clen !== stream.clen) await fs.promises.truncate(part, 0).catch(() => undefined);
         stream = next;
       }

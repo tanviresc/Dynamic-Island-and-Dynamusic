@@ -184,7 +184,7 @@ export async function saveTrackToOfflineVault(
       if (!blob) {
         const streamUrl = resolveNetworkStreamUrl
           ? await resolveNetworkStreamUrl(track.id)
-          : (await window.bytune?.getStreamUrl(track.id, false, "high").catch(() => null)) ||
+          : (await window.bytune?.getStreamUrl(track.id, false, "high", track.title, track.artist).catch(() => null)) ||
             (await fallbackMobileStreamUrl(track.id));
         if (!streamUrl || streamUrl.startsWith("blob:")) return streamUrl?.startsWith("blob:") ?? false;
 

@@ -620,7 +620,7 @@ function registerIpc(): void {
     typeof id === "string" && id.startsWith("local:") && id.length <= 200 ? music.localGainDb(id) : null
   );
   ipc.handle("music:enrich", (_e, ids: string[]) => music.enrichDurations(Array.isArray(ids) ? ids : []));
-  ipc.handle("music:stream", async (_e, id: unknown, retry?: boolean, quality?: string) => {
+  ipc.handle("music:stream", async (_e, id: unknown, retry?: boolean, quality?: string, title?: unknown, artist?: unknown) => {
     // Hand the renderer a localhost proxy URL — the main process does the
     // actual upstream traffic (see stream-proxy.ts). YouTube Music is the
     // only catalogue: every id here is a bare YouTube video id.
@@ -634,7 +634,13 @@ function registerIpc(): void {
     const maxKbps = quality === "low" ? 64 : undefined;
     // A retry after a playback error: a fresh resolution, from the next client.
     if (retry === true) music.retryStream(id);
-    return proxyUrlFor(id, retry === true, maxKbps);
+    return proxyUrlFor(
+      id,
+      retry === true,
+      maxKbps,
+      typeof title === "string" && title ? title : undefined,
+      typeof artist === "string" && artist ? artist : undefined
+    );
   });
 
   ipc.handle("library:get", () => locallib.readLocalLibrary());

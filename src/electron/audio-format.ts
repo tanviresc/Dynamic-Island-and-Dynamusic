@@ -116,17 +116,19 @@ export async function pickAudio(
     const mp4s = candidates.filter((f) => String(f.mime_type ?? "").includes("mp4"));
     if (mp4s.length) candidates = mp4s;
   }
-  const preferred = candidates[0];
-  const url = await formatUrl(preferred, yt);
-  if (!url) return null;
-  const num = (v: unknown): number | undefined => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : undefined);
-  return {
-    url,
-    mime: String(preferred.mime_type ?? "audio/mp4"),
-    lufs: formatLufs(preferred),
-    itag: num(preferred.itag),
-    clen: num(preferred.content_length),
-  };
+  for (const cand of candidates) {
+    const url = await formatUrl(cand, yt);
+    if (!url) continue;
+    const num = (v: unknown): number | undefined => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : undefined);
+    return {
+      url,
+      mime: String(cand.mime_type ?? "audio/mp4"),
+      lufs: formatLufs(cand),
+      itag: num(cand.itag),
+      clen: num(cand.content_length),
+    };
+  }
+  return null;
 }
 
 /**

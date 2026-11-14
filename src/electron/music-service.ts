@@ -116,9 +116,8 @@ async function withRetry<T>(fn: () => Promise<T>, attempts = 2, delayMs = 600): 
 
 async function createSession(): Promise<any> {
   const market = resolveDeviceMarket();
-  // Create a fast session immediately without blocking on JSDOM/BotGuard or 2MB player JS download.
   const yt = await Innertube.create({
-    retrieve_player: false,
+    retrieve_player: true,
     enable_session_cache: true,
     location: market.country,
     lang: displayLanguage(),
@@ -1072,9 +1071,9 @@ export async function enrichDurations(ids: string[]): Promise<Record<string, num
    audio-format.ts — pure logic, unit-tested in tests/format-pick.test.mjs. */
 
 /**
- * Validate that a URL actually streams: request a small 1KB range for rapid sub-100ms response.
+ * Validate that a URL actually streams: request a small 1KB range for rapid response.
  */
-async function probeUrl(url: string, timeoutMs = 2500): Promise<boolean> {
+async function probeUrl(url: string, timeoutMs = 6000): Promise<boolean> {
   try {
     const res = await fetch(url, {
       headers: { "User-Agent": UA, Range: "bytes=0-1024" },
@@ -1104,21 +1103,34 @@ function isMatchingTrack(reqTitle: string, reqArtist: string, candTitle: string,
       .replace(/[^a-z0-9]/g, " ")
       .replace(/\s+/g, " ")
       .trim();
-  const t1 = clean(reqTitle);
-  const t2 = clean(candTitle);
-  if (!t1 || !t2) return false;
+  const rt = clean(reqTitle);
+  const ct = clean(candTitle);
+  if (!rt || !ct) return false;
 
-  if (t1.includes(t2) || t2.includes(t1)) return true;
-
-  const words1 = t1.split(" ").filter((w) => w.length > 2);
-  const words2 = new Set(t2.split(" ").filter((w) => w.length > 2));
-  if (words1.length === 0 || words2.size === 0) return false;
-
-  let matches = 0;
-  for (const w of words1) {
-    if (words2.has(w)) matches++;
+  const titleMatch = rt === ct || rt.includes(ct) || ct.includes(rt);
+  const rWords = rt.split(" ").filter((w) => w.length > 2);
+  const cWords = new Set(ct.split(" ").filter((w) => w.length > 2));
+  let titleOverlap = 0;
+  for (const w of rWords) {
+    if (cWords.has(w)) titleOverlap++;
   }
-  return matches / words1.length >= 0.6;
+  const titleRatio = rWords.length > 0 ? titleOverlap / rWords.length : 0;
+  const isTitleMatch = titleMatch || titleRatio >= 0.6;
+
+  const ra = clean(reqArtist);
+  const ca = clean(candArtist);
+  let isArtistMatch = true;
+  if (ra && ca) {
+    const raWords = ra.split(" ").filter((w) => w.length > 2);
+    const caWords = new Set(ca.split(" ").filter((w) => w.length > 2));
+    let aMatches = 0;
+    for (const w of raWords) {
+      if (caWords.has(w)) aMatches++;
+    }
+    isArtistMatch = raWords.length === 0 || aMatches > 0 || ra.includes(ca) || ca.includes(ra);
+  }
+
+  return isTitleMatch && isArtistMatch;
 }
 
 /** Last-resort stream source: public Piped mirrors. */
@@ -1250,15 +1262,26 @@ function decryptDesUrl(encryptedBase64: string): string {
   return Buffer.from(outBytes).toString("utf8").trim().replace("_96.mp4", "_320.mp4").replace("http://", "https://");
 }
 
-async function resolveViaFallbackCdn(videoId: string): Promise<string> {
-  const oembedRes = await fetch(
-    `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}&format=json`,
-    { headers: { "User-Agent": UA }, signal: AbortSignal.timeout(4000) }
-  );
-  if (!oembedRes.ok) throw new Error("oEmbed lookup failed");
-  const meta: any = await oembedRes.json();
-  const title = String(meta?.title ?? "").replace(/\(Official.*?\)|\[Official.*?\]/gi, "").trim();
-  const author = String(meta?.author_name ?? "").replace(/\s*-\s*Topic$/i, "").trim();
+async function resolveViaFallbackCdn(videoId: string, reqTitle?: string, reqArtist?: string): Promise<string> {
+  let title = (reqTitle || "").replace(/\(Official.*?\)|\[Official.*?\]/gi, "").trim();
+  let author = (reqArtist || "").replace(/\s*-\s*Topic$/i, "").trim();
+
+  if (!title) {
+    try {
+      const oembedRes = await fetch(
+        `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}&format=json`,
+        { headers: { "User-Agent": UA }, signal: AbortSignal.timeout(3000) }
+      );
+      if (oembedRes.ok) {
+        const meta: any = await oembedRes.json();
+        title = String(meta?.title ?? "").replace(/\(Official.*?\)|\[Official.*?\]/gi, "").trim();
+        author = String(meta?.author_name ?? "").replace(/\s*-\s*Topic$/i, "").trim();
+      }
+    } catch {
+      /* ignore oembed lookup failure */
+    }
+  }
+
   const q = `${title} ${author}`.trim();
   if (!q) throw new Error("Empty fallback query");
   const res = await fetch(
@@ -1277,7 +1300,7 @@ async function resolveViaFallbackCdn(videoId: string): Promise<string> {
     const enc = item?.more_info?.encrypted_media_url;
     if (typeof enc === "string" && enc.length > 10) {
       const url = decryptDesUrl(enc);
-      if (url.startsWith("https://") && (await probeUrl(url, 2500))) return url;
+      if (url.startsWith("https://") && (await probeUrl(url, 4000))) return url;
     }
   }
   throw new Error("No verified fallback CDN stream matched");
@@ -1315,7 +1338,9 @@ export function resolveStream(
   videoId: string,
   refresh = false,
   maxKbps?: number,
-  mp4Only = false
+  mp4Only = false,
+  title?: string,
+  artist?: string
 ): Promise<ResolvedStream> {
   const key = `${videoId}|${maxKbps ?? ""}|${mp4Only ? "mp4" : ""}`;
   if (!refresh) {
@@ -1336,8 +1361,8 @@ export function resolveStream(
     const tryInnerTube = async (): Promise<ResolvedStream> => {
       const yt = await getYT();
       const poToken: string | undefined = (yt as any).__poToken;
-      // VISIONOS and IOS do not require SABR or BotGuard challenge tokens and return direct high-bitrate AAC/m4a
-      const clients = ["VISIONOS", "IOS", "YTMUSIC", "WEB", "ANDROID_VR", "ANDROID"] as const;
+      // IOS, VISIONOS and ANDROID_VR return reliable non-gated streams with deciphering
+      const clients = ["IOS", "VISIONOS", "ANDROID_VR", "YTMUSIC", "WEB", "ANDROID"] as const;
       let lastErr: unknown = null;
       for (const client of clients) {
         try {
@@ -1345,11 +1370,11 @@ export function resolveStream(
           if (poToken && client === "ANDROID") opts.po_token = poToken;
           const info = await Promise.race([
             yt.getBasicInfo(videoId, opts),
-            new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Timeout")), 4000)),
+            new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Timeout")), 6000)),
           ]);
           const picked = await pickAudio(info, yt, maxKbps, mp4Only, pin);
           if (!picked) continue;
-          if (!(await probeUrl(picked.url, 2500))) continue;
+          if (!(await probeUrl(picked.url, 6000))) continue;
           return {
             url: picked.url,
             mime: picked.mime,
@@ -1364,25 +1389,38 @@ export function resolveStream(
       throw lastErr instanceof Error ? lastErr : new Error("InnerTube clients failed");
     };
 
-    // 1. Authoritative primary resolution via YouTube InnerTube (exact videoId stream)
+    const tryFallback = async (): Promise<ResolvedStream> => {
+      const url = await resolveViaFallbackCdn(videoId, title, artist);
+      return { url, mime: "audio/mp4", lufs: null };
+    };
+
+    try {
+      // Race InnerTube against strictly-verified fallback CDN:
+      // When title & artist match, fallback CDN returns verified 320kbps streams in ~200ms.
+      // If candidate is a mismatched track (e.g. Hindi song for Kendrick Lamar), isMatchingTrack rejects it and InnerTube answers with verified YouTube audio.
+      const winner = await Promise.any([tryInnerTube(), tryFallback()]);
+      return cacheAndReturn(winner, streamTtlMs(winner.url, Date.now()));
+    } catch {
+      /* continue to fallback attempts */
+    }
+
     try {
       const stream = await tryInnerTube();
       return cacheAndReturn(stream, streamTtlMs(stream.url, Date.now()));
-    } catch (err) {
-      console.warn(`[bytune] InnerTube primary resolution failed for ${videoId}:`, err);
+    } catch {
+      /* continue */
     }
 
-    // 2. High-speed Piped YouTube mirror for the exact videoId
+    try {
+      const stream = await tryFallback();
+      return cacheAndReturn(stream, streamTtlMs(stream.url, Date.now()));
+    } catch {
+      /* continue */
+    }
+
+    // High-speed Piped YouTube mirror for the exact videoId as emergency fallback
     try {
       const url = await resolveViaPiped(videoId);
-      return cacheAndReturn({ url, mime: "audio/mp4", lufs: null }, streamTtlMs(url, Date.now()));
-    } catch {
-      /* continue to verified fallback */
-    }
-
-    // 3. Fallback CDN with STRICT title/artist matching verification
-    try {
-      const url = await resolveViaFallbackCdn(videoId);
       return cacheAndReturn({ url, mime: "audio/mp4", lufs: null }, streamTtlMs(url, Date.now()));
     } catch {
       /* exhausted */

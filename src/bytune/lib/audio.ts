@@ -310,7 +310,7 @@ function prefetchLoudness(track: Track | null): void {
   // No loudnessGains shortcut: a replayed track knows its gain but its
   // resolution has likely expired, and a warm `?meta=1` hit costs nothing.
   void (async () => {
-    const url = await requireBridge().getStreamUrl(track.id, false, useSettings.getState().streamingQuality);
+    const url = await requireBridge().getStreamUrl(track.id, false, useSettings.getState().streamingQuality, track.title, track.artist);
     if (url) await fetchLoudness(url, track);
   })().catch(() => undefined);
 }
@@ -788,7 +788,7 @@ async function beginFade(nextTrack: Track, fadeMs: number): Promise<void> {
     const local = !!nextTrack.localPath || nextTrack.id.startsWith("local:");
     const url = local
       ? await requireBridge().localTrackUrl(nextTrack.id)
-      : await requireBridge().getStreamUrl(nextTrack.id, false, useSettings.getState().streamingQuality);
+      : await requireBridge().getStreamUrl(nextTrack.id, false, useSettings.getState().streamingQuality, nextTrack.title, nextTrack.artist);
     if (!url) throw new Error("next track has no source");
     // The fade's standby element carries the incoming track's own loudness
     // gain; the load-time prefetch usually already did this — cheap retry.
@@ -1506,7 +1506,7 @@ async function loadUrl(track: Track, autoplay: boolean, forceRotate: boolean): P
       }
       return;
     }
-    const url = await requireBridge().getStreamUrl(track.id, forceRotate, useSettings.getState().streamingQuality);
+    const url = await requireBridge().getStreamUrl(track.id, forceRotate, useSettings.getState().streamingQuality, track.title, track.artist);
     const cur = usePlayer.getState().queue[usePlayer.getState().index];
     if (cur?.id !== track.id || seq !== loadSeq) return; // user moved on while we were resolving
     // Loudness metadata races the element's own first request: both share the

@@ -61,8 +61,8 @@ const api = {
   playbackEvent: (event: { type: string; track?: unknown; positionSec: number; playedSec: number; deltaMs: number }) =>
     ipcRenderer.send("playback:event", event),
   statsSummary: (period: string) => ipcRenderer.invoke("stats:summary", period),
-  getStreamUrl: (id: string, forceRotate = false, quality?: string) =>
-    ipcRenderer.invoke("music:stream", id, forceRotate, quality),
+  getStreamUrl: (id: string, forceRotate = false, quality?: string, title?: string, artist?: string) =>
+    ipcRenderer.invoke("music:stream", id, forceRotate, quality, title, artist),
   localLibrary: () => ipcRenderer.invoke("library:get"),
   scanLibrary: (filterNonMusic = true) => ipcRenderer.invoke("library:scan", filterNonMusic),
   setLibraryFolders: (folders: string[]) => ipcRenderer.invoke("library:setFolders", folders),

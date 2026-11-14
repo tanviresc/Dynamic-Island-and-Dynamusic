@@ -79,9 +79,11 @@ export function getStreamProxyPort(): number {
 }
 
 /** `retry` gives the URL a fresh query, so Chromium never reuses the failed URL's cached bytes. */
-export function proxyUrlFor(trackId: string, retry = false, maxKbps?: number): string {
+export function proxyUrlFor(trackId: string, retry = false, maxKbps?: number, title?: string, artist?: string): string {
   const kbps = typeof maxKbps === "number" && maxKbps > 0 ? `&kbps=${Math.floor(maxKbps)}` : "";
-  return `http://127.0.0.1:${proxyPort}/?id=${encodeURIComponent(trackId)}${retry ? `&retry=${Date.now().toString(36)}` : ""}${kbps}`;
+  const t = title ? `&title=${encodeURIComponent(title)}` : "";
+  const a = artist ? `&artist=${encodeURIComponent(artist)}` : "";
+  return `http://127.0.0.1:${proxyPort}/?id=${encodeURIComponent(trackId)}${retry ? `&retry=${Date.now().toString(36)}` : ""}${kbps}${t}${a}`;
 }
 
 /** Which file each proxy URL has served, so a later range of it is never answered from another file. */
@@ -242,13 +244,16 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       return;
     }
 
+    const title = url.searchParams.get("title") ?? undefined;
+    const artist = url.searchParams.get("artist") ?? undefined;
+
     // Metadata-only request: the renderer asks `?id=…&meta=1` to learn the
     // track's loudness (for Spotify-style −14 LUFS normalisation) without
     // pulling audio bytes. Shares the resolution cache with playback, so it
     // costs one getBasicInfo at most.
     if (url.searchParams.get("meta") === "1") {
       try {
-        const meta = await resolveStream(trackId as string, false, maxKbps);
+        const meta = await resolveStream(trackId as string, false, maxKbps, false, title, artist);
         res.writeHead(200, {
           "Access-Control-Allow-Origin": "*",
           "Cache-Control": "no-store",
@@ -263,14 +268,14 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       return;
     }
 
-    let stream = await resolveStream(trackId as string, false, maxKbps);
+    let stream = await resolveStream(trackId as string, false, maxKbps, false, title, artist);
     let ctl = new AbortController();
     let upstream = await fetchUpstream(stream.url, range, ctl);
 
     // Self-heal: a URL that just went bad gets one more resolution.
     if (upstream.status === 403 && trackId) {
       console.warn(`[bytune] proxy upstream 403 for ${trackId}, re-resolving`);
-      stream = await resolveStream(trackId, true, maxKbps);
+      stream = await resolveStream(trackId, true, maxKbps, false, title, artist);
       ctl = new AbortController();
       upstream = await fetchUpstream(stream.url, range, ctl);
     }

@@ -330,13 +330,13 @@ export function initBytuneBridge(): void {
     playbackEvent: (event: { type: string; track?: unknown; positionSec: number; playedSec: number; deltaMs: number }) =>
       rpcSend("playback:event", event),
     statsSummary: (period: string) => rpcInvoke("stats:summary", period),
-    getStreamUrl: async (id: string, forceRotate = false, quality?: string) => {
+    getStreamUrl: async (id: string, forceRotate = false, quality?: string, title?: string, artist?: string) => {
       if (!forceRotate) {
         const offlineUrl = await getOfflineVaultUrl(id);
         if (offlineUrl) return offlineUrl;
       }
       try {
-        const rawUrl = await rpcInvoke<string>("music:stream", id, forceRotate, quality);
+        const rawUrl = await rpcInvoke<string>("music:stream", id, forceRotate, quality, title, artist);
         const host = getBackendHost();
         if (host !== "127.0.0.1" && typeof rawUrl === "string") {
           return rawUrl.replace("http://127.0.0.1:", `http://${host}:`);
