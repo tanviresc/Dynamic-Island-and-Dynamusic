@@ -124,6 +124,31 @@ describe("Dynamusic Initial Replica Database (Matching ByTune Screenshot)", () =
   });
 });
 
+describe("Dynamusic Full-Length Audio Streaming Engine", () => {
+  it("ensures all Jump back in tracks have full duration and no 30-sec preview URLs", () => {
+    for (const track of JUMP_BACK_IN_TRACKS) {
+      expect(track.durationMs).toBeGreaterThanOrEqual(120000); // >= 2 minutes
+      expect(track.streamUrl).not.toContain("freesound.org/previews");
+      expect(track.streamUrl).not.toContain(".plus.aac.p.m4a");
+    }
+  });
+
+  it("ensures all 9 Liked songs have full duration and 320kbps streams", () => {
+    for (const track of LIKED_SONGS) {
+      expect(track.durationMs).toBeGreaterThanOrEqual(120000);
+      expect(track.streamUrl).toMatch(/\.mp4|\.m4a|\.mp3/);
+      expect(track.streamUrl).not.toContain("freesound.org/previews");
+    }
+  });
+
+  it("decrypts JioSaavn DES-ECB encrypted media URLs cleanly in pure JS", async () => {
+    const { decryptDesEcb } = await import("./musicService");
+    const enc = "ID2ieOjCrwfgWvL5sXl4B1ImC5QfbsDy8IXxuTNJ1oLbvDGDneZj5h25kdaKPCof228ruhJnw7PIr7uKBnaPmxw7tS9a8Gtq";
+    const decrypted = decryptDesEcb(enc);
+    expect(decrypted).toBe("https://aac.saavncdn.com/396/eca27e31e93211051fa0de18160ea825_96.mp4");
+  });
+});
+
 describe("Dynamusic Multi-Source Search Engine", () => {
   it("finds songs from local catalog when searching", async () => {
     const { searchYouTubeMusic } = await import("./musicService");

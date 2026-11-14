@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Track, LyricLine, IPCMusicState, NavView, Playlist, PlaylistFolder, ArtistProfile } from "./types";
 import { audioEngine, EQ_PRESETS } from "./audioEngine";
-import { searchYouTubeMusic, parseLocalAudioFile } from "./musicService";
+import { searchYouTubeMusic, parseLocalAudioFile, resolvePlayableStreamUrl } from "./musicService";
 import { fetchLyricsFromLrclib, getCurrentLyric } from "./lyricsService";
 import {
   TEMPER_CITY_ARTIST,
@@ -205,31 +205,44 @@ export const DynamusicProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   // Play track function
   const playTrack = useCallback(
     async (track: Track, newQueue?: Track[]) => {
+      // Resolve full-length 320kbps audio stream URL (never 30-sec previews)
+      const fullStreamUrl = await resolvePlayableStreamUrl(track);
+      const activeTrack: Track = {
+        ...track,
+        streamUrl: fullStreamUrl || track.streamUrl,
+      };
+
       if (newQueue) {
-        setQueue(newQueue);
-        const idx = newQueue.findIndex((t) => t.id === track.id);
+        const updatedQueue = newQueue.map((t) =>
+          t.id === track.id ? activeTrack : t
+        );
+        setQueue(updatedQueue);
+        const idx = updatedQueue.findIndex((t) => t.id === track.id);
         setCurrentIndex(idx >= 0 ? idx : 0);
       } else {
         const idx = queue.findIndex((t) => t.id === track.id);
         if (idx >= 0) {
           setCurrentIndex(idx);
+          setQueue((prev) =>
+            prev.map((t) => (t.id === track.id ? activeTrack : t))
+          );
         } else {
-          setQueue((prev) => [track, ...prev]);
+          setQueue((prev) => [activeTrack, ...prev]);
           setCurrentIndex(0);
         }
       }
 
       setPositionMs(0);
-      setDurationMs(track.durationMs);
-      await audioEngine.load(track, true);
+      setDurationMs(activeTrack.durationMs);
+      await audioEngine.load(activeTrack, true);
       setIsPlaying(true);
 
       // Fetch synced lyrics from LRCLIB
-      fetchLyricsFromLrclib(track.artist, track.title, track.durationMs / 1000).then((synced) => {
+      fetchLyricsFromLrclib(activeTrack.artist, activeTrack.title, activeTrack.durationMs / 1000).then((synced) => {
         setLyrics(synced);
       });
 
-      syncToTauri(track, true, 0, track.durationMs, volume);
+      syncToTauri(activeTrack, true, 0, activeTrack.durationMs, volume);
     },
     [queue, volume, syncToTauri]
   );
