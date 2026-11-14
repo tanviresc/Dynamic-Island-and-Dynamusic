@@ -118,11 +118,30 @@ function serveLocalFile(filePath: string | null, range: string | undefined, res:
     return;
   }
 
+  // If serving from offline-vault (.bin), determine real mime from companion .json or default to audio/mp4
+  let mime = audioMime(filePath);
+  if (mime === "application/octet-stream" || filePath.endsWith(".bin")) {
+    const jsonPath = filePath.replace(/\.bin$/, ".json");
+    try {
+      if (fs.existsSync(jsonPath)) {
+        const meta = JSON.parse(fs.readFileSync(jsonPath, "utf8"));
+        if (typeof meta?.mime === "string" && meta.mime.startsWith("audio/")) {
+          mime = meta.mime;
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+    if (mime === "application/octet-stream") {
+      mime = "audio/mp4";
+    }
+  }
+
   const headers: Record<string, string> = {
     "Access-Control-Allow-Origin": "*",
     "Cache-Control": "no-store",
     "Accept-Ranges": "bytes",
-    "Content-Type": audioMime(filePath),
+    "Content-Type": mime,
   };
 
   // Range support is what makes seeking work: the media element re-requests

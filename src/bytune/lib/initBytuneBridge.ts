@@ -98,26 +98,39 @@ async function rpcInvoke<T = any>(channel: string, ...args: unknown[]): Promise<
       channel === "auth:getSession" ||
       channel === "sync:status" ||
       channel === "updates:state");
-  const ctl = isFastFallbackChannel ? new AbortController() : undefined;
-  const timer = ctl ? setTimeout(() => ctl.abort(), 1500) : undefined;
-  try {
-    const res = await fetch(`${BACKEND_URL}/rpc`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ channel, args: encodeBinaryInput(args) }),
-      signal: ctl?.signal,
-    });
-    if (!res.ok) {
-      throw new Error(`RPC HTTP ${res.status} on ${channel}`);
+
+  let lastError: unknown = null;
+  const attempts = isFastFallbackChannel ? 1 : 2;
+
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const ctl = new AbortController();
+    const timeoutMs = isFastFallbackChannel ? 1500 : 12_000;
+    const timer = setTimeout(() => ctl.abort(), timeoutMs);
+    try {
+      const res = await fetch(`${BACKEND_URL}/rpc`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ channel, args: encodeBinaryInput(args) }),
+        signal: ctl.signal,
+      });
+      if (!res.ok) {
+        throw new Error(`RPC HTTP ${res.status} on ${channel}`);
+      }
+      const data = (await res.json()) as { ok: boolean; result?: unknown; error?: string };
+      if (!data.ok) {
+        throw new Error(data.error || `RPC error on ${channel}`);
+      }
+      return decodeBinaryOutput(data.result) as T;
+    } catch (err) {
+      lastError = err;
+      if (attempt < attempts - 1) {
+        await new Promise((r) => setTimeout(r, 200));
+      }
+    } finally {
+      clearTimeout(timer);
     }
-    const data = (await res.json()) as { ok: boolean; result?: unknown; error?: string };
-    if (!data.ok) {
-      throw new Error(data.error || `RPC error on ${channel}`);
-    }
-    return decodeBinaryOutput(data.result) as T;
-  } finally {
-    if (timer) clearTimeout(timer);
   }
+  throw lastError;
 }
 
 function rpcSend(channel: string, ...args: unknown[]): void {
@@ -152,13 +165,16 @@ function emitBackendEvent(channel: string, ...args: any[]): void {
 
 let sseConnected = false;
 function connectEventStream(): void {
-  if (sseConnected || typeof EventSource === "undefined") return;
-  sseConnected = true;
+  if (typeof EventSource === "undefined") return;
   const connect = () => {
     try {
       const es = new EventSource(`${BACKEND_URL}/events`);
+      es.onopen = () => {
+        sseConnected = true;
+      };
       es.onmessage = (ev) => {
         try {
+          if (ev.data === ": keepalive" || !ev.data) return;
           const parsed = JSON.parse(ev.data) as { channel?: string; args?: unknown[] };
           if (!parsed.channel) return;
           if (parsed.channel === "window:reload") {
@@ -190,11 +206,13 @@ function connectEventStream(): void {
         }
       };
       es.onerror = () => {
+        sseConnected = false;
         es.close();
-        setTimeout(connect, 2500);
+        setTimeout(connect, 2000);
       };
     } catch {
-      setTimeout(connect, 2500);
+      sseConnected = false;
+      setTimeout(connect, 2000);
     }
   };
   connect();

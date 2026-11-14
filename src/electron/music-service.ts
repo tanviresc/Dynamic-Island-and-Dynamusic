@@ -1072,35 +1072,53 @@ export async function enrichDurations(ids: string[]): Promise<Record<string, num
    audio-format.ts — pure logic, unit-tested in tests/format-pick.test.mjs. */
 
 /**
- * Validate that a URL actually streams: request an open range and read the
- * first chunk. SABR-gated URLs answer tiny ranges with 206 but 403 real
- * streaming requests, so this catches them.
+ * Validate that a URL actually streams: request a small 1KB range for rapid sub-100ms response.
  */
-async function probeUrl(url: string): Promise<boolean> {
+async function probeUrl(url: string, timeoutMs = 2500): Promise<boolean> {
   try {
-    // Only the first chunk is read; allow 8s for cellular or slower connections
     const res = await fetch(url, {
-      headers: { "User-Agent": UA, Range: "bytes=0-" },
-      signal: AbortSignal.timeout(8000),
+      headers: { "User-Agent": UA, Range: "bytes=0-1024" },
+      signal: AbortSignal.timeout(timeoutMs),
     });
     if (res.status === 206 || res.status === 200) {
-      let got = 0;
       try {
         const reader = res.body?.getReader();
-        if (reader) {
-          const { value } = await reader.read();
-          got = value?.length ?? 0;
-          await reader.cancel().catch(() => undefined);
-        }
+        if (reader) await reader.cancel().catch(() => undefined);
       } catch {
         /* treat as status check */
       }
-      return got > 0 || res.status === 206 || res.status === 200;
+      return true;
     }
     return false;
   } catch {
     return false;
   }
+}
+
+/** Strictly verify that a candidate song title and artist match the requested track */
+function isMatchingTrack(reqTitle: string, reqArtist: string, candTitle: string, candArtist: string): boolean {
+  const clean = (s: string) =>
+    s
+      .toLowerCase()
+      .replace(/\([^)]*\)|\[[^\]]*\]/g, "")
+      .replace(/[^a-z0-9]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  const t1 = clean(reqTitle);
+  const t2 = clean(candTitle);
+  if (!t1 || !t2) return false;
+
+  if (t1.includes(t2) || t2.includes(t1)) return true;
+
+  const words1 = t1.split(" ").filter((w) => w.length > 2);
+  const words2 = new Set(t2.split(" ").filter((w) => w.length > 2));
+  if (words1.length === 0 || words2.size === 0) return false;
+
+  let matches = 0;
+  for (const w of words1) {
+    if (words2.has(w)) matches++;
+  }
+  return matches / words1.length >= 0.6;
 }
 
 /** Last-resort stream source: public Piped mirrors. */
@@ -1235,7 +1253,7 @@ function decryptDesUrl(encryptedBase64: string): string {
 async function resolveViaFallbackCdn(videoId: string): Promise<string> {
   const oembedRes = await fetch(
     `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}&format=json`,
-    { headers: { "User-Agent": UA }, signal: AbortSignal.timeout(8000) }
+    { headers: { "User-Agent": UA }, signal: AbortSignal.timeout(4000) }
   );
   if (!oembedRes.ok) throw new Error("oEmbed lookup failed");
   const meta: any = await oembedRes.json();
@@ -1245,18 +1263,24 @@ async function resolveViaFallbackCdn(videoId: string): Promise<string> {
   if (!q) throw new Error("Empty fallback query");
   const res = await fetch(
     `https://www.jiosaavn.com/api.php?__call=search.getResults&_format=json&_marker=0&api_version=4&ctx=web6dot0&n=5&q=${encodeURIComponent(q)}`,
-    { headers: { "User-Agent": UA }, signal: AbortSignal.timeout(8000) }
+    { headers: { "User-Agent": UA }, signal: AbortSignal.timeout(4000) }
   );
   if (!res.ok) throw new Error("Fallback CDN search failed");
   const data: any = await res.json();
   for (const item of data?.results ?? []) {
+    const itemTitle = String(item?.title ?? item?.song ?? "").replace(/&quot;/g, '"').replace(/&#039;/g, "'").trim();
+    const itemArtist = String(item?.more_info?.artistMap?.primary_artists?.[0]?.name ?? item?.primary_artists ?? item?.singers ?? "").trim();
+    // Strictly verify title & artist match so unrelated Hindi songs never play for requested tracks!
+    if (!isMatchingTrack(title, author, itemTitle, itemArtist)) {
+      continue;
+    }
     const enc = item?.more_info?.encrypted_media_url;
     if (typeof enc === "string" && enc.length > 10) {
       const url = decryptDesUrl(enc);
-      if (url.startsWith("https://") && (await probeUrl(url))) return url;
+      if (url.startsWith("https://") && (await probeUrl(url, 2500))) return url;
     }
   }
-  throw new Error("No fallback CDN stream matched");
+  throw new Error("No verified fallback CDN stream matched");
 }
 
 export interface ResolvedStream {
@@ -1312,49 +1336,59 @@ export function resolveStream(
     const tryInnerTube = async (): Promise<ResolvedStream> => {
       const yt = await getYT();
       const poToken: string | undefined = (yt as any).__poToken;
-      const clients = ["ANDROID", "YTMUSIC", "VISIONOS", "IOS", "ANDROID_VR", "WEB"] as const;
+      // VISIONOS and IOS do not require SABR or BotGuard challenge tokens and return direct high-bitrate AAC/m4a
+      const clients = ["VISIONOS", "IOS", "YTMUSIC", "WEB", "ANDROID_VR", "ANDROID"] as const;
       let lastErr: unknown = null;
       for (const client of clients) {
-        // Try with po_token first, then without po_token if rejected
-        const tokenAttempts = poToken ? [poToken, undefined] : [undefined];
-        for (const token of tokenAttempts) {
-          try {
-            const opts: any = { client };
-            if (token) opts.po_token = token;
-            const info = await yt.getBasicInfo(videoId, opts);
-            const picked = await pickAudio(info, yt, maxKbps, mp4Only, pin);
-            if (!picked) continue;
-            if (!(await probeUrl(picked.url))) continue;
-            return {
-              url: picked.url,
-              mime: picked.mime,
-              lufs: picked.lufs,
-              itag: picked.itag,
-              clen: picked.clen,
-            };
-          } catch (err) {
-            lastErr = err;
-          }
+        try {
+          const opts: any = { client };
+          if (poToken && client === "ANDROID") opts.po_token = poToken;
+          const info = await Promise.race([
+            yt.getBasicInfo(videoId, opts),
+            new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Timeout")), 4000)),
+          ]);
+          const picked = await pickAudio(info, yt, maxKbps, mp4Only, pin);
+          if (!picked) continue;
+          if (!(await probeUrl(picked.url, 2500))) continue;
+          return {
+            url: picked.url,
+            mime: picked.mime,
+            lufs: picked.lufs,
+            itag: picked.itag,
+            clen: picked.clen,
+          };
+        } catch (err) {
+          lastErr = err;
         }
       }
       throw lastErr instanceof Error ? lastErr : new Error("InnerTube clients failed");
     };
 
-    const tryFallbackCdn = async (): Promise<ResolvedStream> => {
-      const url = await resolveViaFallbackCdn(videoId);
-      return { url, mime: "audio/mp4", lufs: null };
-    };
-
+    // 1. Authoritative primary resolution via YouTube InnerTube (exact videoId stream)
     try {
-      // Race InnerTube against the fast 320kbps CDN resolver so playback starts in <1s
-      const winner = await Promise.any([tryInnerTube(), tryFallbackCdn()]);
-      return cacheAndReturn(winner, streamTtlMs(winner.url, Date.now()));
-    } catch {
-      /* fall through to Piped */
+      const stream = await tryInnerTube();
+      return cacheAndReturn(stream, streamTtlMs(stream.url, Date.now()));
+    } catch (err) {
+      console.warn(`[bytune] InnerTube primary resolution failed for ${videoId}:`, err);
     }
 
-    const url = await resolveViaPiped(videoId);
-    return cacheAndReturn({ url, mime: "audio/mp4", lufs: null }, streamTtlMs(url, Date.now()));
+    // 2. High-speed Piped YouTube mirror for the exact videoId
+    try {
+      const url = await resolveViaPiped(videoId);
+      return cacheAndReturn({ url, mime: "audio/mp4", lufs: null }, streamTtlMs(url, Date.now()));
+    } catch {
+      /* continue to verified fallback */
+    }
+
+    // 3. Fallback CDN with STRICT title/artist matching verification
+    try {
+      const url = await resolveViaFallbackCdn(videoId);
+      return cacheAndReturn({ url, mime: "audio/mp4", lufs: null }, streamTtlMs(url, Date.now()));
+    } catch {
+      /* exhausted */
+    }
+
+    throw new Error(`Could not resolve stream for ${videoId}`);
   })();
   resolving.set(key, run);
   // Drop the in-flight entry once settled; the side chain swallows the

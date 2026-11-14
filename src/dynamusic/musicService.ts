@@ -277,7 +277,14 @@ export async function searchYouTubeMusic(query: string): Promise<Track[]> {
 
       if (Array.isArray(results) && results.length > 0) {
         const remoteTracks: Track[] = results
-          .filter((item: any) => item && (item.song || item.title))
+          .filter((item: any) => {
+            if (!item || (!item.song && !item.title)) return false;
+            const t = (item.song || item.title || "").toLowerCase();
+            const a = (item.primary_artists || item.singers || "").toLowerCase();
+            const qTokens = trimmed.split(" ").filter((w: string) => w.length > 1);
+            if (qTokens.length === 0) return true;
+            return qTokens.some((tok: string) => t.includes(tok) || a.includes(tok));
+          })
           .map((item: any) => {
             let fullStream = "";
             if (item.encrypted_media_url) {
@@ -340,7 +347,14 @@ export async function searchYouTubeMusic(query: string): Promise<Track[]> {
 
     if (autoRes.ok) {
       const autoData = await autoRes.json();
-      const songItems = autoData.songs?.data || [];
+      const songItems = (autoData.songs?.data || []).filter((s: any) => {
+        if (!s || (!s.title && !s.song)) return false;
+        const t = (s.title || s.song || "").toLowerCase();
+        const a = (s.description || s.more_info?.primary_artists || "").toLowerCase();
+        const qTokens = trimmed.split(" ").filter((w: string) => w.length > 1);
+        if (qTokens.length === 0) return true;
+        return qTokens.some((tok: string) => t.includes(tok) || a.includes(tok));
+      });
       if (songItems.length > 0) {
         const pids = songItems.slice(0, 8).map((s: any) => s.id).join(",");
         const detUrl = `https://www.jiosaavn.com/api.php?__call=song.getDetails&pids=${pids}&_format=json&_marker=0`;

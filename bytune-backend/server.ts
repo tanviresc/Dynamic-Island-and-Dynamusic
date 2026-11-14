@@ -198,6 +198,17 @@ function decodeBinaryInput(val: any): any {
 
 const sseClients = new Set<http.ServerResponse>();
 
+// 15-second heartbeat ping so mobile browsers and Wi-Fi routers never drop the SSE connection
+setInterval(() => {
+  for (const res of sseClients) {
+    try {
+      res.write(": keepalive\n\n");
+    } catch {
+      sseClients.delete(res);
+    }
+  }
+}, 15_000);
+
 let latestPlayerState: any = null;
 
 function broadcastSse(channel: string, ...args: any[]): void {

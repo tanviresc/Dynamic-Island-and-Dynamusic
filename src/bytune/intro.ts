@@ -39,21 +39,31 @@ export const flight = (box: { left: number; top: number }, from: Point, to: Poin
 export function endIntro(): void {
   const intro = document.getElementById("intro");
   if (!intro) return;
-  // The miniplayer's window: public/intro.js left the intro off there.
+  // If not running in intro mode, remove immediately
   if (!document.documentElement.classList.contains("intro")) {
     intro.remove();
     return;
   }
-  // Resolves with the app's own Reduce animation; never held on the intro, ready or not.
-  const ready = Promise.race([
-    new Promise<boolean>((r) =>
-      window.addEventListener("bytune-startup-ready", (e) => r(!!(e as CustomEvent<{ reduceMotion?: boolean }>).detail?.reduceMotion), {
-        once: true,
-      }),
-    ),
-    wait(6000).then(() => false),
-  ]);
-  void play(intro, ready);
+
+  let dismissed = false;
+  const dismiss = () => {
+    if (dismissed) return;
+    dismissed = true;
+    intro.animate({ opacity: [1, 0] }, { duration: 180, easing: "ease-out" }).finished.then(() => {
+      intro.remove();
+      document.documentElement.classList.remove("intro", "intro-wait", "intro-glass", "intro-lit", "intro-warm");
+      window.bytuneIntroLight?.stop();
+      window.bytune?.introDone?.();
+    }).catch(() => {
+      intro.remove();
+      document.documentElement.classList.remove("intro", "intro-wait", "intro-glass", "intro-lit", "intro-warm");
+    });
+  };
+
+  // When startup is ready (~100ms when stores hydrate), dismiss smoothly and fast
+  window.addEventListener("bytune-startup-ready", () => dismiss(), { once: true });
+  // Fast failsafe: never delay startup longer than 600ms under any circumstances
+  setTimeout(dismiss, 600);
 }
 
 async function play(intro: HTMLElement, ready: Promise<boolean>): Promise<void> {
