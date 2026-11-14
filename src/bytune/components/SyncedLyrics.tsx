@@ -175,10 +175,10 @@ function depthStyle(
   blur: boolean,
 ): { className: string; style: React.CSSProperties } {
   const d = Math.min(Math.abs(dist), 4);
-  // Sung lines sink away a touch harder than upcoming ones.
-  const opacity = [1, 0.44, 0.28, 0.16, 0.1][d] * (past && d > 0 ? 0.75 : 1);
-  const blurPx = blur ? [0, 1.2, 2.2, 3.2, 4][d] : 0;
-  const scale = [1.04, 0.97, 0.94, 0.92, 0.9][d];
+  // Sung and upcoming lines stay crisp and legible with smooth modern falloff
+  const opacity = [1, 0.68, 0.48, 0.38, 0.28][d] * (past && d > 0 ? 0.85 : 1);
+  const blurPx = blur ? [0, 0.5, 1.0, 1.4, 1.8][d] : 0;
+  const scale = [1.04, 0.98, 0.96, 0.94, 0.92][d];
   return {
     className: "transition-all duration-300 ease-out",
     style: {
@@ -263,14 +263,16 @@ export function LyricsView({
   const lyricPos = position - offset;
 
   const activeIndex = useMemo(() => {
-    if (!lines) return -1;
+    if (!lines || lines.length === 0) return -1;
     let idx = -1;
     for (let i = 0; i < lines.length; i++) {
       if (lines[i].time <= lyricPos + 0.35) idx = i;
       else break;
     }
+    // If playback has started and we are in intro before the first line, highlight line 0
+    if (idx === -1 && position >= 0) return 0;
     return idx;
-  }, [lines, lyricPos]);
+  }, [lines, lyricPos, position]);
 
   // Keep the active line on its anchor. Runs on lyrics load too — at mount
   // the layout isn't measured yet, so the first attempt needs a frame first.
@@ -466,8 +468,10 @@ export function LyricsView({
                 ref={i === activeIndex ? activeRef : undefined}
                 onClick={() => seek(Math.max(0, line.time + offset - 0.15))}
                 title="Jump here"
-                className={`group relative block w-full text-left origin-left ${
-                  active ? "text-white font-extrabold" : "text-white/60 font-semibold"
+                className={`group relative block w-full text-left origin-left transition-all duration-300 ${
+                  active
+                    ? "text-white font-extrabold bg-white/[0.08] px-3.5 py-2.5 rounded-2xl border border-white/15 shadow-[0_4px_24px_rgba(0,0,0,0.5)]"
+                    : "text-white/60 font-semibold px-3 py-1.5 hover:text-white/80"
                 } ${depth.className}`}
                 style={
                   active
@@ -482,10 +486,10 @@ export function LyricsView({
                     : depth.style
                 }
               >
-                {/* Active singing indicator dot */}
+                {/* Active singing indicator: vibrant glowing pill bar */}
                 {active && (
                   <span
-                    className="inline-block w-2.5 h-2.5 rounded-full bg-white mr-2.5 mb-1 align-middle animate-pulse shadow-[0_0_14px_rgba(255,255,255,1)]"
+                    className="inline-block w-1.5 h-4 rounded-full bg-white mr-2.5 align-middle animate-pulse shadow-[0_0_12px_rgba(255,255,255,1)]"
                     title="Singing now"
                   />
                 )}

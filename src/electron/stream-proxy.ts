@@ -78,6 +78,10 @@ export function getStreamProxyPort(): number {
   return proxyPort;
 }
 
+export function setStreamProxyPort(port: number): void {
+  proxyPort = port;
+}
+
 /** `retry` gives the URL a fresh query, so Chromium never reuses the failed URL's cached bytes. */
 export function proxyUrlFor(trackId: string, retry = false, maxKbps?: number, title?: string, artist?: string): string {
   const kbps = typeof maxKbps === "number" && maxKbps > 0 ? `&kbps=${Math.floor(maxKbps)}` : "";
@@ -269,15 +273,31 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     }
 
     let stream = await resolveStream(trackId as string, false, maxKbps, false, title, artist);
+
+    // Range parsing: parse requested byte span
+    let reqStart = 0;
+    let reqEnd: number | undefined;
+    if (range) {
+      const match = /^bytes=(\d*)-(\d*)$/.exec(range.trim());
+      if (match) {
+        if (match[1] !== "") reqStart = parseInt(match[1], 10);
+        if (match[2] !== "") reqEnd = parseInt(match[2], 10);
+      }
+    }
+
+    const CHUNK_SIZE = 512 * 1024; // 512 KB slices for instant playback & SABR chunking compatibility
+    const firstChunkEnd = reqEnd !== undefined ? Math.min(reqEnd, reqStart + CHUNK_SIZE - 1) : reqStart + CHUNK_SIZE - 1;
+    const initialRange = `bytes=${reqStart}-${firstChunkEnd}`;
+
     let ctl = new AbortController();
-    let upstream = await fetchUpstream(stream.url, range, ctl);
+    let upstream = await fetchUpstream(stream.url, initialRange, ctl);
 
     // Self-heal: a URL that just went bad gets one more resolution.
     if (upstream.status === 403 && trackId) {
       console.warn(`[bytune] proxy upstream 403 for ${trackId}, re-resolving`);
       stream = await resolveStream(trackId, true, maxKbps, false, title, artist);
       ctl = new AbortController();
-      upstream = await fetchUpstream(stream.url, range, ctl);
+      upstream = await fetchUpstream(stream.url, initialRange, ctl);
     }
 
     if (!upstream.ok || !upstream.body) {
@@ -289,8 +309,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
 
     // A range past the start must come from the file this URL served before:
     // its byte offsets mean nothing in another file. Refusing makes the deck
-    // error, and the player reloads at its position on a fresh URL. (A later
-    // bytes=0- request on the old URL is served and re-recorded.)
+    // error, and the player reloads at its position on a fresh URL.
     const identity = `${stream.itag ?? "?"}:${stream.clen ?? "?"}`;
     const before = served.get(key);
     if (range && !/^bytes=0-/.test(range) && before && before !== identity) {
@@ -303,52 +322,108 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     served.set(key, identity);
     evictOldest(served, 500);
 
+    // Determine total length from Content-Range or clen
+    let totalLength: number | undefined = stream.clen;
+    const cr = upstream.headers.get("content-range");
+    if (cr) {
+      const m = /\/(\d+)$/.exec(cr);
+      if (m) totalLength = parseInt(m[1], 10);
+    }
+    if (!totalLength) {
+      const cl = upstream.headers.get("content-length");
+      if (cl && upstream.status === 200) totalLength = parseInt(cl, 10);
+    }
+
+    const finalTargetEnd = reqEnd !== undefined ? reqEnd : (totalLength !== undefined ? totalLength - 1 : undefined);
+    const contentType = upstream.headers.get("content-type") || stream.mime || "audio/mp4";
+
     const outHeaders: Record<string, string> = {
       "Access-Control-Allow-Origin": "*",
       "Cache-Control": "no-store",
+      "Accept-Ranges": "bytes",
+      "Content-Type": contentType,
     };
-    for (const h of PASSTHROUGH_HEADERS) {
-      const v = upstream.headers.get(h);
-      if (v) outHeaders[h] = v;
-    }
-    res.writeHead(upstream.status, outHeaders);
 
-    const reader = upstream.body.getReader();
-    req.on("close", () => {
-      void reader.cancel().catch(() => undefined);
-    });
-    // Idle watchdog: an upstream that stops sending mid-song is aborted, so
-    // the player gets an error (and retries) instead of buffering forever.
-    let idle = setTimeout(() => ctl.abort(new Error("upstream stalled")), UPSTREAM_TIMEOUT_MS);
-    try {
-      for (;;) {
-        const { done, value } = await reader.read();
-        clearTimeout(idle);
-        if (done || res.destroyed) break;
-        if (value && value.length > 0 && !res.write(value)) {
-          // Wait for room, or for the player to hang up (a seek or skip
-          // closes the request; waiting on `drain` alone never returned).
-          await new Promise<void>((resolve) => {
-            const settle = (): void => {
-              res.off("drain", settle);
-              res.off("close", settle);
-              resolve();
-            };
-            res.once("drain", settle);
-            res.once("close", settle);
-          });
-          if (res.destroyed) break;
-        }
-        idle = setTimeout(() => ctl.abort(new Error("upstream stalled")), UPSTREAM_TIMEOUT_MS);
+    const status = range || upstream.status === 206 || reqStart > 0 ? 206 : 200;
+    if (status === 206 && totalLength !== undefined && finalTargetEnd !== undefined) {
+      outHeaders["Content-Range"] = `bytes ${reqStart}-${finalTargetEnd}/${totalLength}`;
+      outHeaders["Content-Length"] = String(finalTargetEnd - reqStart + 1);
+    } else {
+      for (const h of PASSTHROUGH_HEADERS) {
+        const v = upstream.headers.get(h);
+        if (v && !outHeaders[h]) outHeaders[h] = v;
       }
-    } finally {
-      clearTimeout(idle);
     }
-    if (res.destroyed) {
-      void reader.cancel().catch(() => undefined);
+
+    res.writeHead(status, outHeaders);
+
+    const pipeBody = async (body: ReadableStream<Uint8Array>): Promise<boolean> => {
+      const reader = body.getReader();
+      const onReqClose = () => {
+        void reader.cancel().catch(() => undefined);
+      };
+      req.on("close", onReqClose);
+      let idle = setTimeout(() => ctl.abort(new Error("upstream stalled")), UPSTREAM_TIMEOUT_MS);
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          clearTimeout(idle);
+          if (done || res.destroyed) break;
+          if (value && value.length > 0 && !res.write(value)) {
+            await new Promise<void>((resolve) => {
+              const settle = () => {
+                res.off("drain", settle);
+                res.off("close", settle);
+                resolve();
+              };
+              res.once("drain", settle);
+              res.once("close", settle);
+            });
+            if (res.destroyed) break;
+          }
+          idle = setTimeout(() => ctl.abort(new Error("upstream stalled")), UPSTREAM_TIMEOUT_MS);
+        }
+        return !res.destroyed;
+      } finally {
+        clearTimeout(idle);
+        req.off("close", onReqClose);
+        reader.releaseLock();
+      }
+    };
+
+    // Pipe the first chunk
+    const firstOk = await pipeBody(upstream.body);
+    if (!firstOk || res.destroyed) return;
+
+    // If upstream returned full status 200 without content-range, or client range is fulfilled
+    if (upstream.status === 200 && !cr) {
+      res.end();
       return;
     }
-    res.end();
+
+    // Sequentially stream subsequent chunks with bounded ranges (bypassing YouTube iOS SABR 403)
+    let nextStart = firstChunkEnd + 1;
+    while (!res.destroyed && (finalTargetEnd === undefined || nextStart <= finalTargetEnd)) {
+      const nextEnd = finalTargetEnd !== undefined ? Math.min(nextStart + CHUNK_SIZE - 1, finalTargetEnd) : nextStart + CHUNK_SIZE - 1;
+      const nextRange = `bytes=${nextStart}-${nextEnd}`;
+      const chunkCtl = new AbortController();
+      let chunkResp: Response;
+      try {
+        chunkResp = await fetchUpstream(stream.url, nextRange, chunkCtl);
+      } catch {
+        break;
+      }
+      if (!chunkResp.ok || !chunkResp.body) break;
+
+      const chunkOk = await pipeBody(chunkResp.body);
+      if (!chunkOk || res.destroyed) break;
+
+      nextStart = nextEnd + 1;
+    }
+
+    if (!res.destroyed) {
+      res.end();
+    }
   } catch (err) {
     console.warn("[bytune] proxy error:", err instanceof Error ? err.message : err);
     // Mid-body (headers already sent) the only honest answer is to drop the
@@ -366,3 +441,5 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     }
   }
 }
+
+export { handle as handleStreamProxyRequest };

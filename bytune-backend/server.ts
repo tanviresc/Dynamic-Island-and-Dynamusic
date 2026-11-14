@@ -11,8 +11,10 @@ import * as path from "path";
 import { app, emitProtocolUrl, invokeIpcChannel, onWebContentsSend } from "./electron-shim";
 import * as locallib from "../src/electron/local-library";
 import { getYT, resolveStream } from "../src/electron/music-service";
+import { handleStreamProxyRequest, setStreamProxyPort } from "../src/electron/stream-proxy";
 
 const PORT = Number(process.env.BYTUNE_BACKEND_PORT || 47822);
+setStreamProxyPort(PORT);
 const bootDeepLink = process.argv.slice(1).find((a) => /^bytune:\/\//i.test(a));
 
 // Boot the entire ByTune main process (registers all IPC handlers, starts stream proxy, stats, sync, etc.)
@@ -438,6 +440,14 @@ const server = http.createServer(async (req, res) => {
         res.end(JSON.stringify({ ok: false, error: msg }));
       }
     });
+    return;
+  }
+
+  if (
+    req.method === "GET" &&
+    (url.pathname === "/stream" || (url.pathname === "/" && (url.searchParams.has("id") || url.searchParams.has("lid"))))
+  ) {
+    await handleStreamProxyRequest(req, res);
     return;
   }
 
