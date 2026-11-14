@@ -1213,6 +1213,7 @@ export const usePlayer = create<PlayerState>()(
       },
 
       toggleMute() {
+        if (forwardPcRemote("toggle_mute")) return;
         set({ muted: !get().muted });
       },
 

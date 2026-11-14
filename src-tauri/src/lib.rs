@@ -869,10 +869,22 @@ pub fn run() {
             // Spawn & supervise Dynamusic (ByTune) Node Backend Sidecar (0.0.0.0:47822)
             {
                 std::thread::spawn(|| {
-                    let candidates = [
+                    let mut candidates: Vec<std::path::PathBuf> = vec![
                         std::path::PathBuf::from("dist-bytune/server.cjs"),
                         std::path::PathBuf::from("../dist-bytune/server.cjs"),
                     ];
+                    if let Ok(exe) = std::env::current_exe() {
+                        let mut dir_opt = exe.parent();
+                        for _ in 0..4 {
+                            if let Some(dir) = dir_opt {
+                                candidates.push(dir.join("dist-bytune/server.cjs"));
+                                candidates.push(dir.join("resources/dist-bytune/server.cjs"));
+                                dir_opt = dir.parent();
+                            } else {
+                                break;
+                            }
+                        }
+                    }
                     let Some(script_path) = candidates.into_iter().find(|p| p.exists()) else {
                         warn!("Dynamusic backend sidecar not found in dist-bytune/server.cjs");
                         return;

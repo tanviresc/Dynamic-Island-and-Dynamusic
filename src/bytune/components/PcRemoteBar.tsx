@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Monitor, Smartphone, Play, Pause, SkipForward, SkipBack, Volume2, Heart, Wifi, WifiOff } from "lucide-react";
-import { getInterpolatedPcPosition, useMobileMode } from "../stores/mobileMode";
+import { getInterpolatedPcPosition, isTauriDesktop, useMobileMode } from "../stores/mobileMode";
 import { useLibrary } from "../stores/library";
 import { useUI } from "../stores/ui";
 import { fmtTime } from "../lib/format";
@@ -10,12 +10,16 @@ export function PcRemoteBar() {
   const mode = useMobileMode((s) => s.mode);
   const setMode = useMobileMode((s) => s.setMode);
   const pcState = useMobileMode((s) => s.pcState);
+  const pcHost = useMobileMode((s) => s.pcHost);
+  const desktopOnline = useMobileMode((s) => s.desktopOnline);
   const connectionStatus = useMobileMode((s) => s.connectionStatus);
   const sendCommand = useMobileMode((s) => s.sendPcCommand);
   const reconnectNow = useMobileMode((s) => s.reconnectNow);
   const toggleLike = useLibrary((s) => s.toggleLike);
   const isLiked = useLibrary((s) => (pcState?.track ? s.isLiked(pcState.track.id) : false));
   const toggleNowPlaying = useUI((s) => s.toggleNowPlaying);
+  const navigate = useUI((s) => s.navigate);
+  const needsHostSetup = !isTauriDesktop() && (pcHost === "127.0.0.1" || pcHost === "localhost" || !pcHost);
 
   const track = pcState?.track;
   const isPlaying = Boolean(pcState?.playing);
@@ -73,33 +77,57 @@ export function PcRemoteBar() {
     >
       {/* Indicator Tag + Connection Health */}
       <div className="flex items-center justify-between text-[11px] font-medium px-1 gap-2">
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            if (connectionStatus !== "connected") reconnectNow();
-          }}
-          className={`flex items-center gap-1.5 min-w-0 truncate ${
-            connectionStatus === "connected"
-              ? "text-emerald-400"
-              : connectionStatus === "reconnecting"
+        <div className="flex items-center gap-1.5 min-w-0">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              if (needsHostSetup) {
+                navigate({ name: "settings", param: "account" });
+              } else if (connectionStatus !== "connected") {
+                reconnectNow();
+              }
+            }}
+            className={`flex items-center gap-1.5 min-w-0 truncate ${
+              needsHostSetup
                 ? "text-amber-400"
-                : "text-red-400"
-          }`}
-        >
-          {connectionStatus === "connected" ? (
-            <Wifi className="w-3 h-3 shrink-0" />
-          ) : (
-            <WifiOff className="w-3 h-3 shrink-0" />
+                : connectionStatus === "connected" && desktopOnline
+                  ? "text-emerald-400"
+                  : connectionStatus === "connected" || connectionStatus === "reconnecting"
+                    ? "text-amber-400"
+                    : "text-red-400"
+            }`}
+          >
+            {connectionStatus === "connected" ? (
+              <Wifi className="w-3 h-3 shrink-0" />
+            ) : (
+              <WifiOff className="w-3 h-3 shrink-0" />
+            )}
+            <span className="truncate">
+              {needsHostSetup
+                ? "Tap to enter PC IP"
+                : connectionStatus === "connected" && desktopOnline
+                  ? "Controlling PC Dynamusic"
+                  : connectionStatus === "connected"
+                    ? "PC server linked (open player on PC)"
+                    : connectionStatus === "reconnecting"
+                      ? "Reconnecting to PC..."
+                      : "PC Offline (Tap to retry)"}
+            </span>
+          </button>
+          {connectionStatus !== "connected" && !needsHostSetup && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                navigate({ name: "settings", param: "account" });
+              }}
+              className="px-1.5 py-0.5 rounded bg-white/10 hover:bg-white/20 text-[10px] text-white/80 shrink-0"
+            >
+              Pair IP
+            </button>
           )}
-          <span className="truncate">
-            {connectionStatus === "connected"
-              ? "Controlling PC Dynamusic"
-              : connectionStatus === "reconnecting"
-                ? "Reconnecting to PC..."
-                : "PC Offline (Tap to retry)"}
-          </span>
-        </button>
+        </div>
         <span className="text-white/45 text-[10px] tabular-nums shrink-0">
           {fmtTime(shownPos)} / {fmtTime(duration)}
         </span>

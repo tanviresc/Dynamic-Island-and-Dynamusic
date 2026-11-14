@@ -241,8 +241,38 @@ interface RemoteWsClient {
   socket: Duplex;
   buffer: Buffer;
   lastPongAt: number;
+  role: "desktop" | "client";
 }
 const wsClients = new Set<RemoteWsClient>();
+let commandSeq = 0;
+
+function hasDesktopClient(): boolean {
+  for (const c of wsClients) {
+    if (c.role === "desktop" && !c.socket.destroyed) return true;
+  }
+  return false;
+}
+
+function broadcastDesktopStatus(): void {
+  const online = hasDesktopClient();
+  const payload = { type: "desktop_status", online };
+  for (const client of wsClients) {
+    if (client.role === "client") {
+      sendWsJson(client, payload);
+    }
+  }
+}
+
+function forwardCommandToDesktop(command: string, payload: unknown): void {
+  const commandId = `cmd-${Date.now()}-${++commandSeq}`;
+  const msg = { type: "command", commandId, command, payload };
+  for (const client of wsClients) {
+    if (client.role === "desktop") {
+      sendWsJson(client, msg);
+    }
+  }
+  broadcastSse("pc:player_command", { commandId, command, payload });
+}
 
 function encodeWsFrame(opcode: number, payloadBuf: Buffer): Buffer {
   const len = payloadBuf.length;
@@ -296,6 +326,7 @@ function broadcastWsJson(data: unknown): void {
 // 3-second active WS ping/pong heartbeat & dead socket reaper
 setInterval(() => {
   const now = Date.now();
+  let desktopRemoved = false;
   for (const client of wsClients) {
     if (client.socket.destroyed || now - client.lastPongAt > 9_000) {
       try {
@@ -304,10 +335,12 @@ setInterval(() => {
         /* ignore */
       }
       wsClients.delete(client);
+      if (client.role === "desktop") desktopRemoved = true;
       continue;
     }
     sendWsJson(client, { type: "ping", ts: now });
   }
+  if (desktopRemoved) broadcastDesktopStatus();
 }, 3_000);
 
 // 15-second SSE keepalive
@@ -363,13 +396,13 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === "GET" && url.pathname === "/health") {
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ ok: true }));
+    res.end(JSON.stringify({ ok: true, desktopOnline: hasDesktopClient(), hasState: latestPlayerState !== null }));
     return;
   }
 
   if (req.method === "GET" && url.pathname === "/player/state") {
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ ok: true, state: latestPlayerState }));
+    res.end(JSON.stringify({ ok: true, desktopOnline: hasDesktopClient(), state: latestPlayerState }));
     return;
   }
 
@@ -400,9 +433,11 @@ const server = http.createServer(async (req, res) => {
         const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
         const cmd = body.command || "";
         const payload = body.payload;
-        broadcastSse("pc:player_command", { command: cmd, payload });
+        if (cmd) {
+          forwardCommandToDesktop(cmd, payload);
+        }
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ ok: true }));
+        res.end(JSON.stringify({ ok: true, desktopOnline: hasDesktopClient() }));
       } catch {
         res.writeHead(400);
         res.end();
@@ -616,11 +651,21 @@ server.on("upgrade", (req, socket) => {
     (socket as any).setNoDelay(true);
   }
 
-  const client: RemoteWsClient = { socket, buffer: Buffer.alloc(0), lastPongAt: Date.now() };
+  const role: "desktop" | "client" = reqUrl.searchParams.get("role") === "desktop" ? "desktop" : "client";
+  const client: RemoteWsClient = { socket, buffer: Buffer.alloc(0), lastPongAt: Date.now(), role };
   wsClients.add(client);
 
-  if (latestPlayerState) {
-    sendWsJson(client, { type: "state", state: latestPlayerState });
+  if (role === "desktop") {
+    broadcastDesktopStatus();
+  } else {
+    sendWsJson(client, { type: "desktop_status", online: hasDesktopClient() });
+    if (latestPlayerState) {
+      sendWsJson(client, { type: "state", state: latestPlayerState });
+    }
+    // Ask any connected desktop UI to push an up-to-date snapshot immediately
+    for (const c of wsClients) {
+      if (c.role === "desktop") sendWsJson(c, { type: "request_sync" });
+    }
   }
 
   socket.on("data", (chunk: Buffer) => {
@@ -656,6 +701,7 @@ server.on("upgrade", (req, socket) => {
 
       if (opcode === 0x8) {
         wsClients.delete(client);
+        if (client.role === "desktop") broadcastDesktopStatus();
         socket.destroy();
         return;
       }
@@ -674,11 +720,20 @@ server.on("upgrade", (req, socket) => {
             type?: string;
             command?: string;
             payload?: unknown;
+            state?: unknown;
           };
-          if (msg.type === "request_state" && latestPlayerState) {
-            sendWsJson(client, { type: "state", state: latestPlayerState });
+          if (msg.type === "request_state") {
+            sendWsJson(client, { type: "desktop_status", online: hasDesktopClient() });
+            if (latestPlayerState) {
+              sendWsJson(client, { type: "state", state: latestPlayerState });
+            }
+            for (const c of wsClients) {
+              if (c.role === "desktop") sendWsJson(c, { type: "request_sync" });
+            }
+          } else if (msg.type === "sync_state" && client.role === "desktop" && msg.state) {
+            stampAndPublishState(msg.state);
           } else if (msg.type === "command" && msg.command) {
-            broadcastSse("pc:player_command", { command: msg.command, payload: msg.payload });
+            forwardCommandToDesktop(msg.command, msg.payload);
           }
         } catch {
           /* ignore malformed WS JSON */
@@ -687,8 +742,14 @@ server.on("upgrade", (req, socket) => {
     }
   });
 
-  socket.on("close", () => wsClients.delete(client));
-  socket.on("error", () => wsClients.delete(client));
+  const cleanupClient = () => {
+    const wasPresent = wsClients.delete(client);
+    if (wasPresent && client.role === "desktop") {
+      broadcastDesktopStatus();
+    }
+  };
+  socket.on("close", cleanupClient);
+  socket.on("error", cleanupClient);
 });
 
 server.on("error", (err: NodeJS.ErrnoException) => {

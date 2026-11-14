@@ -23,6 +23,7 @@ import { useRecents } from "../stores/recents";
 import { useRecentItems, type RecentItem } from "../stores/recentItems";
 import { searchPageOnce } from "../lib/searchOnce";
 import { tintHoverHandlers, useUI, type MenuItem } from "../stores/ui";
+import { useMobileMode } from "../stores/mobileMode";
 import type { BrowseItem, SearchFilter, SearchPageResult, SearchRow, Track } from "../types";
 
 const FILTERS: { key: SearchFilter; label: string; icon: LucideIcon }[] = [
@@ -472,10 +473,18 @@ function RecentSearches() {
 
 export function SearchView() {
   const query = useUI((s) => s.searchQuery);
+  const setSearchQuery = useUI((s) => s.setSearchQuery);
   const filter = useUI((s) => s.searchFilter);
   const setFilter = useUI((s) => s.setSearchFilter);
   const pushSearch = useRecents((s) => s.pushSearch);
   const playQueue = usePlayer((s) => s.playQueue);
+  const isMobileDevice = useMobileMode((s) => s.isMobileDevice);
+  const mobileInputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (!isMobileDevice || query.trim()) return;
+    const t = window.setTimeout(() => mobileInputRef.current?.focus(), 80);
+    return () => window.clearTimeout(t);
+  }, [isMobileDevice]);
 
   // BitChord mobile keeps an LRU of full result sets per (filter, query); a
   // repeated search answers from it instantly, and a filter tab flip re-runs
@@ -596,16 +605,65 @@ export function SearchView() {
     return () => observer.disconnect();
   }, [rows, continuation, loading, loadingMore, error, filter]);
 
+  const mobileSearchBar = isMobileDevice ? (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        const t = query.trim();
+        if (t) {
+          pushSearch(t);
+          setTrimmed(t);
+        }
+        mobileInputRef.current?.blur();
+      }}
+      className="sticky top-0 z-20 -mx-1 px-1 pt-1 pb-3 bg-surface/85 backdrop-blur-xl"
+    >
+      <div className="relative flex items-center h-11 rounded-full bg-surface-hi/95 border border-ink-hi/15 focus-within:border-primary/60 shadow-sm px-3.5 gap-2.5">
+        <SearchIcon className="w-4 h-4 text-ink-dim shrink-0" />
+        <input
+          id="mobile-search-input"
+          ref={mobileInputRef}
+          type="search"
+          enterKeyHint="search"
+          autoCapitalize="none"
+          autoCorrect="off"
+          spellCheck={false}
+          value={query}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          placeholder="Search songs, artists, albums..."
+          aria-label="Search songs, artists, and albums"
+          className="flex-1 min-w-0 bg-transparent text-[14px] text-ink-hi placeholder:text-ink-ghost focus:outline-none"
+        />
+        {query.length > 0 && (
+          <button
+            type="button"
+            onClick={() => {
+              setSearchQuery("");
+              mobileInputRef.current?.focus();
+            }}
+            aria-label="Clear search"
+            className="w-7 h-7 rounded-full grid place-items-center text-ink-dim hover:text-ink-hi hover:bg-ink-hi/10 transition-colors shrink-0"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        )}
+      </div>
+    </form>
+  ) : null;
+
   if (!trimmed) {
     return (
-      <div className="space-y-10">
+      <div className="space-y-6 md:space-y-10">
+        {mobileSearchBar}
         <RecentlyOpened />
         <RecentSearches />
-        <div className="flex flex-col items-center text-center py-16">
+        <div className="flex flex-col items-center text-center py-12 md:py-16">
           <SearchX className="w-10 h-10 text-ink-ghost mb-4" />
           <div className="text-[15px] font-semibold text-ink-hi">Search Dynamusic</div>
           <p className="text-[13px] text-ink-dim mt-1.5 max-w-sm leading-relaxed">
-            Find songs, albums, artists and playlists from YouTube Music. Press {isMac ? "⌘F" : "Ctrl+F"} anywhere to jump into search.
+            {isMobileDevice
+              ? "Type above to search songs, albums, artists and playlists."
+              : `Find songs, albums, artists and playlists from YouTube Music. Press ${isMac ? "⌘F" : "Ctrl+F"} anywhere to jump into search.`}
           </p>
         </div>
       </div>
@@ -625,6 +683,7 @@ export function SearchView() {
 
   return (
     <div className="space-y-4">
+      {mobileSearchBar}
       {/* pointer-events-none: rows scrolling under this strip keep their
           hover — only the pills themselves take the pointer. The frosted
           blur band behind them is NOT painted here: it lives at panel level
@@ -635,7 +694,7 @@ export function SearchView() {
           the default window size; flex-wrap is the safety valve below
           that — filters wrap to a second line rather than ever getting
           cut. */}
-      <div className="pointer-events-none sticky top-0 z-10 -mx-3 md:-mx-10 px-3 md:px-10 -mt-5 pt-4 pb-4 animate-slide-up">
+      <div className="pointer-events-none sticky top-[56px] md:top-0 z-10 -mx-3 md:-mx-10 px-3 md:px-10 mt-0 md:-mt-5 pt-2 md:pt-4 pb-3 md:pb-4 animate-slide-up">
         <div className="pointer-events-auto flex flex-wrap items-center justify-center gap-1.5 gap-y-1">
           <Pills size="sm" options={FILTERS} value={filter} onChange={setFilter} />
           {loading && (

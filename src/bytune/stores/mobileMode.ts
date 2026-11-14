@@ -38,6 +38,7 @@ interface MobileModeState {
   mode: MobileMode;
   isMobileDevice: boolean;
   pcConnected: boolean;
+  desktopOnline: boolean;
   connectionStatus: RemoteConnectionStatus;
   pcHost: string;
   pcState: RemotePCPlayerState | null;
@@ -45,6 +46,7 @@ interface MobileModeState {
   setPcHost: (hostOrUrl: string) => void;
   setIsMobileDevice: (isMobile: boolean) => void;
   setPcState: (state: RemotePCPlayerState | null) => void;
+  setDesktopOnline: (online: boolean) => void;
   setConnectionStatus: (status: RemoteConnectionStatus) => void;
   sendPcCommand: (command: string, payload?: unknown) => Promise<void>;
   reconnectNow: () => void;
@@ -163,6 +165,7 @@ export const useMobileMode = create<MobileModeState>((set, get) => ({
   mode: "phone",
   isMobileDevice: checkIsMobile(),
   pcConnected: false,
+  desktopOnline: false,
   connectionStatus: "offline",
   pcHost: getBackendHost(),
   pcState: null,
@@ -201,7 +204,10 @@ export const useMobileMode = create<MobileModeState>((set, get) => ({
     } catch {
       /* ignore */
     }
-    set({ pcHost: clean, connectionStatus: "reconnecting", pcConnected: false });
+    set({ pcHost: clean, connectionStatus: "reconnecting", pcConnected: false, desktopOnline: false });
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("dynamusic:backend-host-changed"));
+    }
     get().reconnectNow();
   },
 
@@ -211,14 +217,18 @@ export const useMobileMode = create<MobileModeState>((set, get) => ({
     set({
       pcState,
       pcConnected: true,
+      desktopOnline: true,
       connectionStatus: "connected",
     }),
 
+  setDesktopOnline: (desktopOnline) => set({ desktopOnline }),
+
   setConnectionStatus: (connectionStatus) =>
-    set({
+    set((prev) => ({
       connectionStatus,
       pcConnected: connectionStatus === "connected",
-    }),
+      desktopOnline: connectionStatus === "connected" ? prev.desktopOnline : false,
+    })),
 
   reconnectNow: () => {
     wsReconnectFn?.();
@@ -316,6 +326,12 @@ if (typeof window !== "undefined") {
       }
 
       const host = getBackendHost();
+      const unconfiguredNative =
+        isCapacitorNative() && (host === "127.0.0.1" || host === "localhost");
+      if (unconfiguredNative) {
+        useMobileMode.getState().setConnectionStatus("offline");
+        return;
+      }
       const wsUrl = `ws://${host}:47822/ws/remote?role=client`;
       useMobileMode.getState().setConnectionStatus(attempt === 0 ? "reconnecting" : "offline");
 
@@ -340,6 +356,7 @@ if (typeof window !== "undefined") {
             const msg = JSON.parse(String(ev.data)) as {
               type?: string;
               ts?: number;
+              online?: boolean;
               state?: RemotePCPlayerState;
             };
             if (msg.type === "ping") {
@@ -348,6 +365,10 @@ if (typeof window !== "undefined") {
               } catch {
                 /* ignore */
               }
+              return;
+            }
+            if (msg.type === "desktop_status") {
+              useMobileMode.getState().setDesktopOnline(Boolean(msg.online));
               return;
             }
             if (msg.type === "state" && msg.state) {

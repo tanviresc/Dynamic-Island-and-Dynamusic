@@ -285,8 +285,10 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       }
     }
 
-    const CHUNK_SIZE = 512 * 1024; // 512 KB slices for instant playback & SABR chunking compatibility
-    const firstChunkEnd = reqEnd !== undefined ? Math.min(reqEnd, reqStart + CHUNK_SIZE - 1) : reqStart + CHUNK_SIZE - 1;
+    const FIRST_CHUNK_SIZE = 512 * 1024; // Quick 512 KB initial slice for near-instant first-byte start
+    const STREAM_CHUNK_SIZE = 2 * 1024 * 1024; // 2 MB pipelined slices to eliminate inter-chunk stalls
+    const firstChunkEnd =
+      reqEnd !== undefined ? Math.min(reqEnd, reqStart + FIRST_CHUNK_SIZE - 1) : reqStart + FIRST_CHUNK_SIZE - 1;
     const initialRange = `bytes=${reqStart}-${firstChunkEnd}`;
 
     let ctl = new AbortController();
@@ -400,42 +402,89 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       }
     };
 
-    // Pipe the first chunk
+    type PrefetchedChunk = {
+      start: number;
+      ctl: AbortController;
+      promise: Promise<Response | null>;
+    };
+
+    const startChunkPrefetch = (sliceStart: number): PrefetchedChunk | null => {
+      if (res.destroyed || (finalTargetEnd !== undefined && sliceStart > finalTargetEnd)) {
+        return null;
+      }
+      const sliceEnd =
+        finalTargetEnd !== undefined
+          ? Math.min(sliceStart + STREAM_CHUNK_SIZE - 1, finalTargetEnd)
+          : sliceStart + STREAM_CHUNK_SIZE - 1;
+      const cCtl = new AbortController();
+      const promise = fetchUpstream(stream.url, `bytes=${sliceStart}-${sliceEnd}`, cCtl).catch(() => null);
+      return { start: sliceStart, ctl: cCtl, promise };
+    };
+
+    // Start pre-fetching slice 1 right as slice 0 begins piping so transitions between ranges have zero gap
+    let nextStartEst = firstChunkEnd + 1;
+    let prefetched: PrefetchedChunk | null =
+      upstream.status === 206 || totalLength !== undefined ? startChunkPrefetch(nextStartEst) : null;
+
+    // Pipe the first chunk while slice 1 warms in parallel
     const firstResult = await pipeBody(upstream.body, ctl);
-    if (!firstResult.ok || res.destroyed) return;
+    if (!firstResult.ok || res.destroyed) {
+      if (prefetched) prefetched.ctl.abort();
+      return;
+    }
 
     // If upstream returned full status 200 without content-range, or client range is fulfilled
     if (upstream.status === 200 && !cr) {
+      if (prefetched) prefetched.ctl.abort();
       res.end();
       return;
     }
 
-    // Sequentially stream subsequent chunks with bounded ranges (bypassing YouTube iOS SABR 403),
-    // automatically re-resolving an expired/403 upstream URL mid-song without breaking playback.
+    // Double-buffered sequential range streaming (bypasses YouTube iOS SABR 403 with zero inter-chunk network pauses)
     let nextStart = reqStart + firstResult.written;
     if (nextStart <= firstChunkEnd && totalLength !== undefined && firstResult.written === 0) {
+      if (prefetched) prefetched.ctl.abort();
       return;
     }
     let midStreamRefreshes = 0;
     let streamAbortedIncomplete = false;
     while (!res.destroyed && (finalTargetEnd === undefined || nextStart <= finalTargetEnd)) {
-      const nextEnd = finalTargetEnd !== undefined ? Math.min(nextStart + CHUNK_SIZE - 1, finalTargetEnd) : nextStart + CHUNK_SIZE - 1;
+      const nextEnd =
+        finalTargetEnd !== undefined
+          ? Math.min(nextStart + STREAM_CHUNK_SIZE - 1, finalTargetEnd)
+          : nextStart + STREAM_CHUNK_SIZE - 1;
       const nextRange = `bytes=${nextStart}-${nextEnd}`;
-      let chunkCtl = new AbortController();
+
+      let chunkCtl: AbortController;
       let chunkResp: Response | null = null;
-      try {
-        chunkResp = await fetchUpstream(stream.url, nextRange, chunkCtl);
-      } catch {
-        chunkResp = null;
+      if (prefetched && prefetched.start === nextStart) {
+        chunkCtl = prefetched.ctl;
+        chunkResp = await prefetched.promise;
+        prefetched = null;
+      } else {
+        if (prefetched) {
+          prefetched.ctl.abort();
+          prefetched = null;
+        }
+        chunkCtl = new AbortController();
+        chunkResp = await fetchUpstream(stream.url, nextRange, chunkCtl).catch(() => null);
       }
 
       if ((!chunkResp || !chunkResp.ok || !chunkResp.body) && trackId && midStreamRefreshes < 3) {
         midStreamRefreshes++;
         console.warn(`[bytune] proxy mid-stream chunk ${chunkResp?.status ?? "err"} at ${nextStart} for ${trackId}, re-resolving`);
         try {
-          stream = await resolveStream(trackId, true, maxKbps, false, title, artist);
+          const prevIdentity = `${stream.itag ?? "?"}:${stream.clen ?? "?"}`;
+          const refreshed = await resolveStream(trackId, true, maxKbps, false, title, artist);
+          const newIdentity = `${refreshed.itag ?? "?"}:${refreshed.clen ?? "?"}`;
+          if (before && newIdentity !== prevIdentity) {
+            console.warn(`[bytune] proxy mid-stream rendition changed (${prevIdentity} -> ${newIdentity}), aborting cleanly for player recover`);
+            streamAbortedIncomplete = true;
+            break;
+          }
+          stream = refreshed;
           chunkCtl = new AbortController();
-          chunkResp = await fetchUpstream(stream.url, nextRange, chunkCtl);
+          chunkResp = await fetchUpstream(stream.url, nextRange, chunkCtl).catch(() => null);
         } catch {
           chunkResp = null;
         }
@@ -446,14 +495,28 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         break;
       }
 
+      // Immediately start prefetching the following slice while piping the current chunk to res
+      prefetched = startChunkPrefetch(nextEnd + 1);
+
       const chunkResult = await pipeBody(chunkResp.body, chunkCtl);
       if (chunkResult.written > 0) {
         nextStart += chunkResult.written;
-        midStreamRefreshes = 0;
-        if (!chunkResult.ok && !res.destroyed && trackId && midStreamRefreshes < 3) {
+        if (chunkResult.ok) {
+          midStreamRefreshes = 0;
+        } else if (!res.destroyed && trackId && midStreamRefreshes < 3) {
           midStreamRefreshes++;
+          if (prefetched) {
+            prefetched.ctl.abort();
+            prefetched = null;
+          }
           try {
-            stream = await resolveStream(trackId, true, maxKbps, false, title, artist);
+            const prevIdentity = `${stream.itag ?? "?"}:${stream.clen ?? "?"}`;
+            const refreshed = await resolveStream(trackId, true, maxKbps, false, title, artist);
+            if (`${refreshed.itag ?? "?"}:${refreshed.clen ?? "?"}` !== prevIdentity) {
+              streamAbortedIncomplete = true;
+              break;
+            }
+            stream = refreshed;
           } catch {
             streamAbortedIncomplete = true;
             break;
@@ -466,6 +529,10 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         // Zero bytes and done means upstream EOF
         break;
       }
+    }
+    if (prefetched) {
+      prefetched.ctl.abort();
+      prefetched = null;
     }
 
     if (!res.destroyed) {

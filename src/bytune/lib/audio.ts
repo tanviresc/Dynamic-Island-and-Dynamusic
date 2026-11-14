@@ -75,6 +75,8 @@ let retryCount = 0;
 let retriedAt = -Infinity;
 let retryTimer: number | null = null;
 let stallTimer: number | null = null;
+let lastProgressPos = -1;
+let lastProgressAt = 0;
 /** Pre-buffered next track on standby deck (idle mode, not blending). */
 let prebuffered: { id: string; url: string } | null = null;
 let prebufferingId: string | null = null;
@@ -754,6 +756,22 @@ function updateBuffered(): number {
   return 0;
 }
 
+function bufferedAheadSec(a: HTMLAudioElement): number {
+  try {
+    const t = a.currentTime || 0;
+    for (let i = 0; i < a.buffered.length; i++) {
+      const start = a.buffered.start(i);
+      const end = a.buffered.end(i);
+      if (t >= start - 0.5 && t <= end) {
+        return Math.max(0, end - t);
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  return 0;
+}
+
 function clearStallWatchdog(): void {
   if (stallTimer !== null) {
     window.clearTimeout(stallTimer);
@@ -762,18 +780,23 @@ function clearStallWatchdog(): void {
 }
 
 function scheduleStallWatchdog(expectedIndex: number): void {
-  clearStallWatchdog();
+  if (stallTimer !== null) return;
+  const startPos = el().currentTime || 0;
   stallTimer = window.setTimeout(() => {
     stallTimer = null;
     if (!elements || expectedIndex !== mainIdx) return;
     const s = usePlayer.getState();
     const cur = s.queue[s.index];
     const a = el();
-    if (!s.playing || !cur || loadedId !== cur.id) return;
-    if (a.readyState < 3 || a.paused) {
-      handleFailure(cur, new Error("stream_stalled"));
+    if (!s.playing || !cur || loadedId !== cur.id || a.paused) return;
+    // Never tear down a healthy stream if playback time progressed or at least 2s is buffered ahead.
+    const progressed = a.currentTime > startPos + 0.2 || (Date.now() - lastProgressAt < 2500 && lastProgressAt > 0);
+    if (progressed || a.readyState >= 3 || bufferedAheadSec(a) >= 2) {
+      usePlayer.getState()._setBuffering(false);
+      return;
     }
-  }, 5000);
+    handleFailure(cur, new Error("stream_stalled"));
+  }, 8000);
 }
 
 function applySeekWhenReady(
@@ -816,7 +839,14 @@ function seqGuard(expectedSeq: number, trackId: string): boolean {
 function onTimeUpdate(): void {
   const a = el();
   if (!a) return;
+  if (Math.abs((a.currentTime || 0) - lastProgressPos) > 0.05) {
+    lastProgressPos = a.currentTime || 0;
+    lastProgressAt = Date.now();
+  }
   clearStallWatchdog();
+  if (usePlayer.getState().buffering && !a.paused && a.readyState >= 3) {
+    usePlayer.getState()._setBuffering(false);
+  }
   const buf = updateBuffered();
   setPlaybackClock(a.currentTime, a.duration, buf);
   const now = performance.now();
@@ -1299,15 +1329,21 @@ export function initAudioEngine(): void {
     });
     e.addEventListener("waiting", () => {
       if (i === mainIdx) {
-        usePlayer.getState()._setBuffering(true);
-        usePlayer.getState()._setPlaybackStatus("buffering");
-        if (usePlayer.getState().playing) scheduleStallWatchdog(i);
+        if (bufferedAheadSec(e) < 1.5) {
+          usePlayer.getState()._setBuffering(true);
+          usePlayer.getState()._setPlaybackStatus("buffering");
+        }
+        if (usePlayer.getState().playing && bufferedAheadSec(e) < 2) scheduleStallWatchdog(i);
       }
     });
     e.addEventListener("stalled", () => {
       if (i === mainIdx && usePlayer.getState().playing) {
-        usePlayer.getState()._setBuffering(true);
-        scheduleStallWatchdog(i);
+        // Chromium emits `stalled` routinely when its media cache fills or pauses range fetches.
+        // Only treat it as buffering/stalled when the buffer ahead is nearly exhausted.
+        if (e.readyState < 3 && bufferedAheadSec(e) < 1.5) {
+          usePlayer.getState()._setBuffering(true);
+          scheduleStallWatchdog(i);
+        }
       }
     });
     e.addEventListener("canplay", () => {
@@ -1387,8 +1423,10 @@ export function initAudioEngine(): void {
     if (isPcRemoteAudioBlocked()) {
       el().pause();
       standbyEl().pause();
+      // Directly reset local playing flag without calling setPlaying(false), which would
+      // forward a PAUSE command to the desktop PC over remote control!
       if (state.playing) {
-        usePlayer.getState().setPlaying(false);
+        usePlayer.setState({ playing: false });
       }
       return;
     }

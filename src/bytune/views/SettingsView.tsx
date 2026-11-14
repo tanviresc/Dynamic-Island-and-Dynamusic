@@ -755,6 +755,7 @@ function MobilePairingGroup() {
   const isMobileDevice = useMobileMode((s) => s.isMobileDevice);
   const pcHost = useMobileMode((s) => s.pcHost);
   const setPcHost = useMobileMode((s) => s.setPcHost);
+  const desktopOnline = useMobileMode((s) => s.desktopOnline);
   const connectionStatus = useMobileMode((s) => s.connectionStatus);
   const reconnectNow = useMobileMode((s) => s.reconnectNow);
   const [hostDraft, setHostDraft] = useState(pcHost || "");
@@ -811,11 +812,13 @@ function MobilePairingGroup() {
 
   const primaryLanUrl = lanUrls[0] || "http://127.0.0.1:47822";
   const statusLabel =
-    connectionStatus === "connected"
-      ? "Connected to PC"
-      : connectionStatus === "reconnecting"
-        ? "Reconnecting to PC…"
-        : "Offline";
+    connectionStatus === "connected" && desktopOnline
+      ? "Connected to PC Dynamusic"
+      : connectionStatus === "connected"
+        ? "Server linked — open player on PC"
+        : connectionStatus === "reconnecting"
+          ? "Reconnecting to PC…"
+          : "Offline";
 
   return (
     <Group

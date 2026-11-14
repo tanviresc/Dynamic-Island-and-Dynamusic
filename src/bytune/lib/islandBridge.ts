@@ -71,6 +71,9 @@ function handlePlayerCommand(cmd: string, payload?: unknown): void {
         p.setVolume(Math.max(0, Math.min(1, payload)));
       }
       break;
+    case "toggle_mute":
+      p.toggleMute();
+      break;
     case "PLAY_NOW":
       if (payload && typeof payload === "object") {
         const pData = payload as { track?: any; tracks?: any[]; startIndex?: number; from?: string };
@@ -182,6 +185,21 @@ export function initIslandBridge(): void {
   if (initialized || typeof window === "undefined") return;
   initialized = true;
 
+  const seenCommandIds = new Set<string>();
+  const dispatchRemoteCommand = (command: string, payload?: unknown, commandId?: string): void => {
+    if (!command) return;
+    if (commandId) {
+      if (seenCommandIds.has(commandId)) return;
+      seenCommandIds.add(commandId);
+      if (seenCommandIds.size > 64) {
+        const first = seenCommandIds.values().next().value;
+        if (first) seenCommandIds.delete(first);
+      }
+    }
+    handlePlayerCommand(command, payload);
+  };
+
+  let desktopWs: WebSocket | null = null;
   let lastTrackId = "";
   let lastPlaying: boolean | null = null;
   let lastSyncMs = 0;
@@ -215,33 +233,43 @@ export function initIslandBridge(): void {
       const ctxStart = s.currentFromPriority ? s.contextIndex : s.contextIndex + 1;
       const upcomingCtx = s.contextQueue.slice(ctxStart, ctxStart + 40).map(slimTrack);
       const priorityQ = s.priorityQueue.slice(0, 40).map(slimTrack);
+      const syncState = {
+        track: track ? { ...slimTrack(track), duration: liveDur } : null,
+        trackId: track?.id ?? null,
+        playing: s.playing,
+        isPlaying: s.playing,
+        position: livePos,
+        duration: liveDur,
+        volume: s.volume,
+        shuffle: s.shuffle,
+        repeat: s.repeat,
+        playingFrom: s.playingFrom,
+        serverTimestamp: now,
+        priorityQueue: priorityQ,
+        contextQueue: upcomingCtx,
+        contextIndex: 0,
+        queue: slimQueue,
+        index: s.index - qStart,
+        queueOffset: qStart,
+        autoplayCount: Math.max(0, Math.min(s.autoplayCount, s.queue.length - s.index - 1)),
+      };
 
-      void fetch("http://127.0.0.1:47822/player/sync", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          state: {
-            track: track ? { ...slimTrack(track), duration: liveDur } : null,
-            trackId: track?.id ?? null,
-            playing: s.playing,
-            isPlaying: s.playing,
-            position: livePos,
-            duration: liveDur,
-            volume: s.volume,
-            shuffle: s.shuffle,
-            repeat: s.repeat,
-            playingFrom: s.playingFrom,
-            serverTimestamp: now,
-            priorityQueue: priorityQ,
-            contextQueue: upcomingCtx,
-            contextIndex: 0,
-            queue: slimQueue,
-            index: s.index - qStart,
-            queueOffset: qStart,
-            autoplayCount: Math.max(0, Math.min(s.autoplayCount, s.queue.length - s.index - 1)),
-          },
-        }),
-      }).catch(() => undefined);
+      let sentViaWs = false;
+      if (desktopWs && desktopWs.readyState === WebSocket.OPEN) {
+        try {
+          desktopWs.send(JSON.stringify({ type: "sync_state", state: syncState }));
+          sentViaWs = true;
+        } catch {
+          sentViaWs = false;
+        }
+      }
+      if (!sentViaWs) {
+        void fetch("http://127.0.0.1:47822/player/sync", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ state: syncState }),
+        }).catch(() => undefined);
+      }
     }
 
     if (!("__TAURI_INTERNALS__" in window)) return;
@@ -284,13 +312,80 @@ export function initIslandBridge(): void {
     syncToIsland(force);
   });
 
-  // Authoritative 2-second heartbeat broadcast while playing on desktop
+  // Bidirectional Desktop WebSocket client + heartbeat so sidecar never lacks state or misses commands
   if ("__TAURI_INTERNALS__" in window) {
-    window.setInterval(() => {
-      if (usePlayer.getState().playing) {
-        syncToIsland(true);
+    let wsAttempt = 0;
+    let wsRetryTimer: number | null = null;
+    const connectDesktopWs = () => {
+      if (wsRetryTimer !== null) {
+        window.clearTimeout(wsRetryTimer);
+        wsRetryTimer = null;
       }
-    }, 2000);
+      try {
+        const ws = new WebSocket("ws://127.0.0.1:47822/ws/remote?role=desktop");
+        desktopWs = ws;
+        ws.onopen = () => {
+          wsAttempt = 0;
+          syncToIsland(true);
+        };
+        ws.onmessage = (ev) => {
+          try {
+            const msg = JSON.parse(String(ev.data)) as {
+              type?: string;
+              ts?: number;
+              commandId?: string;
+              command?: string;
+              payload?: unknown;
+            };
+            if (msg.type === "ping") {
+              ws.send(JSON.stringify({ type: "pong", ts: msg.ts ?? Date.now() }));
+              return;
+            }
+            if (msg.type === "request_sync") {
+              syncToIsland(true);
+              return;
+            }
+            if (msg.type === "command" && msg.command) {
+              dispatchRemoteCommand(msg.command, msg.payload, msg.commandId);
+            }
+          } catch {
+            /* ignore */
+          }
+        };
+        const scheduleReconnect = () => {
+          if (desktopWs === ws) desktopWs = null;
+          const delay = Math.min(6000, Math.round(400 * Math.pow(1.6, wsAttempt)));
+          wsAttempt += 1;
+          wsRetryTimer = window.setTimeout(connectDesktopWs, delay);
+        };
+        ws.onclose = scheduleReconnect;
+        ws.onerror = () => {
+          try {
+            ws.close();
+          } catch {
+            /* ignore */
+          }
+        };
+      } catch {
+        const delay = Math.min(6000, Math.round(400 * Math.pow(1.6, wsAttempt)));
+        wsAttempt += 1;
+        wsRetryTimer = window.setTimeout(connectDesktopWs, delay);
+      }
+    };
+    connectDesktopWs();
+
+    let lastIdleBroadcast = 0;
+    window.setInterval(() => {
+      const playing = usePlayer.getState().playing;
+      const now = Date.now();
+      if (playing) {
+        syncToIsland(true);
+        lastIdleBroadcast = now;
+      } else if (now - lastIdleBroadcast >= 5000) {
+        syncToIsland(true);
+        lastIdleBroadcast = now;
+      }
+    }, 1500);
   }
 
   // Initial sync
@@ -300,7 +395,7 @@ export function initIslandBridge(): void {
   if (typeof window !== "undefined") {
     window.addEventListener("message", (ev) => {
       if (ev.data && typeof ev.data === "object" && ev.data.type === "dynamusic:remote_command") {
-        handlePlayerCommand(ev.data.command, ev.data.payload);
+        dispatchRemoteCommand(ev.data.command, ev.data.payload, ev.data.commandId);
       }
     });
   }

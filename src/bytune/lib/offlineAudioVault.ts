@@ -6,21 +6,11 @@
  * 100% offline with zero network connection—both on Desktop and on Phone (PWA / Mobile).
  */
 import type { Track } from "../types";
+import { getBackendBaseUrl } from "../stores/mobileMode";
 import { fallbackMobileStreamUrl } from "./mobileStandaloneFallback";
 
 function getVaultBaseUrl(): string {
-  if (
-    typeof window !== "undefined" &&
-    window.location &&
-    typeof window.location.hostname === "string" &&
-    window.location.hostname &&
-    window.location.hostname !== "localhost" &&
-    window.location.hostname !== "127.0.0.1" &&
-    !String(window.location.protocol || "").startsWith("tauri")
-  ) {
-    return `http://${window.location.hostname}:47822`;
-  }
-  return "http://127.0.0.1:47822";
+  return getBackendBaseUrl();
 }
 
 const DB_NAME = "dynamusic-offline-vault";

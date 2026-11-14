@@ -77,22 +77,43 @@ function decodeBinaryOutput(val: unknown): any {
   return val;
 }
 
+function isTauriRuntime(): boolean {
+  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+}
+
+function isUnpairedNativeMobile(): boolean {
+  if (typeof window === "undefined" || isTauriRuntime()) return false;
+  const host = window.location?.hostname || "";
+  const cap = (window as unknown as { Capacitor?: { isNativePlatform?: () => boolean } }).Capacitor;
+  const isCap = Boolean(cap?.isNativePlatform?.()) || window.location?.protocol === "capacitor:";
+  return (isCap || host === "localhost") && getBackendHost() === "127.0.0.1";
+}
+
 async function rpcInvoke<T = any>(channel: string, ...args: unknown[]): Promise<T> {
+  if (isUnpairedNativeMobile()) {
+    throw new Error(`PC host not configured for ${channel}`);
+  }
   const isRemoteHost = getBackendHost() !== "127.0.0.1";
+  const isMediaFallbackChannel =
+    channel === "music:search" ||
+    channel === "music:searchPage" ||
+    channel === "music:suggestions" ||
+    channel === "music:stream";
   const isFastFallbackChannel =
     isRemoteHost &&
     (channel === "data:read" ||
       channel === "data:scope" ||
       channel === "auth:getSession" ||
       channel === "sync:status" ||
-      channel === "updates:state");
+      channel === "updates:state" ||
+      isMediaFallbackChannel);
 
   let lastError: unknown = null;
   const attempts = isFastFallbackChannel ? 1 : 2;
 
   for (let attempt = 0; attempt < attempts; attempt++) {
     const ctl = new AbortController();
-    const timeoutMs = isFastFallbackChannel ? 1500 : 12_000;
+    const timeoutMs = isMediaFallbackChannel && isRemoteHost ? 4000 : isFastFallbackChannel ? 1500 : 12_000;
     const timer = setTimeout(() => ctl.abort(), timeoutMs);
     try {
       const res = await fetch(`${backendUrl()}/rpc`, {
@@ -171,6 +192,10 @@ function connectEventStream(): void {
       }
       currentEs = null;
     }
+    if (isUnpairedNativeMobile()) {
+      sseConnected = false;
+      return;
+    }
     try {
       const es = new EventSource(`${backendUrl()}/events`);
       currentEs = es;
@@ -187,16 +212,19 @@ function connectEventStream(): void {
             window.location.reload();
             return;
           }
-          if (parsed.channel === "pc:player_state") {
+          if (parsed.channel === "pc:player_state" && !isTauriRuntime()) {
             const state = parsed.args?.[0];
             if (state && typeof window !== "undefined") {
               void import("../stores/mobileMode").then((m) => m.useMobileMode.getState().setPcState(state as any));
             }
           }
-          if (parsed.channel === "pc:player_command") {
-            const data = (parsed.args?.[0] ?? {}) as { command?: string; payload?: unknown };
+          if (parsed.channel === "pc:player_command" && isTauriRuntime()) {
+            const data = (parsed.args?.[0] ?? {}) as { commandId?: string; command?: string; payload?: unknown };
             if (data.command && typeof window !== "undefined") {
-              window.postMessage({ type: "dynamusic:remote_command", command: data.command, payload: data.payload }, "*");
+              window.postMessage(
+                { type: "dynamusic:remote_command", commandId: data.commandId, command: data.command, payload: data.payload },
+                "*"
+              );
             }
           }
           if (parsed.channel === "store:updated") {
@@ -238,6 +266,10 @@ function connectEventStream(): void {
       retryAttempt = 0;
       connect();
     }
+  });
+  window.addEventListener("dynamusic:backend-host-changed", () => {
+    retryAttempt = 0;
+    connect();
   });
 }
 
@@ -327,7 +359,7 @@ export function initBytuneBridge(): void {
     search: (query: string, light = false) =>
       rpcInvoke("music:search", query, light).catch(() => fallbackMobileSearch(query)),
     searchPage: (query: string, filter: string) =>
-      rpcInvoke("music:searchPage", query, filter).catch(() => fallbackMobileSearchPage(query)),
+      rpcInvoke("music:searchPage", query, filter).catch(() => fallbackMobileSearchPage(query, filter)),
     searchMore: (token: string, filter: string) => rpcInvoke("music:searchMore", token, filter),
     suggestions: (query: string): Promise<{ items: SearchSuggestion[] }> =>
       rpcInvoke<{ items: SearchSuggestion[] }>("music:suggestions", query).catch(() =>

@@ -10,8 +10,15 @@ import type { SearchPageResult, SearchResults, SearchSuggestion, Track } from ".
 const PIPED_INSTANCES = [
   "https://api.piped.private.coffee",
   "https://pipedapi.kavin.rocks",
-  "https://pipedapi.tokhmi.xyz",
-  "https://pipedapi.moomoo.me",
+  "https://pipedapi.adminforge.de",
+  "https://pipedapi.leptons.xyz",
+  "https://pipedapi.nosebs.ru",
+];
+
+const INVIDIOUS_INSTANCES = [
+  "https://inv.nadeko.net",
+  "https://invidious.nerdvpn.de",
+  "https://yewtu.be",
 ];
 
 function extractVideoId(urlOrId: string | undefined): string {
@@ -44,7 +51,7 @@ export async function fallbackMobileStreamUrl(videoId: string): Promise<string |
   }
 }
 
-export async function fallbackMobileSearch(query: string): Promise<SearchResults> {
+export async function fallbackMobileSearch(query: string, filter = "songs"): Promise<SearchResults> {
   const empty: SearchResults = {
     songs: [],
     videos: [],
@@ -55,8 +62,9 @@ export async function fallbackMobileSearch(query: string): Promise<SearchResults
   };
   if (!query.trim()) return empty;
 
-  const attempts = PIPED_INSTANCES.map(async (host) => {
-    const res = await fetch(`${host}/search?q=${encodeURIComponent(query)}&filter=music_songs`, {
+  const pipedFilter = filter === "videos" ? "videos" : "music_songs";
+  const pipedAttempts = PIPED_INSTANCES.map(async (host) => {
+    const res = await fetch(`${host}/search?q=${encodeURIComponent(query)}&filter=${pipedFilter}`, {
       signal: AbortSignal.timeout(7000),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -90,15 +98,48 @@ export async function fallbackMobileSearch(query: string): Promise<SearchResults
     };
   });
 
+  const invidiousAttempts = INVIDIOUS_INSTANCES.map(async (host) => {
+    const res = await fetch(`${host}/api/v1/search?q=${encodeURIComponent(query)}&type=video`, {
+      signal: AbortSignal.timeout(7000),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = (await res.json()) as {
+      videoId?: string;
+      title?: string;
+      author?: string;
+      lengthSeconds?: number;
+      videoThumbnails?: { url?: string }[];
+    }[];
+    const songs: Track[] = [];
+    for (const item of Array.isArray(data) ? data : []) {
+      const id = extractVideoId(item.videoId);
+      if (!id || !item.title) continue;
+      songs.push({
+        id,
+        title: item.title,
+        artist: (item.author || "Unknown Artist").replace(/ - Topic$/i, ""),
+        album: "",
+        duration: typeof item.lengthSeconds === "number" && item.lengthSeconds > 0 ? item.lengthSeconds : 0,
+        thumb: item.videoThumbnails?.[0]?.url || `https://i.ytimg.com/vi/${id}/hqdefault.jpg`,
+      });
+    }
+    if (!songs.length) throw new Error("empty");
+    return {
+      ...empty,
+      songs,
+      top: { kind: "track" as const, track: songs[0] },
+    };
+  });
+
   try {
-    return await Promise.any(attempts);
+    return await Promise.any([...pipedAttempts, ...invidiousAttempts]);
   } catch {
     return empty;
   }
 }
 
-export async function fallbackMobileSearchPage(query: string): Promise<SearchPageResult> {
-  const res = await fallbackMobileSearch(query);
+export async function fallbackMobileSearchPage(query: string, filter = "all"): Promise<SearchPageResult> {
+  const res = await fallbackMobileSearch(query, filter);
   return {
     rows: res.songs.map((song, idx) => (idx === 0 ? { kind: "top" as const, song } : { kind: "track" as const, song })),
     continuation: null,
