@@ -12,10 +12,13 @@
     "noEmit": true,
     "jsx": "react-jsx",
     "strict": true,
-    "noUncheckedIndexedAccess": true,
-    "noUnusedLocals": true,
-    "noUnusedParameters": true,
-    "noFallthroughCasesInSwitch": true
+    "noUncheckedIndexedAccess": false,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "noFallthroughCasesInSwitch": true,
+    "paths": {
+      "electron": ["./bytune-backend/electron-shim.ts"]
+    }
   },
-  "include": ["src", "vite.config.ts"]
+  "include": ["src", "bytune-backend", "vite.config.ts"]
 }

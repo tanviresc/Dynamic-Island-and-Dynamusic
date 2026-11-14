@@ -7,21 +7,30 @@
     "extension"
   ],
   "scripts": {
-    "dev": "vite",
-    "build": "tsc -b && vite build && npm run build --workspace=extension",
+    "build:bytune-backend": "esbuild bytune-backend/server.ts --bundle --platform=node --format=cjs --outfile=dist-bytune/server.cjs --packages=external --alias:electron=./bytune-backend/electron-shim.ts",
+    "dev": "npm run build:bytune-backend && concurrently -k \"node dist-bytune/server.cjs\" \"vite\"",
+    "build": "npm run build:bytune-backend && tsc -b && vite build && npm run build --workspace=extension",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit && npm run typecheck --workspace=extension",
     "test": "vitest run",
     "tauri": "tauri"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.119.0",
     "@tauri-apps/api": "^2.0.0",
     "@tauri-apps/plugin-shell": "^2.0.0",
+    "@types/jsdom": "^30.0.0",
+    "bgutils-js": "^4.0.3",
     "clsx": "^2.1.1",
+    "concurrently": "^9.2.5",
+    "jsdom": "^29.1.1",
     "lucide-react": "^1.72.0",
     "motion": "^11.11.17",
+    "music-metadata": "^11.16.1",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "youtubei.js": "^18.3.0",
+    "zustand": "^5.1.0"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0",

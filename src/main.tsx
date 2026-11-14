@@ -3,12 +3,36 @@ import ReactDOM from "react-dom/client";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { IslandRoot } from "./island/IslandRoot";
 import { SettingsShell } from "./settings/SettingsShell";
-import { DynamusicShell } from "./dynamusic/DynamusicShell";
+import { initBytuneBridge } from "./bytune/lib/initBytuneBridge";
+import { initIslandBridge } from "./bytune/lib/islandBridge";
+import ByTuneApp from "./bytune/App";
+import { PipApp } from "./bytune/pip/PipApp";
+import { ErrorBoundary } from "./bytune/components/ErrorBoundary";
+import { endIntro } from "./bytune/intro";
+import "./bytune/lib/platform";
+import "./bytune/index.css";
 import "./shared/theme.css";
 
-function App() {
-  const [windowLabel, setWindowLabel] = useState<string>("island");
-  const [isTauri, setIsTauri] = useState<boolean>(false);
+initBytuneBridge();
+
+function detectInitialWindowLabel(): { label: string; isTauri: boolean } {
+  try {
+    const win = getCurrentWebviewWindow();
+    if (win && win.label) {
+      return { label: win.label, isTauri: true };
+    }
+  } catch {
+    /* fallback to URL search params */
+  }
+  const params = new URLSearchParams(window.location.search);
+  const winParam = params.get("win") || params.get("window") || "island";
+  return { label: winParam, isTauri: false };
+}
+
+function RootRouter() {
+  const initial = detectInitialWindowLabel();
+  const [windowLabel, setWindowLabel] = useState<string>(initial.label);
+  const [isTauri, setIsTauri] = useState<boolean>(initial.isTauri);
 
   useEffect(() => {
     try {
@@ -18,26 +42,44 @@ function App() {
         setIsTauri(true);
       }
     } catch {
-      // In browser development, window can be switched via query param: ?win=settings or ?win=dynamusic
       const params = new URLSearchParams(window.location.search);
-      const winParam = params.get("win");
+      const winParam = params.get("win") || params.get("window");
       if (winParam) {
         setWindowLabel(winParam);
       }
     }
   }, []);
 
+  useEffect(() => {
+    if (windowLabel === "dynamusic") {
+      initBytuneBridge();
+      initIslandBridge();
+      endIntro();
+    }
+  }, [windowLabel]);
+
   if (windowLabel === "settings") {
     return <SettingsShell />;
   }
 
+  if (windowLabel === "pip") {
+    return (
+      <ErrorBoundary>
+        <PipApp />
+      </ErrorBoundary>
+    );
+  }
+
   if (windowLabel === "dynamusic") {
-    return <DynamusicShell />;
+    return (
+      <ErrorBoundary>
+        <ByTuneApp />
+      </ErrorBoundary>
+    );
   }
 
   return (
     <div style={{ width: "100%", height: "100%", position: "relative" }}>
-      {/* Dev switcher in browser preview */}
       {!isTauri && (
         <div
           style={{
@@ -99,6 +141,6 @@ function App() {
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <App />
+    <RootRouter />
   </React.StrictMode>
 );

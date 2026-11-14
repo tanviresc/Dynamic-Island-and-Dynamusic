@@ -757,6 +757,27 @@ pub fn run() {
                 }
             });
 
+            // Spawn Dynamusic (ByTune) Node Backend Sidecar (127.0.0.1:47822)
+            {
+                let candidates = [
+                    std::path::PathBuf::from("dist-bytune/server.cjs"),
+                    std::path::PathBuf::from("../dist-bytune/server.cjs"),
+                ];
+                if let Some(script_path) = candidates.into_iter().find(|p| p.exists()) {
+                    let mut cmd = std::process::Command::new("node");
+                    cmd.arg(&script_path);
+                    #[cfg(target_os = "windows")]
+                    {
+                        use std::os::windows::process::CommandExt;
+                        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+                    }
+                    match cmd.spawn() {
+                        Ok(_) => info!("Spawned Dynamusic backend sidecar: {:?}", script_path),
+                        Err(e) => warn!("Failed to spawn Dynamusic backend sidecar: {}", e),
+                    }
+                }
+            }
+
             // Tray setup
             let pause_item = CheckMenuItem::with_id(app, "pause", "Pause", true, false, None::<&str>)?;
             let dnd_item = CheckMenuItem::with_id(app, "dnd", "Do Not Disturb", true, false, None::<&str>)?;
