@@ -453,17 +453,86 @@ async fn set_autostart(enabled: bool) -> Result<(), String> {
     }
 }
 
-#[tauri::command]
-async fn open_dynamusic_window(app_handle: AppHandle) -> Result<(), String> {
+fn show_or_recreate_dynamusic(app_handle: &AppHandle) {
     if let Some(win) = app_handle.get_webview_window("dynamusic") {
         let _ = win.show();
         let _ = win.unminimize();
         let _ = win.set_focus();
-        info!("Dynamusic window opened and focused");
+        info!("Dynamusic window shown and focused");
     } else {
-        warn!("Dynamusic window not found in app handle");
+        match tauri::WebviewWindowBuilder::new(
+            app_handle,
+            "dynamusic",
+            tauri::WebviewUrl::App("index.html?window=dynamusic".into()),
+        )
+        .title("Dynamusic")
+        .inner_size(1280.0, 820.0)
+        .min_inner_size(940.0, 620.0)
+        .decorations(false)
+        .center()
+        .visible(true)
+        .focused(true)
+        .build()
+        {
+            Ok(win) => {
+                let _ = win.show();
+                let _ = win.set_focus();
+                info!("Recreated and focused Dynamusic window");
+            }
+            Err(e) => warn!("Failed to recreate Dynamusic window: {}", e),
+        }
     }
+}
+
+#[tauri::command]
+async fn open_dynamusic_window(app_handle: AppHandle) -> Result<(), String> {
+    show_or_recreate_dynamusic(&app_handle);
     Ok(())
+}
+
+#[tauri::command]
+async fn dynamusic_window_action(action: String, app_handle: AppHandle) -> Result<bool, String> {
+    if action == "open" {
+        show_or_recreate_dynamusic(&app_handle);
+        return Ok(true);
+    }
+    let Some(win) = app_handle.get_webview_window("dynamusic") else {
+        return Ok(false);
+    };
+    match action.as_str() {
+        "minimize" => {
+            let _ = win.minimize();
+            Ok(true)
+        }
+        "maximize_toggle" => {
+            let is_max = win.is_maximized().unwrap_or(false);
+            if is_max {
+                let _ = win.unmaximize();
+                Ok(false)
+            } else {
+                let _ = win.maximize();
+                Ok(true)
+            }
+        }
+        "close" => {
+            let _ = win.hide();
+            Ok(true)
+        }
+        "is_maximized" => Ok(win.is_maximized().unwrap_or(false)),
+        "fullscreen_on" => {
+            let _ = win.set_fullscreen(true);
+            Ok(true)
+        }
+        "fullscreen_off" => {
+            let _ = win.set_fullscreen(false);
+            Ok(false)
+        }
+        "drag" => {
+            let _ = win.start_dragging();
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
 }
 
 #[tauri::command]
@@ -536,6 +605,15 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let label = window.label();
+                if label == "dynamusic" || label == "settings" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
         .setup(|app| {
             let hit_rect_arc = Arc::new(Mutex::new(None::<Rect>));
 
@@ -792,10 +870,25 @@ pub fn run() {
 
             let input_tx_for_tray = input_tx.clone();
             let app_handle_for_tray = app.handle().clone();
+            let app_handle_for_tray_click = app.handle().clone();
 
             let tray = TrayIconBuilder::new()
                 .menu(&tray_menu)
-                .tooltip("Island • 0 unread")
+                .tooltip("Island • Click to open Dynamusic")
+                .on_tray_icon_event(move |_tray, event| {
+                    if let tauri::tray::TrayIconEvent::Click {
+                        button: tauri::tray::MouseButton::Left,
+                        button_state: tauri::tray::MouseButtonState::Up,
+                        ..
+                    }
+                    | tauri::tray::TrayIconEvent::DoubleClick {
+                        button: tauri::tray::MouseButton::Left,
+                        ..
+                    } = event
+                    {
+                        show_or_recreate_dynamusic(&app_handle_for_tray_click);
+                    }
+                })
                 .on_menu_event(move |_app, event| {
                     let id = event.id().as_ref();
                     match id {
@@ -812,11 +905,7 @@ pub fn run() {
                             });
                         }
                         "dynamusic" => {
-                            if let Some(win) = app_handle_for_tray.get_webview_window("dynamusic") {
-                                let _ = win.show();
-                                let _ = win.unminimize();
-                                let _ = win.set_focus();
-                            }
+                            show_or_recreate_dynamusic(&app_handle_for_tray);
                         }
                         "settings" => {
                             if let Some(win) = app_handle_for_tray.get_webview_window("settings") {
@@ -1017,6 +1106,7 @@ pub fn run() {
             get_autostart,
             set_autostart,
             open_dynamusic_window,
+            dynamusic_window_action,
             update_music_state,
             get_music_state,
             send_music_command

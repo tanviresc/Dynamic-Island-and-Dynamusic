@@ -114,48 +114,26 @@ async function withRetry<T>(fn: () => Promise<T>, attempts = 2, delayMs = 600): 
 }
 
 async function createSession(): Promise<any> {
-  // The market rides into the session's client context (`gl`), which is what
-  // makes the home feed, charts and search results regional. Resolved before
-  // the bootstrap so visitor data and content context agree on the region.
   const market = resolveDeviceMarket();
-  // Phase 1: bootstrap session just to obtain visitor data.
-  const bootstrap = await Innertube.create({
-    retrieve_player: false,
-    enable_session_cache: false,
-    location: market.country,
-    lang: displayLanguage(),
-  });
-  const visitorData: string | undefined = bootstrap?.session?.context?.client?.visitorData;
-
-  // Phase 2: mint a PO token bound to that visitor data.
-  let poToken: string | undefined;
-  if (visitorData) {
-    try {
-      poToken = await getPoToken(visitorData);
-      console.log("[bytune] PO token ready");
-    } catch (err) {
-      console.warn(
-        "[bytune] PO token minting failed, continuing without:",
-        err instanceof Error ? err.message : err
-      );
-    }
-  }
-
-  // Phase 3: the real session, with visitor data + PO token attached.
+  // Create a fast session immediately without blocking on JSDOM/BotGuard or 2MB player JS download.
   const yt = await Innertube.create({
-    retrieve_player: true,
-    enable_session_cache: false,
-    visitor_data: visitorData,
-    po_token: poToken,
+    retrieve_player: false,
+    enable_session_cache: true,
     location: market.country,
     lang: displayLanguage(),
   });
+  const visitorData: string | undefined = yt?.session?.context?.client?.visitorData;
   (yt as any).__visitorData = visitorData;
-  (yt as any).__poToken = poToken;
   (yt as any).__market = market.country;
-  console.log(
-    `[bytune] innertube session: gl=${yt.session?.context?.client?.gl ?? "?"} hl=${yt.session?.context?.client?.hl ?? "?"}`
-  );
+
+  // Mint PO token asynchronously in the background so search/home/browse are never delayed.
+  if (visitorData) {
+    void getPoToken(visitorData)
+      .then((poToken) => {
+        (yt as any).__poToken = poToken;
+      })
+      .catch(() => undefined);
+  }
   return yt;
 }
 
@@ -1101,7 +1079,7 @@ async function probeUrl(url: string): Promise<boolean> {
   try {
     // Only the first chunk is read; a hung connection must not pin this
     // track's resolution (and everything waiting on it) for minutes.
-    const res = await fetch(url, { headers: { "User-Agent": UA, Range: "bytes=0-" }, signal: AbortSignal.timeout(10_000) });
+    const res = await fetch(url, { headers: { "User-Agent": UA, Range: "bytes=0-" }, signal: AbortSignal.timeout(3_500) });
     if (res.status !== 206 && res.status !== 200) {
       try {
         await res.arrayBuffer();
@@ -1324,79 +1302,53 @@ export function resolveStream(
   }
   const pin = resolveCache.get(key)?.value;
   const run = (async (): Promise<ResolvedStream> => {
-    let lastErr: unknown = null;
+    const cacheAndReturn = (value: ResolvedStream, ttlMs: number): ResolvedStream => {
+      const ts = Date.now();
+      resolveCache.set(key, { value, ts, expiresAt: ts + ttlMs });
+      evictOldest(resolveCache, RESOLVE_CACHE_MAX);
+      return value;
+    };
 
-    // Two rounds: the second one runs on a freshly built session (new PO token).
-    for (let round = 0; round < 2; round++) {
+    const tryInnerTube = async (): Promise<ResolvedStream> => {
       const yt = await getYT();
       const poToken: string | undefined = (yt as any).__poToken;
-      for (let i = 0; i < STREAM_CLIENTS.length; i++) {
-        const idx = (preferredClientIdx + i) % STREAM_CLIENTS.length;
-        const client = STREAM_CLIENTS[idx];
+      const fastClients = ["VISIONOS", "IOS", "ANDROID_VR"] as const;
+      let lastErr: unknown = null;
+      for (const client of fastClients) {
         try {
           const info = await yt.getBasicInfo(videoId, { client, po_token: poToken });
-          const sd: any = info?.streaming_data;
-          const audioOnly: any[] = (sd?.adaptive_formats ?? []).filter(
-            (f: any) => f?.has_audio && !f?.has_video
-          );
-          console.log(
-            `[bytune] stream ${client}: playability=${String((info as any)?.playability_status?.status ?? "?")} audio=${audioOnly.length} plainUrl=${audioOnly.filter((f: any) => typeof f.url === "string").length} sig=${audioOnly.filter((f: any) => typeof f.signature_cipher === "string" || typeof f.cipher === "string").length} hls=${sd?.hls_manifest_url ? "y" : "n"}`
-          );
           const picked = await pickAudio(info, yt, maxKbps, mp4Only, pin);
           if (!picked) throw new Error(`no audio format for client ${client}`);
-          // Validate from the same network path the proxy will use; a bad URL
-          // (e.g. SABR-gated) moves us to the next client instead of failing
-          // at the media element.
           if (!(await probeUrl(picked.url))) throw new Error(`stream rejected for client ${client}`);
-          preferredClientIdx = idx;
-          const value: ResolvedStream = {
+          return {
             url: picked.url,
             mime: picked.mime,
             lufs: picked.lufs,
             itag: picked.itag,
             clen: picked.clen,
           };
-          const ts = Date.now();
-          resolveCache.set(key, { value, ts, expiresAt: ts + streamTtlMs(value.url, ts) });
-          evictOldest(resolveCache, RESOLVE_CACHE_MAX);
-          return value;
         } catch (err) {
           lastErr = err;
         }
       }
-      if (round === 0) {
-        console.warn(
-          "[bytune] all clients failed, rebuilding session with a fresh PO token:",
-          lastErr instanceof Error ? lastErr.message : lastErr
-        );
-        await resetSession();
-      }
-    }
+      throw lastErr instanceof Error ? lastErr : new Error("InnerTube clients failed");
+    };
 
-    try {
-      const url = await resolveViaPiped(videoId);
-      // Piped mirrors don't report loudness; the renderer keeps its fallback.
-      const value: ResolvedStream = { url, mime: "audio/mp4", lufs: null };
-      const ts = Date.now();
-      resolveCache.set(key, { value, ts, expiresAt: ts + streamTtlMs(url, ts) });
-      evictOldest(resolveCache, RESOLVE_CACHE_MAX);
-      return value;
-    } catch (err) {
-      lastErr = err;
-    }
-
-    try {
+    const tryFallbackCdn = async (): Promise<ResolvedStream> => {
       const url = await resolveViaFallbackCdn(videoId);
-      const value: ResolvedStream = { url, mime: "audio/mp4", lufs: null };
-      const ts = Date.now();
-      resolveCache.set(key, { value, ts, expiresAt: ts + 6 * 3600_000 });
-      evictOldest(resolveCache, RESOLVE_CACHE_MAX);
-      return value;
-    } catch (err) {
-      lastErr = err;
+      return { url, mime: "audio/mp4", lufs: null };
+    };
+
+    try {
+      // Race InnerTube against the fast 320kbps CDN resolver so playback starts in <1s
+      const winner = await Promise.any([tryInnerTube(), tryFallbackCdn()]);
+      return cacheAndReturn(winner, streamTtlMs(winner.url, Date.now()));
+    } catch {
+      /* fall through to Piped */
     }
 
-    throw lastErr instanceof Error ? lastErr : new Error("Could not resolve a playable audio stream");
+    const url = await resolveViaPiped(videoId);
+    return cacheAndReturn({ url, mime: "audio/mp4", lufs: null }, streamTtlMs(url, Date.now()));
   })();
   resolving.set(key, run);
   // Drop the in-flight entry once settled; the side chain swallows the

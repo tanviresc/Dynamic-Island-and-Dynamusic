@@ -4,6 +4,11 @@ import { persist } from "zustand/middleware";
 import { coalescedStorage } from "../lib/persist";
 import { recordDeletionChanges } from "../lib/deletion-sync";
 import type { DeletionChange, DeletionSync } from "../lib/deletion-sync";
+import {
+  removeTrackFromOfflineVault,
+  saveTrackToOfflineVault,
+  syncLikedSongsToOfflineVault,
+} from "../lib/offlineAudioVault";
 import type { Track } from "../types";
 
 export interface Playlist {
@@ -164,9 +169,11 @@ export const useLibrary = create<LibraryState>()(
         if (wasLiked) {
           withChanges(set, get, { liked: liked.filter((t) => t.id !== track.id) },
             [{ kind: "delete", group: "liked", id: track.id }]);
+          void removeTrackFromOfflineVault(track.id);
         } else {
           withChanges(set, get, { liked: [track, ...liked] },
             [{ kind: "add", group: "liked", id: track.id }]);
+          void saveTrackToOfflineVault(track);
         }
       },
 
@@ -358,6 +365,11 @@ export const useLibrary = create<LibraryState>()(
         hydrationLikes = likes;
         hydrationHistory = history;
         return (state) => {
+          if (state?.liked?.length && typeof window !== "undefined") {
+            window.setTimeout(() => {
+              void syncLikedSongsToOfflineVault(useLibrary.getState().liked);
+            }, 1500);
+          }
           if (hydrationLikes !== likes) return;
           hydrationLikes = null;
           hydrationHistory = null;

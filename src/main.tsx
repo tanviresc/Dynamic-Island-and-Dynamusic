@@ -25,8 +25,20 @@ function detectInitialWindowLabel(): { label: string; isTauri: boolean } {
     /* fallback to URL search params */
   }
   const params = new URLSearchParams(window.location.search);
-  const winParam = params.get("win") || params.get("window") || "island";
-  return { label: winParam, isTauri: false };
+  const explicit = params.get("win") || params.get("window");
+  if (explicit) {
+    return { label: explicit, isTauri: false };
+  }
+  const isMobileOrSidecarPort =
+    window.location.port === "47822" ||
+    /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || "");
+  return { label: isMobileOrSidecarPort ? "dynamusic" : "island", isTauri: false };
+}
+
+if (typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window) && "serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch(() => undefined);
+  });
 }
 
 function RootRouter() {

@@ -20,8 +20,24 @@ import type {
 } from "../types";
 import type { LocalTrack } from "../../electron/local-library";
 import type { UpdateState } from "../../electron/updater";
+import { getOfflineVaultUrl } from "./offlineAudioVault";
 
-const BACKEND_URL = "http://127.0.0.1:47822";
+function getBackendHost(): string {
+  if (
+    typeof window !== "undefined" &&
+    window.location &&
+    typeof window.location.hostname === "string" &&
+    window.location.hostname &&
+    window.location.hostname !== "localhost" &&
+    window.location.hostname !== "127.0.0.1" &&
+    !String(window.location.protocol || "").startsWith("tauri")
+  ) {
+    return window.location.hostname;
+  }
+  return "127.0.0.1";
+}
+
+const BACKEND_URL = `http://${getBackendHost()}:47822`;
 
 function encodeBinaryInput(val: unknown): unknown {
   if (val == null) return val;
@@ -66,19 +82,34 @@ function decodeBinaryOutput(val: unknown): any {
 }
 
 async function rpcInvoke<T = any>(channel: string, ...args: unknown[]): Promise<T> {
-  const res = await fetch(`${BACKEND_URL}/rpc`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ channel, args: encodeBinaryInput(args) }),
-  });
-  if (!res.ok) {
-    throw new Error(`RPC HTTP ${res.status} on ${channel}`);
+  const isRemoteHost = getBackendHost() !== "127.0.0.1";
+  const isFastFallbackChannel =
+    isRemoteHost &&
+    (channel === "data:read" ||
+      channel === "data:scope" ||
+      channel === "auth:getSession" ||
+      channel === "sync:status" ||
+      channel === "updates:state");
+  const ctl = isFastFallbackChannel ? new AbortController() : undefined;
+  const timer = ctl ? setTimeout(() => ctl.abort(), 1500) : undefined;
+  try {
+    const res = await fetch(`${BACKEND_URL}/rpc`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ channel, args: encodeBinaryInput(args) }),
+      signal: ctl?.signal,
+    });
+    if (!res.ok) {
+      throw new Error(`RPC HTTP ${res.status} on ${channel}`);
+    }
+    const data = (await res.json()) as { ok: boolean; result?: unknown; error?: string };
+    if (!data.ok) {
+      throw new Error(data.error || `RPC error on ${channel}`);
+    }
+    return decodeBinaryOutput(data.result) as T;
+  } finally {
+    if (timer) clearTimeout(timer);
   }
-  const data = (await res.json()) as { ok: boolean; result?: unknown; error?: string };
-  if (!data.ok) {
-    throw new Error(data.error || `RPC error on ${channel}`);
-  }
-  return decodeBinaryOutput(data.result) as T;
 }
 
 function rpcSend(channel: string, ...args: unknown[]): void {
@@ -155,6 +186,50 @@ async function getTauriWindow() {
   return null;
 }
 
+async function tauriWindowAction(action: string): Promise<boolean | null> {
+  try {
+    if ("__TAURI_INTERNALS__" in window) {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return await invoke<boolean>("dynamusic_window_action", { action });
+    }
+  } catch {
+    /* fallback below */
+  }
+  return null;
+}
+
+let dragListenersInstalled = false;
+function installAppDragHandlers(onToggleMaximize: () => void): void {
+  if (dragListenersInstalled || typeof window === "undefined" || typeof window.addEventListener !== "function") return;
+  dragListenersInstalled = true;
+
+  const isInteractiveTarget = (el: HTMLElement | null): boolean => {
+    if (!el) return true;
+    return Boolean(
+      el.closest(
+        '.app-no-drag, button, input, textarea, select, a, [role="button"], [role="menuitem"], [role="listbox"], [contenteditable="true"]'
+      )
+    );
+  };
+
+  window.addEventListener("mousedown", (e) => {
+    if (e.button !== 0 || e.detail > 1) return;
+    const target = e.target as HTMLElement | null;
+    if (!target || !target.closest(".app-drag") || isInteractiveTarget(target)) return;
+    void tauriWindowAction("drag").then((handled) => {
+      if (handled === null) {
+        void getTauriWindow().then((w) => w?.startDragging());
+      }
+    });
+  });
+
+  window.addEventListener("dblclick", (e) => {
+    const target = e.target as HTMLElement | null;
+    if (!target || !target.closest(".app-drag") || isInteractiveTarget(target)) return;
+    onToggleMaximize();
+  });
+}
+
 export function initBytuneBridge(): void {
   if (typeof window === "undefined") return;
   if (window.bytune) return;
@@ -207,8 +282,18 @@ export function initBytuneBridge(): void {
     playbackEvent: (event: { type: string; track?: unknown; positionSec: number; playedSec: number; deltaMs: number }) =>
       rpcSend("playback:event", event),
     statsSummary: (period: string) => rpcInvoke("stats:summary", period),
-    getStreamUrl: (id: string, forceRotate = false, quality?: string) =>
-      rpcInvoke("music:stream", id, forceRotate, quality),
+    getStreamUrl: async (id: string, forceRotate = false, quality?: string) => {
+      if (!forceRotate) {
+        const offlineUrl = await getOfflineVaultUrl(id);
+        if (offlineUrl) return offlineUrl;
+      }
+      const rawUrl = await rpcInvoke<string>("music:stream", id, forceRotate, quality);
+      const host = getBackendHost();
+      if (host !== "127.0.0.1" && typeof rawUrl === "string") {
+        return rawUrl.replace("http://127.0.0.1:", `http://${host}:`);
+      }
+      return rawUrl;
+    },
     localLibrary: () => rpcInvoke("library:get"),
     scanLibrary: (filterNonMusic = true) => rpcInvoke("library:scan", filterNonMusic),
     setLibraryFolders: (folders: string[]) => rpcInvoke("library:setFolders", folders),
@@ -218,7 +303,14 @@ export function initBytuneBridge(): void {
     removeLibraryFolder: (folderPath: string) =>
       rpcInvoke("library:removeFolder", folderPath),
     libraryFolderStatuses: () => rpcInvoke("library:folderStatuses"),
-    localTrackUrl: (id: string) => rpcInvoke("library:trackurl", id),
+    localTrackUrl: async (id: string) => {
+      const rawUrl = await rpcInvoke<string | null>("library:trackurl", id);
+      const host = getBackendHost();
+      if (host !== "127.0.0.1" && typeof rawUrl === "string") {
+        return rawUrl.replace("http://127.0.0.1:", `http://${host}:`);
+      }
+      return rawUrl;
+    },
     localArtBytes: (thumb: string) => rpcInvoke("library:artbytes", thumb),
     remoteArtBytes: (url: string) => rpcInvoke("art:remoteBytes", url),
     getCanvas: (q: { title: string; artist: string; album?: string }) =>
@@ -237,12 +329,21 @@ export function initBytuneBridge(): void {
     onUpdateState: (cb: (state: UpdateState) => void): (() => void) =>
       onBackendEvent("updates:changed", cb),
 
-    // Window controls (bridged to Tauri window when available)
+    // Window controls (bridged to Tauri Rust command + window API)
     windowMinimize: () => {
-      void getTauriWindow().then((w) => (w ? w.minimize() : rpcSend("window:minimize")));
+      void tauriWindowAction("minimize").then((res) => {
+        if (res === null) {
+          void getTauriWindow().then((w) => (w ? w.minimize() : rpcSend("window:minimize")));
+        }
+      });
     },
     windowMaximizeToggle: () => {
-      void getTauriWindow().then(async (w) => {
+      void tauriWindowAction("maximize_toggle").then(async (res) => {
+        if (typeof res === "boolean") {
+          emitBackendEvent("window:maximized", res);
+          return;
+        }
+        const w = await getTauriWindow();
         if (w) {
           const max = await w.isMaximized();
           if (max) await w.unmaximize();
@@ -254,9 +355,15 @@ export function initBytuneBridge(): void {
       });
     },
     windowClose: () => {
-      void getTauriWindow().then((w) => (w ? w.close() : rpcSend("window:close")));
+      void tauriWindowAction("close").then((res) => {
+        if (res === null) {
+          void getTauriWindow().then((w) => (w ? w.hide() : rpcSend("window:close")));
+        }
+      });
     },
     isMaximized: async () => {
+      const res = await tauriWindowAction("is_maximized");
+      if (typeof res === "boolean") return res;
       const w = await getTauriWindow();
       if (w) return w.isMaximized();
       return rpcInvoke<boolean>("window:isMaximized").catch(() => false);
@@ -267,6 +374,11 @@ export function initBytuneBridge(): void {
     setOverlayChrome: (visible: boolean) =>
       rpcInvoke<"ok" | "failed" | "unsupported">("window:setOverlayChrome", visible).catch(() => "ok" as const),
     setFullScreen: async (fs: boolean) => {
+      const res = await tauriWindowAction(fs ? "fullscreen_on" : "fullscreen_off");
+      if (typeof res === "boolean") {
+        emitBackendEvent("window:fullscreen", fs);
+        return true;
+      }
       const w = await getTauriWindow();
       if (w) {
         await w.setFullscreen(fs);
@@ -388,14 +500,34 @@ export function initBytuneBridge(): void {
     backupImport: () => rpcInvoke("backup:import"),
 
     // Accounts (Supabase) + cloud sync
-    authGetSession: () =>
-      rpcInvoke("auth:getSession").catch(() => ({
-        mode: "guest",
-        userId: null,
-        username: null,
-        displayName: null,
-        needsUsername: false,
-      })),
+    authGetSession: async () => {
+      try {
+        const sess = await rpcInvoke("auth:getSession");
+        if (sess && typeof sess === "object") {
+          try {
+            localStorage.setItem("dynamusic:store:__auth_session__", JSON.stringify(sess));
+          } catch {
+            /* ignore */
+          }
+        }
+        return sess;
+      } catch {
+        try {
+          const cached = localStorage.getItem("dynamusic:store:__auth_session__");
+          if (cached) return JSON.parse(cached);
+        } catch {
+          /* ignore */
+        }
+        return {
+          mode: "guest" as const,
+          userId: null,
+          username: null,
+          displayName: "Listener",
+          freshInstall: false,
+          needsUsername: false,
+        };
+      }
+    },
     authSignUp: async (username: string, password: string, displayName: string) => {
       documentScopePromise = null;
       return rpcInvoke("auth:signUp", username, password, displayName);
@@ -478,4 +610,5 @@ export function initBytuneBridge(): void {
   };
 
   window.bytune = api;
+  installAppDragHandlers(() => api.windowMaximizeToggle());
 }

@@ -58,12 +58,14 @@ body,
 
 /* ---------- frameless window chrome ---------- */
 /* The top bar is the drag surface (double-click = maximize toggle); every
-   interactive cluster inside opts back out so clicks land on controls. */
+   interactive cluster inside opts back out so clicks land on controls.
+   Note: In Tauri WebView2, -webkit-app-region: drag swallows child button clicks,
+   so dragging is handled via Tauri start_dragging() on .app-drag in initBytuneBridge.ts. */
 .app-drag {
-  -webkit-app-region: drag;
+  user-select: none;
 }
 .app-no-drag {
-  -webkit-app-region: no-drag;
+  user-select: none;
 }
 
 body {

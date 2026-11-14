@@ -149,7 +149,7 @@ export const IslandRoot: React.FC<IslandRootProps> = ({
 
   // Report hit rectangle to Rust / layout whenever mode, music state, or size changes
   useEffect(() => {
-    const isShowingMusic = musicState && isProximityActive && mode !== "pill" && mode !== "queue";
+    const isShowingMusic = isProximityActive && mode !== "pill" && mode !== "queue";
     if (!surfaceRef.current || (mode === "hidden" && !isShowingMusic)) {
       onHitRectChange?.(null);
       invoke("update_hit_rect", { rect: null }).catch(() => {});
@@ -182,7 +182,7 @@ export const IslandRoot: React.FC<IslandRootProps> = ({
   }, [mode, musicState, isProximityActive, onHitRectChange]);
 
   const handleTopTriggerHitRect = (rect: { x: number; y: number; width: number; height: number } | null) => {
-    if (rect && (!musicState || !isProximityActive) && mode === "hidden") {
+    if (rect && !isProximityActive && mode === "hidden") {
       invoke("update_hit_rect", {
         rect: {
           left: rect.x,
@@ -328,13 +328,13 @@ export const IslandRoot: React.FC<IslandRootProps> = ({
               onClose={handleCloseQueue}
               isReducedMotion={isReducedMotion}
             />
-          ) : musicState && isProximityActive ? (
+          ) : isProximityActive ? (
             <MusicPill
               key="music-pill"
-              title={musicState.title}
-              artist={musicState.artist}
-              albumArt={musicState.albumArt}
-              isPlaying={musicState.isPlaying}
+              title={musicState?.title || "Dynamusic"}
+              artist={musicState?.artist || "Click to open player"}
+              albumArt={musicState?.albumArt}
+              isPlaying={musicState?.isPlaying ?? false}
               onHoverEnter={handleMusicHoverEnter}
               onHoverLeave={handleMusicHoverLeave}
               onClickBody={handleOpenDynamusic}

@@ -271,6 +271,11 @@ function setLoudness(trackId: string, lufs: number): void {
  */
 async function fetchLoudness(proxyUrl: string, track: Track): Promise<void> {
   const trackId = track.id;
+  if (proxyUrl.startsWith("blob:")) {
+    needsMeasuring.add(trackId);
+    analyse(track);
+    return;
+  }
   try {
     const res = await fetch(`${proxyUrl}&meta=1`, { signal: AbortSignal.timeout(8000) });
     if (!res.ok) return;

@@ -1,17 +1,72 @@
 /**
- * Dynamusic (ByTune) Local Node Sidecar Server (127.0.0.1:47822).
- * Boots the full ByTune Electron main process (`src/electron/main.ts`) via `electron-shim.ts`
- * and exposes all IPC channels over HTTP `/rpc` and Server-Sent Events `/events`.
+ * Dynamusic (ByTune) Local Node Sidecar Server (0.0.0.0:47822).
+ * Boots the full ByTune Electron main process (`src/electron/main.ts`) via `electron-shim.ts`,
+ * exposes all IPC channels over HTTP `/rpc` and Server-Sent Events `/events`,
+ * and serves the built Dynamusic web / mobile PWA (`dist/`) for phone access over Wi-Fi.
  */
+import * as fs from "fs";
 import * as http from "http";
+import * as os from "os";
+import * as path from "path";
 import { emitProtocolUrl, invokeIpcChannel, onWebContentsSend } from "./electron-shim";
 import * as locallib from "../src/electron/local-library";
+import { getYT } from "../src/electron/music-service";
 
 const PORT = Number(process.env.BYTUNE_BACKEND_PORT || 47822);
 const bootDeepLink = process.argv.slice(1).find((a) => /^bytune:\/\//i.test(a));
 
 // Boot the entire ByTune main process (registers all IPC handlers, starts stream proxy, stats, sync, etc.)
 import "../src/electron/main";
+
+// Pre-warm YouTube Music InnerTube session immediately on startup so search & playback are instant
+void getYT().catch(() => undefined);
+
+function getLanUrls(): string[] {
+  const urls: string[] = [];
+  const nets = os.networkInterfaces();
+  for (const list of Object.values(nets)) {
+    if (!list) continue;
+    for (const iface of list) {
+      if (iface.family === "IPv4" && !iface.internal) {
+        urls.push(`http://${iface.address}:${PORT}`);
+      }
+    }
+  }
+  return urls;
+}
+
+const STATIC_MIME: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "application/javascript; charset=utf-8",
+  ".mjs": "application/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".webmanifest": "application/manifest+json; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".ico": "image/x-icon",
+  ".woff2": "font/woff2",
+  ".woff": "font/woff",
+  ".ttf": "font/ttf",
+};
+
+function resolveStaticFile(reqPath: string): string | null {
+  const clean = decodeURIComponent(reqPath).replace(/^\/+/, "");
+  const distDir = path.resolve(process.cwd(), "dist");
+  const publicDir = path.resolve(process.cwd(), "public");
+
+  for (const base of [distDir, publicDir]) {
+    const candidate = path.resolve(base, clean || "index.html");
+    if (!candidate.startsWith(base)) continue;
+    try {
+      const st = fs.statSync(candidate);
+      if (st.isFile()) return candidate;
+    } catch {
+      /* try next */
+    }
+  }
+  return null;
+}
 
 function encodeBinaryResult(val: any): any {
   if (val == null) return val;
@@ -79,6 +134,12 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "GET" && url.pathname === "/health") {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/lan-info") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: true, port: PORT, urls: getLanUrls() }));
     return;
   }
 
@@ -170,6 +231,20 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === "GET") {
+    const file = resolveStaticFile(url.pathname) ?? resolveStaticFile("/index.html");
+    if (file) {
+      const ext = path.extname(file).toLowerCase();
+      const mime = STATIC_MIME[ext] || "application/octet-stream";
+      res.writeHead(200, {
+        "Content-Type": mime,
+        "Cache-Control": ext === ".html" || file.endsWith("sw.js") ? "no-cache" : "public, max-age=86400",
+      });
+      fs.createReadStream(file).pipe(res);
+      return;
+    }
+  }
+
   res.writeHead(404);
   res.end("Not found");
 });
@@ -192,7 +267,8 @@ server.on("error", (err: NodeJS.ErrnoException) => {
   console.error("[dynamusic-backend] server error:", err);
 });
 
-server.listen(PORT, "127.0.0.1", () => {
-  console.log(`[dynamusic-backend] listening on http://127.0.0.1:${PORT}`);
+server.listen(PORT, "0.0.0.0", () => {
+  const lan = getLanUrls();
+  console.log(`[dynamusic-backend] listening on http://127.0.0.1:${PORT}${lan.length ? ` (Phone Wi-Fi: ${lan.join(", ")})` : ""}`);
 });
 

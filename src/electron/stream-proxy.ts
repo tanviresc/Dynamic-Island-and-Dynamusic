@@ -36,12 +36,20 @@ let proxyPort = 0;
  * a single byte is resolved.
  */
 export function originAllowed(origin: string | undefined, host: string | undefined): boolean {
-  // Host must be the loopback authority this server serves — kills DNS
-  // rebinding by hostname.
-  if (host && !/^(127\.0\.0\.1|localhost|\[::1\])(?::\d+)?$/i.test(host)) return false;
+  const isPrivateHost = (h: string): boolean =>
+    /^(127\.0\.0\.1|localhost|tauri\.localhost|\[::1\]|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)(?::\d+)?$/i.test(
+      h
+    );
+  if (host && !isPrivateHost(host)) return false;
   if (!origin) return true; // media element / non-CORS clients
   if (origin === "null") return true; // packaged renderer fetch (file:// origin)
-  return /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin); // dev renderer
+  try {
+    const u = new URL(origin);
+    if (u.protocol === "tauri:") return true;
+    return isPrivateHost(u.host);
+  } catch {
+    return false;
+  }
 }
 
 export function startStreamProxy(): Promise<number> {
@@ -58,9 +66,9 @@ export function startStreamProxy(): Promise<number> {
   server.keepAliveTimeout = 65_000;
   return new Promise<number>((resolve, reject) => {
     server!.on("error", reject);
-    server!.listen(0, "127.0.0.1", () => {
+    server!.listen(0, "0.0.0.0", () => {
       proxyPort = (server!.address() as AddressInfo).port;
-      console.log(`[bytune] stream proxy on 127.0.0.1:${proxyPort}`);
+      console.log(`[bytune] stream proxy on 0.0.0.0:${proxyPort}`);
       resolve(proxyPort);
     });
   });

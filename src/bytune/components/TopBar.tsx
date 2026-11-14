@@ -251,7 +251,7 @@ export function TopBar() {
         }
         show(full);
       });
-    }, 160);
+    }, 60);
     return () => window.clearTimeout(timer);
   }, [query, fieldFocused]);
 
