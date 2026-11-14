@@ -245,7 +245,7 @@ export function ArtistView({ artistId }: { artistId: string }) {
     <div className="page-tint -mt-5" style={pageColors(pagePalette)}>
       {/* Hero — full-bleed photo, scrim dissolving into the page, name and
           stat chips over the lower edge, exactly the mobile artist header. */}
-      <div className="relative -mx-10 overflow-hidden">
+      <div className="relative -mx-3 md:-mx-10 overflow-hidden">
         <div className="absolute inset-0">
           {artist.thumb ? (
             <img src={upgradeArtwork(artist.thumb, 1200)} alt="" className="w-full h-full object-cover" />

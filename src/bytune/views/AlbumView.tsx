@@ -102,7 +102,7 @@ export function AlbumView({ albumId }: { albumId: string }) {
   return (
     <div className="page-tint -mt-5" style={pageColors(pagePalette)}>
       {/* Hero — the cover full-bleed, credit + metadata over its lower edge. */}
-      <div className="relative -mx-10 overflow-hidden">
+      <div className="relative -mx-3 md:-mx-10 overflow-hidden">
         <div className="absolute inset-0">
           {album.thumb ? (
             <img src={upgradeArtwork(album.thumb, 1200)} alt="" className="w-full h-full object-cover" />

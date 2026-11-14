@@ -21,6 +21,7 @@ import type {
 import type { LocalTrack } from "../../electron/local-library";
 import type { UpdateState } from "../../electron/updater";
 import { getOfflineVaultUrl } from "./offlineAudioVault";
+import { getBackendBaseUrl, getBackendHost } from "../stores/mobileMode";
 import {
   fallbackMobileSearch,
   fallbackMobileSearchPage,
@@ -30,22 +31,9 @@ import {
 
 let lastLocalLibraryWriteAt = 0;
 
-function getBackendHost(): string {
-  if (
-    typeof window !== "undefined" &&
-    window.location &&
-    typeof window.location.hostname === "string" &&
-    window.location.hostname &&
-    window.location.hostname !== "localhost" &&
-    window.location.hostname !== "127.0.0.1" &&
-    !String(window.location.protocol || "").startsWith("tauri")
-  ) {
-    return window.location.hostname;
-  }
-  return "127.0.0.1";
+function backendUrl(): string {
+  return getBackendBaseUrl();
 }
-
-const BACKEND_URL = `http://${getBackendHost()}:47822`;
 
 function encodeBinaryInput(val: unknown): unknown {
   if (val == null) return val;
@@ -107,7 +95,7 @@ async function rpcInvoke<T = any>(channel: string, ...args: unknown[]): Promise<
     const timeoutMs = isFastFallbackChannel ? 1500 : 12_000;
     const timer = setTimeout(() => ctl.abort(), timeoutMs);
     try {
-      const res = await fetch(`${BACKEND_URL}/rpc`, {
+      const res = await fetch(`${backendUrl()}/rpc`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ channel, args: encodeBinaryInput(args) }),
@@ -166,11 +154,29 @@ function emitBackendEvent(channel: string, ...args: any[]): void {
 let sseConnected = false;
 function connectEventStream(): void {
   if (typeof EventSource === "undefined") return;
+  let retryAttempt = 0;
+  let retryTimer: number | null = null;
+  let currentEs: EventSource | null = null;
+
   const connect = () => {
+    if (retryTimer !== null) {
+      window.clearTimeout(retryTimer);
+      retryTimer = null;
+    }
+    if (currentEs) {
+      try {
+        currentEs.close();
+      } catch {
+        /* ignore */
+      }
+      currentEs = null;
+    }
     try {
-      const es = new EventSource(`${BACKEND_URL}/events`);
+      const es = new EventSource(`${backendUrl()}/events`);
+      currentEs = es;
       es.onopen = () => {
         sseConnected = true;
+        retryAttempt = 0;
       };
       es.onmessage = (ev) => {
         try {
@@ -208,14 +214,31 @@ function connectEventStream(): void {
       es.onerror = () => {
         sseConnected = false;
         es.close();
-        setTimeout(connect, 2000);
+        if (currentEs === es) currentEs = null;
+        const delay = Math.min(8000, Math.round(500 * Math.pow(1.75, retryAttempt)));
+        retryAttempt += 1;
+        retryTimer = window.setTimeout(connect, delay);
       };
     } catch {
       sseConnected = false;
-      setTimeout(connect, 2000);
+      const delay = Math.min(8000, Math.round(500 * Math.pow(1.75, retryAttempt)));
+      retryAttempt += 1;
+      retryTimer = window.setTimeout(connect, delay);
     }
   };
   connect();
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && !sseConnected) {
+      retryAttempt = 0;
+      connect();
+    }
+  });
+  window.addEventListener("online", () => {
+    if (!sseConnected) {
+      retryAttempt = 0;
+      connect();
+    }
+  });
 }
 
 async function getTauriWindow() {

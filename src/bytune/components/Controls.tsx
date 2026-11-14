@@ -25,10 +25,9 @@ interface SeekBarProps {
 export function SeekBar({ large = false, showRemaining = false, thin = false }: SeekBarProps) {
   const clock = useSyncExternalStore(subscribePlaybackClock, getPlaybackClock);
   const storeDuration = usePlayer((s) => s.duration);
-  const storePosition = usePlayer((s) => s.position);
   const storeBuffered = usePlayer((s) => s.buffered);
   const seek = usePlayer((s) => s.seek);
-  const position = clock.duration > 0 || clock.generation > 0 ? clock.position : storePosition;
+  const position = clock.position;
   const duration = clock.duration > 0 ? clock.duration : storeDuration;
   const buffered = clock.buffered > 0 ? clock.buffered : storeBuffered;
   // While the thumb is held down the drag is purely visual — the audio keeps

@@ -4,10 +4,12 @@
  * exposes all IPC channels over HTTP `/rpc` and Server-Sent Events `/events`,
  * and serves the built Dynamusic web / mobile PWA (`dist/`) for phone access over Wi-Fi.
  */
+import * as crypto from "crypto";
 import * as fs from "fs";
 import * as http from "http";
 import * as os from "os";
 import * as path from "path";
+import type { Duplex } from "stream";
 import { app, emitProtocolUrl, invokeIpcChannel, onWebContentsSend } from "./electron-shim";
 import * as locallib from "../src/electron/local-library";
 import { getYT, resolveStream } from "../src/electron/music-service";
@@ -87,17 +89,52 @@ async function ensureTrackInServerVault(trackId: string): Promise<{ binPath: str
 
   const task = (async () => {
     try {
-      const stream = await resolveStream(trackId, false);
-      const upstream = await fetch(stream.url, {
-        headers: {
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-        },
-        signal: AbortSignal.timeout(45_000),
-      });
-      if (!upstream.ok) return null;
-      const mime = upstream.headers.get("content-type") || "audio/mp4";
-      const buf = Buffer.from(await upstream.arrayBuffer());
+      const CHUNK_BYTES = 512 * 1024;
+      const ua =
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+      let stream = await resolveStream(trackId, false);
+      let mime = "audio/mp4";
+      let totalLength: number | null = null;
+      let offset = 0;
+      let retries = 0;
+      const parts: Buffer[] = [];
+
+      while (totalLength === null || offset < totalLength) {
+        const end: number =
+          totalLength !== null ? Math.min(offset + CHUNK_BYTES - 1, totalLength - 1) : offset + CHUNK_BYTES - 1;
+        const resp: globalThis.Response | null = await fetch(stream.url, {
+          headers: { "User-Agent": ua, Range: `bytes=${offset}-${end}` },
+          signal: AbortSignal.timeout(25_000),
+        }).catch(() => null);
+
+        if (!resp || (!resp.ok && resp.status !== 206)) {
+          if (retries < 2) {
+            retries += 1;
+            stream = await resolveStream(trackId, true);
+            continue;
+          }
+          return null;
+        }
+        retries = 0;
+        const ct = resp.headers.get("content-type");
+        if (ct) mime = ct;
+
+        if (totalLength === null) {
+          const cr: string | null = resp.headers.get("content-range");
+          const m: RegExpExecArray | null = cr ? /\/(\d+)$/.exec(cr) : null;
+          if (m) totalLength = Number(m[1]);
+        }
+
+        const slice = Buffer.from(await resp.arrayBuffer());
+        if (slice.byteLength === 0) break;
+        parts.push(slice);
+        offset += slice.byteLength;
+        if (resp.status === 200 || (totalLength === null && slice.byteLength < CHUNK_BYTES)) {
+          break;
+        }
+      }
+
+      const buf = Buffer.concat(parts);
       if (buf.byteLength < 4096) return null;
       fs.writeFileSync(bin, buf);
       fs.writeFileSync(meta, JSON.stringify({ id: trackId, mime, size: buf.byteLength, savedAt: Date.now() }));
@@ -200,7 +237,80 @@ function decodeBinaryInput(val: any): any {
 
 const sseClients = new Set<http.ServerResponse>();
 
-// 15-second heartbeat ping so mobile browsers and Wi-Fi routers never drop the SSE connection
+interface RemoteWsClient {
+  socket: Duplex;
+  buffer: Buffer;
+  lastPongAt: number;
+}
+const wsClients = new Set<RemoteWsClient>();
+
+function encodeWsFrame(opcode: number, payloadBuf: Buffer): Buffer {
+  const len = payloadBuf.length;
+  let header: Buffer;
+  if (len < 126) {
+    header = Buffer.allocUnsafe(2);
+    header[0] = 0x80 | (opcode & 0x0f);
+    header[1] = len;
+  } else if (len < 65536) {
+    header = Buffer.allocUnsafe(4);
+    header[0] = 0x80 | (opcode & 0x0f);
+    header[1] = 126;
+    header.writeUInt16BE(len, 2);
+  } else {
+    header = Buffer.allocUnsafe(10);
+    header[0] = 0x80 | (opcode & 0x0f);
+    header[1] = 127;
+    header.writeBigUInt64BE(BigInt(len), 2);
+  }
+  return Buffer.concat([header, payloadBuf]);
+}
+
+function sendWsJson(client: RemoteWsClient, data: unknown): void {
+  if (client.socket.destroyed) {
+    wsClients.delete(client);
+    return;
+  }
+  try {
+    client.socket.write(encodeWsFrame(0x1, Buffer.from(JSON.stringify(data), "utf8")));
+  } catch {
+    wsClients.delete(client);
+  }
+}
+
+function broadcastWsJson(data: unknown): void {
+  if (!wsClients.size) return;
+  const frame = encodeWsFrame(0x1, Buffer.from(JSON.stringify(data), "utf8"));
+  for (const client of wsClients) {
+    if (client.socket.destroyed) {
+      wsClients.delete(client);
+      continue;
+    }
+    try {
+      client.socket.write(frame);
+    } catch {
+      wsClients.delete(client);
+    }
+  }
+}
+
+// 3-second active WS ping/pong heartbeat & dead socket reaper
+setInterval(() => {
+  const now = Date.now();
+  for (const client of wsClients) {
+    if (client.socket.destroyed || now - client.lastPongAt > 9_000) {
+      try {
+        client.socket.destroy();
+      } catch {
+        /* ignore */
+      }
+      wsClients.delete(client);
+      continue;
+    }
+    sendWsJson(client, { type: "ping", ts: now });
+  }
+}, 3_000);
+
+// 15-second SSE keepalive
 setInterval(() => {
   for (const res of sseClients) {
     try {
@@ -212,6 +322,16 @@ setInterval(() => {
 }, 15_000);
 
 let latestPlayerState: any = null;
+
+function stampAndPublishState(rawState: any): void {
+  const stamped = {
+    ...rawState,
+    serverTimestamp: typeof rawState?.serverTimestamp === "number" ? rawState.serverTimestamp : Date.now(),
+  };
+  latestPlayerState = stamped;
+  broadcastSse("pc:player_state", stamped);
+  broadcastWsJson({ type: "state", state: stamped });
+}
 
 function broadcastSse(channel: string, ...args: any[]): void {
   const payload = JSON.stringify({ channel, args: encodeBinaryResult(args) });
@@ -260,8 +380,7 @@ const server = http.createServer(async (req, res) => {
       try {
         const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
         if (body.state) {
-          latestPlayerState = body.state;
-          broadcastSse("pc:player_state", body.state);
+          stampAndPublishState(body.state);
         }
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ ok: true }));
@@ -467,6 +586,109 @@ const server = http.createServer(async (req, res) => {
 
   res.writeHead(404);
   res.end("Not found");
+});
+
+const WS_MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+
+server.on("upgrade", (req, socket) => {
+  const reqUrl = new URL(req.url || "/", `http://127.0.0.1:${PORT}`);
+  if (reqUrl.pathname !== "/ws/remote") {
+    socket.destroy();
+    return;
+  }
+  const key = req.headers["sec-websocket-key"];
+  if (typeof key !== "string" || !key) {
+    socket.destroy();
+    return;
+  }
+  const accept = crypto.createHash("sha1").update(key + WS_MAGIC).digest("base64");
+  socket.write(
+    [
+      "HTTP/1.1 101 Switching Protocols",
+      "Upgrade: websocket",
+      "Connection: Upgrade",
+      `Sec-WebSocket-Accept: ${accept}`,
+      "",
+      "",
+    ].join("\r\n")
+  );
+  if ("setNoDelay" in socket && typeof (socket as any).setNoDelay === "function") {
+    (socket as any).setNoDelay(true);
+  }
+
+  const client: RemoteWsClient = { socket, buffer: Buffer.alloc(0), lastPongAt: Date.now() };
+  wsClients.add(client);
+
+  if (latestPlayerState) {
+    sendWsJson(client, { type: "state", state: latestPlayerState });
+  }
+
+  socket.on("data", (chunk: Buffer) => {
+    client.lastPongAt = Date.now();
+    client.buffer = Buffer.concat([client.buffer, chunk]);
+    while (client.buffer.length >= 2) {
+      const b0 = client.buffer[0];
+      const b1 = client.buffer[1];
+      const opcode = b0 & 0x0f;
+      const masked = (b1 & 0x80) !== 0;
+      let len = b1 & 0x7f;
+      let offset = 2;
+      if (len === 126) {
+        if (client.buffer.length < 4) return;
+        len = client.buffer.readUInt16BE(2);
+        offset = 4;
+      } else if (len === 127) {
+        if (client.buffer.length < 10) return;
+        len = Number(client.buffer.readBigUInt64BE(2));
+        offset = 10;
+      }
+      const need = offset + (masked ? 4 : 0) + len;
+      if (client.buffer.length < need) return;
+
+      let payload = Buffer.from(client.buffer.subarray(offset + (masked ? 4 : 0), need));
+      if (masked) {
+        const maskKey = client.buffer.subarray(offset, offset + 4);
+        for (let i = 0; i < payload.length; i++) {
+          payload[i] ^= maskKey[i & 3];
+        }
+      }
+      client.buffer = client.buffer.subarray(need);
+
+      if (opcode === 0x8) {
+        wsClients.delete(client);
+        socket.destroy();
+        return;
+      }
+      if (opcode === 0x9) {
+        try {
+          socket.write(encodeWsFrame(0xa, payload));
+        } catch {
+          /* ignore */
+        }
+        continue;
+      }
+      if (opcode === 0xa) continue;
+      if (opcode === 0x1) {
+        try {
+          const msg = JSON.parse(payload.toString("utf8")) as {
+            type?: string;
+            command?: string;
+            payload?: unknown;
+          };
+          if (msg.type === "request_state" && latestPlayerState) {
+            sendWsJson(client, { type: "state", state: latestPlayerState });
+          } else if (msg.type === "command" && msg.command) {
+            broadcastSse("pc:player_command", { command: msg.command, payload: msg.payload });
+          }
+        } catch {
+          /* ignore malformed WS JSON */
+        }
+      }
+    }
+  });
+
+  socket.on("close", () => wsClients.delete(client));
+  socket.on("error", () => wsClients.delete(client));
 });
 
 server.on("error", (err: NodeJS.ErrnoException) => {

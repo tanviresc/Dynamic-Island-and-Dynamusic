@@ -96,7 +96,7 @@ function TrackRow({ track, index, isCurrent, isPlaying, onPlay, menuFor, showAlb
         transform: swipe.offsetX ? `translate3d(${swipe.offsetX}px, 0, 0)` : undefined,
         transition: swipe.dragging ? "none" : "transform 200ms cubic-bezier(0.22, 1, 0.36, 1)",
       }}
-      className={`tl-row fit-host group relative flex items-center gap-3.5 h-[60px] px-3 rounded-lg cursor-pointer select-none ${
+      className={`tl-row fit-host group relative flex items-center gap-2.5 md:gap-3.5 h-[60px] w-full max-w-full overflow-hidden px-2 md:px-3 rounded-lg cursor-pointer select-none ${
         isCurrent ? "bg-ink-hi/[0.06]" : "hover:bg-ink-hi/[0.04]"
       } ${drag.dragging ? "opacity-40" : ""}`}
     >
@@ -109,7 +109,7 @@ function TrackRow({ track, index, isCurrent, isPlaying, onPlay, menuFor, showAlb
       {/* The playing song keeps a soft light of its own cover. */}
       {isCurrent && <PlayingLight thumb={track.thumb} />}
       {/* index / hover play / eq */}
-      <div className="w-7 shrink-0 grid place-items-center text-[13px] text-ink-faint tabular-nums">
+      <div className="hidden md:grid w-7 shrink-0 place-items-center text-[13px] text-ink-faint tabular-nums">
         {isCurrent && isPlaying ? (
           <EqBars />
         ) : (
@@ -137,7 +137,7 @@ function TrackRow({ track, index, isCurrent, isPlaying, onPlay, menuFor, showAlb
 
       <Artwork
         src={track.thumb}
-        className="w-[52px] h-[52px] rounded-lg shrink-0"
+        className="w-11 h-11 md:w-[52px] md:h-[52px] rounded-lg shrink-0"
         iconClassName="w-4 h-4"
         alt=""
       />
@@ -146,12 +146,18 @@ function TrackRow({ track, index, isCurrent, isPlaying, onPlay, menuFor, showAlb
           controls · time) can exceed a narrow list and, because the title's flex
           basis is 0, it would collapse to zero width before anything else gives.
           The floor keeps the title visible; the album column shrinks instead. */}
-      <div className="flex-1 min-w-[120px]">
-        <div className={`flex items-center gap-1.5 text-[16px] font-semibold tracking-[-0.2px] ${isCurrent ? "text-ink-hi" : "text-ink-hi"}`}>
+      <div className="flex-1 min-w-0 overflow-hidden">
+        <div className="flex items-center gap-1.5 min-w-0 text-[15px] md:text-[16px] font-semibold tracking-[-0.2px] text-ink-hi">
           {track.explicit && <ExplicitBadge />}
-          <FitText text={shortTitle(track.title)} full={track.title} />
+          <span className="truncate md:hidden">{shortTitle(track.title)}</span>
+          <span className="hidden md:block min-w-0 flex-1">
+            <FitText text={shortTitle(track.title)} full={track.title} />
+          </span>
         </div>
-        <FitText text={track.artist} className="text-[14px] text-ink-dim mt-0.5" />
+        <div className="md:hidden truncate text-[13px] text-ink-dim mt-0.5">{track.artist}</div>
+        <div className="hidden md:block">
+          <FitText text={track.artist} className="text-[14px] text-ink-dim mt-0.5" />
+        </div>
       </div>
 
       {showAlbum && (
@@ -172,7 +178,7 @@ function TrackRow({ track, index, isCurrent, isPlaying, onPlay, menuFor, showAlb
         </div>
       )}
 
-      <div className="w-[88px] shrink-0 flex items-center justify-end gap-0.5 opacity-100 md:opacity-0 md:group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+      <div className="w-auto md:w-[88px] shrink-0 flex items-center justify-end gap-0.5 opacity-100 md:opacity-0 md:group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
         <button
           onClick={(e) => {
             e.stopPropagation();
@@ -200,7 +206,7 @@ function TrackRow({ track, index, isCurrent, isPlaying, onPlay, menuFor, showAlb
         </button>
       </div>
 
-      <div className="w-11 shrink-0 text-right text-xs text-ink-faint tabular-nums">
+      <div className="w-9 md:w-11 shrink-0 text-right text-[11px] md:text-xs text-ink-faint tabular-nums">
         {track.duration > 0 ? fmtTime(track.duration) : "—"}
       </div>
     </div>
@@ -309,9 +315,9 @@ export function TrackList({
   const visibleTracks = shouldVirtualize ? tracks.slice(startIdx, endIdx) : tracks;
 
   return (
-    <div className="tl">
+    <div className="tl w-full max-w-full overflow-x-hidden">
       {showHeader && (
-        <div className="flex items-center gap-3 px-3 pb-2.5 mb-1 border-b border-ink-hi/[0.06] text-[10.5px] font-semibold uppercase tracking-[0.14em] text-ink-ghost">
+        <div className="hidden md:flex items-center gap-3 px-3 pb-2.5 mb-1 border-b border-ink-hi/[0.06] text-[10.5px] font-semibold uppercase tracking-[0.14em] text-ink-ghost">
           <div className="w-7 shrink-0">#</div>
           <div className="w-[52px] shrink-0" />
           <div className="flex-1 min-w-0">Title</div>
@@ -339,7 +345,7 @@ export function TrackList({
               />
               {/* Hairline divider, inset to the title column — mobile's
                   ROW_DIVIDER_INSET clears the 52dp artwork the same way. */}
-              {i < tracks.length - 1 && <div className="h-px bg-ink-hi/[0.05] ml-[120px] mr-3" />}
+              {i < tracks.length - 1 && <div className="h-px bg-ink-hi/[0.05] ml-[64px] md:ml-[120px] mr-3" />}
             </Fragment>
           );
         })}

@@ -103,7 +103,7 @@ export function PlaylistView({ playlistId }: { playlistId: string }) {
   };
 
   return (
-    <div className="pb-14">
+    <div className="pb-14 w-full max-w-full overflow-x-hidden">
       <CollectionHero
         icon={onDevice ? HardDrive : ListMusic}
         kind={onDevice ? "On this device" : "Your playlist"}
@@ -165,7 +165,7 @@ export function PlaylistView({ playlistId }: { playlistId: string }) {
                     sortDrag={sortable.dragProps(i)}
                     onHover={rowLight.hover}
                   />
-                  {i < tracks.length - 1 && <div className="h-px bg-ink-hi/[0.05] ml-[112px] mr-3" />}
+                  {i < tracks.length - 1 && <div className="h-px bg-ink-hi/[0.05] ml-[64px] md:ml-[112px] mr-3" />}
                 </div>
               ))}
             </div>
@@ -254,13 +254,13 @@ function PlaylistTrackRow({
         e.preventDefault();
         openMenu(e.clientX, e.clientY);
       }}
-      className={`tl-row fit-host group flex items-center gap-3.5 h-[64px] px-3 rounded-lg cursor-pointer select-none ${
+      className={`tl-row fit-host group flex items-center gap-2.5 md:gap-3.5 h-[64px] w-full max-w-full overflow-hidden px-2 md:px-3 rounded-lg cursor-pointer select-none ${
         isCurrent ? "bg-ink-hi/[0.06]" : "hover:bg-ink-hi/[0.04]"
       } ${drag.dragging ? "opacity-40" : ""}`}
     >
       {isCurrent && <PlayingLight thumb={track.thumb} />}
       {/* The playlist's own running order: numbered rows, play on hover. */}
-      <div data-ghost-hide className="w-7 shrink-0 grid place-items-center text-[13px] text-ink-faint tabular-nums">
+      <div data-ghost-hide className="hidden md:grid w-7 shrink-0 place-items-center text-[13px] text-ink-faint tabular-nums">
         {isCurrent && playing ? (
           <EqBars />
         ) : (
@@ -281,17 +281,23 @@ function PlaylistTrackRow({
           </>
         )}
       </div>
-      <Artwork src={track.thumb} className="w-[52px] h-[52px] rounded-lg shrink-0" iconClassName="w-4 h-4" alt="" />
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-1.5 text-[16px] font-semibold tracking-[-0.2px] text-ink-hi">
+      <Artwork src={track.thumb} className="w-11 h-11 md:w-[52px] md:h-[52px] rounded-lg shrink-0" iconClassName="w-4 h-4" alt="" />
+      <div className="flex-1 min-w-0 overflow-hidden">
+        <div className="flex items-center gap-1.5 min-w-0 text-[15px] md:text-[16px] font-semibold tracking-[-0.2px] text-ink-hi">
           {track.explicit && <ExplicitBadge />}
-          <FitText text={shortTitle(track.title)} full={track.title} />
+          <span className="truncate md:hidden">{shortTitle(track.title)}</span>
+          <span className="hidden md:block min-w-0 flex-1">
+            <FitText text={shortTitle(track.title)} full={track.title} />
+          </span>
         </div>
-        <FitText text={track.artist} className="text-[14px] text-ink-dim mt-0.5" />
+        <div className="md:hidden truncate text-[13px] text-ink-dim mt-0.5">{track.artist}</div>
+        <div className="hidden md:block">
+          <FitText text={track.artist} className="text-[14px] text-ink-dim mt-0.5" />
+        </div>
       </div>
       <div
         data-ghost-hide
-        className="w-[88px] shrink-0 flex items-center justify-end gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity"
+        className="w-auto md:w-[88px] shrink-0 flex items-center justify-end gap-0.5 opacity-100 md:opacity-0 md:group-hover:opacity-100 focus-within:opacity-100 transition-opacity"
       >
         <button
           onClick={(e) => {
@@ -319,7 +325,7 @@ function PlaylistTrackRow({
           <MoreHorizontal className="w-4 h-4" />
         </button>
       </div>
-      <div className="w-11 shrink-0 text-right text-xs text-ink-faint tabular-nums">
+      <div className="w-9 md:w-11 shrink-0 text-right text-[11px] md:text-xs text-ink-faint tabular-nums">
         {track.duration > 0 ? fmtTime(track.duration) : "—"}
       </div>
     </div>

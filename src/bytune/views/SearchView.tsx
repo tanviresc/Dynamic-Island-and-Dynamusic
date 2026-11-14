@@ -635,7 +635,7 @@ export function SearchView() {
           the default window size; flex-wrap is the safety valve below
           that — filters wrap to a second line rather than ever getting
           cut. */}
-      <div className="pointer-events-none sticky top-0 z-10 -mx-10 px-10 -mt-5 pt-4 pb-4 animate-slide-up">
+      <div className="pointer-events-none sticky top-0 z-10 -mx-3 md:-mx-10 px-3 md:px-10 -mt-5 pt-4 pb-4 animate-slide-up">
         <div className="pointer-events-auto flex flex-wrap items-center justify-center gap-1.5 gap-y-1">
           <Pills size="sm" options={FILTERS} value={filter} onChange={setFilter} />
           {loading && (

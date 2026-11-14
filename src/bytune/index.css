@@ -15,7 +15,17 @@
 }
 
 @media (max-width: 768px) {
+  html,
+  body,
+  #root,
+  #view-scroll {
+    max-width: 100% !important;
+    overflow-x: hidden !important;
+  }
   .view-page {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: hidden;
     padding-left: 0.75rem !important;
     padding-right: 0.75rem !important;
     padding-bottom: 9rem !important;

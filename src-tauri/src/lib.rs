@@ -866,25 +866,61 @@ pub fn run() {
                 }
             });
 
-            // Spawn Dynamusic (ByTune) Node Backend Sidecar (127.0.0.1:47822)
+            // Spawn & supervise Dynamusic (ByTune) Node Backend Sidecar (0.0.0.0:47822)
             {
-                let candidates = [
-                    std::path::PathBuf::from("dist-bytune/server.cjs"),
-                    std::path::PathBuf::from("../dist-bytune/server.cjs"),
-                ];
-                if let Some(script_path) = candidates.into_iter().find(|p| p.exists()) {
-                    let mut cmd = std::process::Command::new("node");
-                    cmd.arg(&script_path);
-                    #[cfg(target_os = "windows")]
-                    {
-                        use std::os::windows::process::CommandExt;
-                        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+                std::thread::spawn(|| {
+                    let candidates = [
+                        std::path::PathBuf::from("dist-bytune/server.cjs"),
+                        std::path::PathBuf::from("../dist-bytune/server.cjs"),
+                    ];
+                    let Some(script_path) = candidates.into_iter().find(|p| p.exists()) else {
+                        warn!("Dynamusic backend sidecar not found in dist-bytune/server.cjs");
+                        return;
+                    };
+
+                    // Skip spawning if a dev or prior instance is already listening on port 47822
+                    let port_busy = | | {
+                        std::net::TcpStream::connect_timeout(
+                            &std::net::SocketAddr::from(([127, 0, 0, 1], 47822)),
+                            std::time::Duration::from_millis(300),
+                        )
+                        .is_ok()
+                    };
+                    if port_busy() {
+                        info!("Dynamusic backend already active on port 47822");
+                        return;
                     }
-                    match cmd.spawn() {
-                        Ok(_) => info!("Spawned Dynamusic backend sidecar: {:?}", script_path),
-                        Err(e) => warn!("Failed to spawn Dynamusic backend sidecar: {}", e),
+
+                    let mut backoff_ms: u64 = 1_000;
+                    for attempt in 1..=5 {
+                        if port_busy() {
+                            return;
+                        }
+                        let mut cmd = std::process::Command::new("node");
+                        cmd.arg(&script_path);
+                        #[cfg(target_os = "windows")]
+                        {
+                            use std::os::windows::process::CommandExt;
+                            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+                        }
+                        match cmd.spawn() {
+                            Ok(mut child) => {
+                                info!("Spawned Dynamusic backend sidecar (attempt {}): {:?}", attempt, script_path);
+                                backoff_ms = 1_000;
+                                match child.wait() {
+                                    Ok(status) if status.success() => return,
+                                    Ok(status) => warn!("Dynamusic sidecar exited with status {:?}; restarting", status),
+                                    Err(e) => warn!("Dynamusic sidecar wait error: {}; restarting", e),
+                                }
+                            }
+                            Err(e) => {
+                                warn!("Failed to spawn Dynamusic backend sidecar (attempt {}): {}", attempt, e);
+                            }
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(backoff_ms));
+                        backoff_ms = (backoff_ms * 2).min(15_000);
                     }
-                }
+                });
             }
 
             // Tray setup

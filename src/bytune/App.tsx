@@ -460,8 +460,8 @@ export default function App() {
           {lyricsCenter ? (
             <LyricsCenter />
           ) : (
-            <div ref={viewScrollRef} className="flex-1 min-h-0 overflow-y-auto no-scrollbar relative" id="view-scroll">
-              <div key={`${viewReloadNonce}:${viewName}`} className="view-page animate-rise-in px-3 pt-3 pb-36">
+            <div ref={viewScrollRef} className="flex-1 min-h-0 w-full max-w-full overflow-y-auto overflow-x-hidden no-scrollbar relative" id="view-scroll">
+              <div key={`${viewReloadNonce}:${viewName}`} className="view-page w-full max-w-full overflow-x-hidden animate-rise-in px-3 pt-3 pb-36">
                 <ErrorBoundary>
                   <CurrentView />
                 </ErrorBoundary>

@@ -19,12 +19,14 @@ import {
   AppWindow,
   AudioLines,
   BarChart3,
+  Check,
   ChevronRight,
   ChevronsUpDown,
   CirclePlay,
   Clapperboard,
   CloudDownload,
   CloudUpload,
+  Copy,
   Database,
   Download,
   Droplets,
@@ -54,6 +56,7 @@ import {
   Search,
   SlidersHorizontal,
   SlidersVertical,
+  Smartphone,
   Sparkles,
   Speaker,
   Timer,
@@ -78,6 +81,8 @@ import { setOnboardingIntent } from "../lib/onboardingIntent";
 import { GuestDeleteModal } from "../components/AccountModals";
 import { Switch } from "../components/primitives";
 import { useUI, type MenuItem } from "../stores/ui";
+import { getBackendBaseUrl, isCapacitorNative, isTauriDesktop, useMobileMode } from "../stores/mobileMode";
+import QRCode from "qrcode";
 import { EQ_BANDS, listOutputDevices } from "../lib/audio";
 import type { OutputDeviceChoice } from "../lib/audio-output";
 import { avatarFor } from "../lib/avatar";
@@ -592,6 +597,7 @@ function AccountPane() {
         </Group>
       )}
       <ConnectedServices />
+      <MobilePairingGroup />
       {signedIn && (
         <Group title="Session">
           <Row
@@ -737,6 +743,166 @@ function ConnectedServices() {
           )
         }
       />
+    </Group>
+  );
+}
+
+/**
+ * Phone & Android App LAN pairing: shows desktop Wi-Fi URLs on PC and lets Capacitor/mobile users
+ * enter and persist their PC's LAN IP (`useMobileMode.setPcHost`) with live WebSocket status.
+ */
+function MobilePairingGroup() {
+  const isMobileDevice = useMobileMode((s) => s.isMobileDevice);
+  const pcHost = useMobileMode((s) => s.pcHost);
+  const setPcHost = useMobileMode((s) => s.setPcHost);
+  const connectionStatus = useMobileMode((s) => s.connectionStatus);
+  const reconnectNow = useMobileMode((s) => s.reconnectNow);
+  const [hostDraft, setHostDraft] = useState(pcHost || "");
+  const [lanUrls, setLanUrls] = useState<string[]>([]);
+  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
+  const [copiedUrl, setCopiedUrl] = useState<string | null>(null);
+  const isPhoneClient = isMobileDevice || isCapacitorNative();
+
+  useEffect(() => {
+    setHostDraft(pcHost || "");
+  }, [pcHost]);
+
+  useEffect(() => {
+    if (isPhoneClient && !isTauriDesktop()) return;
+    let cancelled = false;
+    fetch(`${getBackendBaseUrl()}/lan-info`, { cache: "no-store" })
+      .then((res) => (res.ok ? (res.json() as Promise<{ urls?: string[] }>) : null))
+      .then((data) => {
+        if (!cancelled && Array.isArray(data?.urls)) {
+          setLanUrls(data.urls);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [isPhoneClient]);
+
+  useEffect(() => {
+    if (isPhoneClient || lanUrls.length === 0) {
+      setQrDataUrl(null);
+      return;
+    }
+    let cancelled = false;
+    QRCode.toDataURL(lanUrls[0], {
+      width: 148,
+      margin: 1,
+      color: { dark: "#ffffff", light: "#141418" },
+    })
+      .then((url) => {
+        if (!cancelled) setQrDataUrl(url);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [isPhoneClient, lanUrls]);
+
+  const copyUrl = (url: string): void => {
+    navigator.clipboard?.writeText(url).catch(() => undefined);
+    setCopiedUrl(url);
+    window.setTimeout(() => setCopiedUrl((cur) => (cur === url ? null : cur)), 1600);
+  };
+
+  const primaryLanUrl = lanUrls[0] || "http://127.0.0.1:47822";
+  const statusLabel =
+    connectionStatus === "connected"
+      ? "Connected to PC"
+      : connectionStatus === "reconnecting"
+        ? "Reconnecting to PC…"
+        : "Offline";
+
+  return (
+    <Group
+      title="Phone & Android remote"
+      note={
+        isPhoneClient
+          ? "Connect over the same Wi-Fi network as your PC running Dynamusic (port 47822)."
+          : "Open the Android app or phone browser on the same Wi-Fi and enter this PC's LAN IP."
+      }
+    >
+      {isPhoneClient ? (
+        <>
+          <Row
+            icon={Wifi}
+            title="PC connection status"
+            note={pcHost ? `${statusLabel} (${pcHost})` : "No PC host configured yet"}
+            control={
+              <Button onClick={reconnectNow}>
+                Reconnect
+              </Button>
+            }
+          />
+          <Row
+            icon={Smartphone}
+            title="PC LAN IP address"
+            note="Example: 192.168.1.42 (from PC Settings → Account)"
+            wide={
+              <form
+                className="flex flex-wrap items-center gap-2 pt-2"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  setPcHost(hostDraft);
+                  useUI.getState().toast(hostDraft.trim() ? "PC host updated" : "PC host cleared", "success");
+                }}
+              >
+                <input
+                  type="text"
+                  value={hostDraft}
+                  onChange={(e) => setHostDraft(e.target.value)}
+                  placeholder="192.168.1.x"
+                  className="flex-1 min-w-[160px] h-9 px-3 rounded-lg bg-surface-hi/80 border border-ink-hi/15 text-[13.5px] text-ink-hi placeholder:text-ink-ghost focus:outline-none focus:border-ink-hi/40"
+                />
+                <Button kind="primary" onClick={() => {
+                  setPcHost(hostDraft);
+                  useUI.getState().toast(hostDraft.trim() ? "PC host updated" : "PC host cleared", "success");
+                }}>
+                  Save host
+                </Button>
+              </form>
+            }
+          />
+        </>
+      ) : (
+        <Row
+          icon={Smartphone}
+          title="LAN address & QR for mobile"
+          note={lanUrls.length ? lanUrls.join("  •  ") : "Waiting for backend sidecar on port 47822"}
+          control={
+            <Button onClick={() => copyUrl(primaryLanUrl)}>
+              {copiedUrl === primaryLanUrl ? (
+                <>
+                  <Check className="w-3.5 h-3.5 mr-1 inline" /> Copied
+                </>
+              ) : (
+                <>
+                  <Copy className="w-3.5 h-3.5 mr-1 inline" /> Copy URL
+                </>
+              )}
+            </Button>
+          }
+          wide={
+            qrDataUrl ? (
+              <div className="flex items-center gap-4 pt-3">
+                <img
+                  src={qrDataUrl}
+                  alt="Scan to open Dynamusic Mobile on LAN"
+                  className="w-[104px] h-[104px] rounded-lg border border-ink-hi/15 shrink-0"
+                />
+                <div className="text-[12.5px] text-ink-dim leading-relaxed">
+                  Scan this QR code on your phone camera to open the live web remote, or copy the LAN IP above into the{" "}
+                  <strong className="text-ink-hi font-medium">Dynamusic Android app</strong>.
+                </div>
+              </div>
+            ) : undefined
+          }
+        />
+      )}
     </Group>
   );
 }

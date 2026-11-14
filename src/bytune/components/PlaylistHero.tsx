@@ -29,7 +29,7 @@ export function PlaylistHero({
   children: ReactNode;
 }) {
   return (
-    <div className="relative -mx-10 overflow-hidden">
+    <div className="relative -mx-3 md:-mx-10 overflow-hidden">
       <div className="absolute inset-0">
         {thumb ? (
           <img src={upgradeArtwork(thumb, 1200)} alt="" className="w-full h-full object-cover" />
@@ -50,7 +50,7 @@ export function PlaylistHero({
         />
       </div>
 
-      <div className="relative flex flex-col items-center text-center px-8 pt-[244px] pb-5">
+      <div className="relative flex flex-col items-center text-center px-4 md:px-8 pt-36 md:pt-[244px] pb-5">
         <h1
           className={`font-display ${PAGE_TITLE_SIZE[titleStep(title)]} leading-[1.2] font-extrabold tracking-[-0.03em] text-white drop-shadow-[0_2px_12px_rgba(0,0,0,0.55)] break-words max-w-3xl`}
         >
@@ -66,7 +66,7 @@ export function PlaylistHero({
             {meta}
           </div>
         )}
-        <div className="flex items-center justify-center gap-2.5 mt-4">{children}</div>
+        <div className="flex flex-wrap items-center justify-center gap-2.5 mt-4">{children}</div>
       </div>
     </div>
   );

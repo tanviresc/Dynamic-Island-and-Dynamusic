@@ -40,7 +40,7 @@
  * idempotent completion, and the deck that is already playing wins either way.
  */
 import { useLibrary } from "../stores/library";
-import { upNext, usePlayer } from "../stores/player";
+import { shownTrack, upNext, usePlayer } from "../stores/player";
 import { useSettings } from "../stores/settings";
 import { useUI } from "../stores/ui";
 import { isEarlyExit, useListening } from "../stores/listening";
@@ -67,16 +67,23 @@ let elements: [HTMLAudioElement, HTMLAudioElement] | null = null;
 /** which element is the session player right now */
 let mainIdx: 0 | 1 = 0;
 let loadedId: string | null = null;
+/** Pending seek (s) retained across metadata load when recovering or restoring playback. */
 let pendingSeek = 0;
 /** retries (with client rotation) for the current track */
 let retryCount = 0;
 /** Where the song was when it was last retried: one that plays on for 30 s may retry again. */
 let retriedAt = -Infinity;
 let retryTimer: number | null = null;
+let stallTimer: number | null = null;
 /** Pre-buffered next track on standby deck (idle mode, not blending). */
 let prebuffered: { id: string; url: string } | null = null;
+let prebufferingId: string | null = null;
 let lastStoreSyncAt = 0;
 let lastSyncedPos = -1;
+const STORE_POSITION_SYNC_MS = 10_000;
+const PREBUFFER_LEAD_SEC = 15;
+const MAX_RETRY_ATTEMPTS = 3;
+const ENDING_EPSILON_SEC = 1.5;
 /** consecutive tracks that failed to play — stops auto-skipping eventually */
 let consecutiveFailures = 0;
 /** the unlinked-local-folder explainer fires once per failing streak, not per skip */
@@ -308,12 +315,34 @@ async function fetchLoudness(proxyUrl: string, track: Track): Promise<void> {
  */
 function prefetchLoudness(track: Track | null): void {
   if (!track) return;
+  if (prebuffered?.id === track.id || prebufferingId === track.id) return;
+  prebufferingId = track.id;
   analyse(track); // edges and beats ahead of a blend
   if (track.localPath || track.id.startsWith("local:")) {
     levelLocal(track);
     void (async () => {
-      const url = await requireBridge().localTrackUrl(track.id);
-      if (!url || !elements || fade || armed) return;
+      try {
+        const url = await requireBridge().localTrackUrl(track.id);
+        if (!url || !elements || fade || armed) return;
+        const cur = usePlayer.getState().queue[usePlayer.getState().index];
+        if (!cur || cur.id === track.id || upNext(usePlayer.getState())?.id !== track.id) return;
+        if (prebuffered?.id === track.id && prebuffered.url === url) return;
+        const stand = standbyEl();
+        stand.src = url;
+        stand.load();
+        prebuffered = { id: track.id, url };
+      } finally {
+        if (prebufferingId === track.id) prebufferingId = null;
+      }
+    })().catch(() => undefined);
+    return;
+  }
+  void (async () => {
+    try {
+      const url = await requireBridge().getStreamUrl(track.id, false, useSettings.getState().streamingQuality, track.title, track.artist);
+      if (!url) return;
+      void fetchLoudness(url, track);
+      if (!elements || fade || armed) return;
       const cur = usePlayer.getState().queue[usePlayer.getState().index];
       if (!cur || cur.id === track.id || upNext(usePlayer.getState())?.id !== track.id) return;
       if (prebuffered?.id === track.id && prebuffered.url === url) return;
@@ -321,24 +350,25 @@ function prefetchLoudness(track: Track | null): void {
       stand.src = url;
       stand.load();
       prebuffered = { id: track.id, url };
-    })().catch(() => undefined);
-    return;
-  }
-  // No loudnessGains shortcut: a replayed track knows its gain but its
-  // resolution has likely expired, and a warm `?meta=1` hit costs nothing.
-  void (async () => {
-    const url = await requireBridge().getStreamUrl(track.id, false, useSettings.getState().streamingQuality, track.title, track.artist);
-    if (!url) return;
-    void fetchLoudness(url, track);
-    if (!elements || fade || armed) return;
-    const cur = usePlayer.getState().queue[usePlayer.getState().index];
-    if (!cur || cur.id === track.id || upNext(usePlayer.getState())?.id !== track.id) return;
-    if (prebuffered?.id === track.id && prebuffered.url === url) return;
-    const stand = standbyEl();
-    stand.src = url;
-    stand.load();
-    prebuffered = { id: track.id, url };
+    } finally {
+      if (prebufferingId === track.id) prebufferingId = null;
+    }
   })().catch(() => undefined);
+}
+
+function maybePrebufferNext(currentTime: number, duration: number): void {
+  if (!elements || fade || armed) return;
+  const state = usePlayer.getState();
+  if (!state.playing) return;
+  const nextTrack = upNext(state);
+  if (!nextTrack) return;
+  if (prebuffered?.id === nextTrack.id || prebufferingId === nextTrack.id) return;
+  if (!Number.isFinite(duration) || duration <= 0) return;
+  const remaining = duration - currentTime;
+  const shouldArm = duration <= 18 ? currentTime >= 1.5 : remaining <= PREBUFFER_LEAD_SEC;
+  if (shouldArm) {
+    prefetchLoudness(nextTrack);
+  }
 }
 
 /** A local file levels by its ReplayGain tag (reference ≈ -18 LUFS), else by a measurement. */
@@ -724,19 +754,82 @@ function updateBuffered(): number {
   return 0;
 }
 
+function clearStallWatchdog(): void {
+  if (stallTimer !== null) {
+    window.clearTimeout(stallTimer);
+    stallTimer = null;
+  }
+}
+
+function scheduleStallWatchdog(expectedIndex: number): void {
+  clearStallWatchdog();
+  stallTimer = window.setTimeout(() => {
+    stallTimer = null;
+    if (!elements || expectedIndex !== mainIdx) return;
+    const s = usePlayer.getState();
+    const cur = s.queue[s.index];
+    const a = el();
+    if (!s.playing || !cur || loadedId !== cur.id) return;
+    if (a.readyState < 3 || a.paused) {
+      handleFailure(cur, new Error("stream_stalled"));
+    }
+  }, 5000);
+}
+
+function applySeekWhenReady(
+  a: HTMLAudioElement,
+  targetSec: number,
+  expectedSeq: number,
+  trackId: string
+): void {
+  if (!Number.isFinite(targetSec) || targetSec <= 0) return;
+  const performSeek = () => {
+    if (seqGuard(expectedSeq, trackId) && elements && a === el()) {
+      try {
+        a.currentTime = targetSec;
+      } catch {
+        /* ignore */
+      }
+    }
+  };
+  if (a.readyState >= 1) {
+    performSeek();
+    return;
+  }
+  const onMeta = () => {
+    a.removeEventListener("loadedmetadata", onMeta);
+    a.removeEventListener("error", onCleanup);
+    performSeek();
+  };
+  const onCleanup = () => {
+    a.removeEventListener("loadedmetadata", onMeta);
+    a.removeEventListener("error", onCleanup);
+  };
+  a.addEventListener("loadedmetadata", onMeta);
+  a.addEventListener("error", onCleanup);
+}
+
+function seqGuard(expectedSeq: number, trackId: string): boolean {
+  return expectedSeq === loadSeq && loadedId === trackId;
+}
+
 function onTimeUpdate(): void {
   const a = el();
   if (!a) return;
+  clearStallWatchdog();
   const buf = updateBuffered();
   setPlaybackClock(a.currentTime, a.duration, buf);
   const now = performance.now();
-  if (lastSyncedPos < 0 || Math.abs(a.currentTime - lastSyncedPos) > 2.5 || now - lastStoreSyncAt >= 1000) {
+  // Persist position only on large jumps (>= 3s) or 10s checkpoints so Zustand
+  // storage and subscribers never churn on every progress tick.
+  if (lastSyncedPos < 0 || Math.abs(a.currentTime - lastSyncedPos) >= 3 || now - lastStoreSyncAt >= STORE_POSITION_SYNC_MS) {
     lastStoreSyncAt = now;
     lastSyncedPos = a.currentTime;
     usePlayer.getState()._setTime(a.currentTime, a.duration);
   }
   const cur = usePlayer.getState().queue[usePlayer.getState().index];
   if (cur) accumulate(cur.id, a.currentTime);
+  maybePrebufferNext(a.currentTime, Number.isFinite(a.duration) ? a.duration : (cur?.duration ?? 0));
   maybeArmTransition();
 }
 
@@ -1208,10 +1301,18 @@ export function initAudioEngine(): void {
       if (i === mainIdx) {
         usePlayer.getState()._setBuffering(true);
         usePlayer.getState()._setPlaybackStatus("buffering");
+        if (usePlayer.getState().playing) scheduleStallWatchdog(i);
+      }
+    });
+    e.addEventListener("stalled", () => {
+      if (i === mainIdx && usePlayer.getState().playing) {
+        usePlayer.getState()._setBuffering(true);
+        scheduleStallWatchdog(i);
       }
     });
     e.addEventListener("canplay", () => {
       if (i === mainIdx) {
+        clearStallWatchdog();
         usePlayer.getState()._setBuffering(false);
         usePlayer.getState()._setPlaybackStatus(usePlayer.getState().playing ? "playing" : "idle");
       }
@@ -1219,6 +1320,7 @@ export function initAudioEngine(): void {
     e.addEventListener("playing", () => {
       if (eqCtx?.state === "suspended") void eqCtx.resume();
       if (i !== mainIdx) return;
+      clearStallWatchdog();
       usePlayer.setState({ buffering: false, playbackStatus: "playing", error: null });
       consecutiveFailures = 0;
       localMissingToasted = false;
@@ -1338,11 +1440,12 @@ export function initAudioEngine(): void {
       }
     }
 
-    // A new song became next under the playing one (an AutoPlay refill, Play
-    // next): warm it the way loadTrack does, so a skip or blend never waits.
-    if (state.queue !== prev.queue && cur && loadedId === cur.id) {
-      const following = upNext(state);
-      if (following && following.id !== upNext(prev)?.id) prefetchLoudness(following);
+    // Clear stale prebuffer if priorityQueue/upNext changed mid-song
+    if (upNext(state)?.id !== upNext(prev)?.id) {
+      if (prebuffered && prebuffered.id !== upNext(state)?.id) {
+        prebuffered = null;
+      }
+      prebufferingId = null;
     }
 
     if (state.playing !== prev.playing) {
@@ -1371,7 +1474,12 @@ export function initAudioEngine(): void {
           void loadTrack(cur, true);
         }
       } else {
+        clearStallWatchdog();
         flushAccum("pause");
+        // Persist exact pause position once when stopping playback
+        if (elements && loadedId) {
+          usePlayer.getState()._setTime(el().currentTime, Number.isFinite(el().duration) ? el().duration : undefined);
+        }
         const f = fade;
         if (f) {
           stopPpRamp();
@@ -1456,32 +1564,25 @@ function sleepStopsHere(): boolean {
 function onTrackEnded(): void {
   const state = usePlayer.getState();
   const current = state.queue[state.index] ?? null;
-  // The user (or a fade) already chose the next track while this element was
-  // finishing - its natural end must not advance the queue again.
   if (!current || loadedId !== current.id) return;
-  // A blend owns this transition: the next track is already PLAYING on the
-  // standby deck and its media clock is authoritative. This element reaching
-  // its natural end IS the transition completing, so promote that deck.
-  //
-  // Advancing the queue here instead re-entered the fresh-track path — it
-  // reloaded the very track the listener is already hearing, on the deck that
-  // had just been demoted, and restarted it at 0:00. That is the audible
-  // "Auto Mix plays the first seconds of the next song twice" bug.
   if (fade && fade.fromId === current.id) {
     completeTransition("outgoing-ended");
     return;
   }
+  const a = el();
+  const knownDur = Number.isFinite(a.duration) && a.duration > 0 ? a.duration : current.duration;
+  // Premature EOF / dropped proxy connection guard: if track ended >1.5s before true end,
+  // treat as a recoverable stream drop at current position rather than auto-skipping!
+  if (knownDur > 10 && a.currentTime > 0 && a.currentTime < knownDur - ENDING_EPSILON_SEC) {
+    handleFailure(current, new Error("premature_stream_end"));
+    return;
+  }
   if (sleepStopsHere()) return;
-  // Repeat-one — and repeat-all on a one-song queue, where the next song is
-  // this song again and the store sees no change to act on.
   if (state.repeat === "one" || (state.repeat === "all" && state.queue.length === 1)) {
-    const a = el();
     a.currentTime = 0;
     void a.play().catch(() => undefined);
     return;
   }
-  // At the end of the queue the store's next() hands over to AutoPlay
-  // (lib/autoplay.ts), which normally has the next song queued already.
   state.next(false);
 }
 
@@ -1490,14 +1591,18 @@ export function engineBoot(): void {
   initAudioEngine();
   const state = usePlayer.getState();
   const cur = state.queue[state.index] ?? null;
-  // Defer paused cold-boot resolution slightly so initial UI paint is instantaneous
-  if (cur) {
+  if (!cur) return;
+  // Populate UI clock + MediaSession metadata immediately without resolving network streams while paused
+  resetPlaybackClock(cur.duration || 0);
+  setPlaybackClock(state.position || 0, cur.duration || 0, 0);
+  updateMediaSession(cur);
+  if (state.playing) {
     window.setTimeout(() => {
       const now = usePlayer.getState();
-      if (!loadedId && now.queue[now.index]?.id === cur.id) {
-        void loadTrack(cur, now.playing);
+      if (!loadedId && now.queue[now.index]?.id === cur.id && now.playing) {
+        void loadTrack(cur, true);
       }
-    }, 100);
+    }, 60);
   }
 }
 
@@ -1540,8 +1645,17 @@ async function loadTrack(track: Track | null, autoplay: boolean): Promise<void> 
   glides.clear();
   retryCount = 0;
   retriedAt = -Infinity;
-  // The store keeps the position until the deck plays from it: zeroing it here lost a saved resume
-  // point whose song could not load yet (offline at launch), on screen, on disk and for the next play.
+  clearStallWatchdog();
+  if (retryTimer !== null) {
+    window.clearTimeout(retryTimer);
+    retryTimer = null;
+  }
+  // Ensure standby deck never overlaps while loading a fresh track
+  try {
+    standbyEl().pause();
+  } catch {
+    /* ignore */
+  }
   pendingSeek = usePlayer.getState().position;
   resetPlaybackClock(track.duration || 0);
   lastSyncedPos = pendingSeek;
@@ -1553,12 +1667,6 @@ async function loadTrack(track: Track | null, autoplay: boolean): Promise<void> 
   });
   analyse(track);
   await loadUrl(track, autoplay, false);
-  // Pre-warm the next track: its proxy-side stream resolution + standby buffer (so a skip
-  // never waits on a getBasicInfo + probe roundtrip) and its loudness (a
-  // crossfade needs the gain the moment it starts). After loadUrl, so the
-  // current track's resolution goes first.
-  const st = usePlayer.getState();
-  if (st.queue[st.index]?.id === track.id) prefetchLoudness(upNext(st));
 }
 
 /** Bumped by every load. A load whose source resolves after a newer one began leaves the deck to it:
@@ -1574,7 +1682,9 @@ async function loadUrl(track: Track, autoplay: boolean, forceRotate: boolean): P
     if (!forceRotate && !fade && !armed && prebuffered?.id === track.id && standbyEl().src) {
       const oldMain = el();
       mainIdx = mainIdx === 0 ? 1 : 0;
+      const a = el();
       prebuffered = null;
+      refreshVolumes();
       try {
         oldMain.pause();
         oldMain.removeAttribute("src");
@@ -1583,25 +1693,13 @@ async function loadUrl(track: Track, autoplay: boolean, forceRotate: boolean): P
         /* ignore */
       }
       loadedId = track.id;
-      if (track.localPath || track.id.startsWith("local:")) levelLocal(track);
-      else void fetchLoudness(el().src, track);
-      refreshVolumes();
-      applyElementVolumes(1, 0);
-      const a = el();
       const trim = silenceEdges(track.id);
       if (pendingSeek > 0) {
-        try {
-          a.currentTime = pendingSeek;
-        } catch {
-          /* ignore */
-        }
+        const resumeAt = pendingSeek;
         pendingSeek = 0;
+        applySeekWhenReady(a, resumeAt, seq, track.id);
       } else if (trim && trim.head > 0.05) {
-        try {
-          a.currentTime = trim.head;
-        } catch {
-          /* ignore */
-        }
+        applySeekWhenReady(a, trim.head, seq, track.id);
       }
       applySpeed();
       updateMediaSession(track);
@@ -1616,29 +1714,17 @@ async function loadUrl(track: Track, autoplay: boolean, forceRotate: boolean): P
 
     if (track.localPath || track.id.startsWith("local:")) {
       const a = el();
-      // Local files stream through the main-process proxy (a file:// src is
-      // blocked from the http renderer origin). Always resolve fresh — the
-      // proxy port changes between launches, so cached URLs would go stale,
-      // and the IPC lookup is a local roundtrip.
       const src = await requireBridge().localTrackUrl(track.id);
       if (seq !== loadSeq) return;
       if (!src) throw new Error(LOCAL_MISSING);
-      // Levels like a stream: by its ReplayGain tag, else a measurement; the
-      // fallback gain covers the moment before.
       levelLocal(track);
-      // Apply immediately: without this the element keeps the PREVIOUS
-      // track's gain (streams land their own via fetchLoudness, locals
-      // would otherwise never get a volume write).
       refreshVolumes();
       a.src = src;
       loadedId = track.id;
       if (pendingSeek > 0) {
-        try {
-          a.currentTime = pendingSeek;
-        } catch {
-          /* ignore */
-        }
+        const resumeAt = pendingSeek;
         pendingSeek = 0;
+        applySeekWhenReady(a, resumeAt, seq, track.id);
       }
       applySpeed();
       updateMediaSession(track);
@@ -1651,31 +1737,19 @@ async function loadUrl(track: Track, autoplay: boolean, forceRotate: boolean): P
     }
     const url = await requireBridge().getStreamUrl(track.id, forceRotate, useSettings.getState().streamingQuality, track.title, track.artist);
     const cur = usePlayer.getState().queue[usePlayer.getState().index];
-    if (cur?.id !== track.id || seq !== loadSeq) return; // user moved on while we were resolving
-    // Loudness metadata races the element's own first request: both share the
-    // proxy's single in-flight resolution, so the measured gain lands with the
-    // first audio chunk while the fallback gain covers the moment before.
+    if (cur?.id !== track.id || seq !== loadSeq) return;
     void fetchLoudness(url, track);
     const a = el();
     a.src = url;
-    // Start at this track's own gain (cached or fallback) instead of the
-    // previous track's — fetchLoudness refines it once metadata lands.
     refreshVolumes();
     loadedId = track.id;
     const trim = silenceEdges(track.id);
     if (pendingSeek > 0) {
-      try {
-        a.currentTime = pendingSeek;
-      } catch {
-        /* ignore */
-      }
+      const resumeAt = pendingSeek;
       pendingSeek = 0;
+      applySeekWhenReady(a, resumeAt, seq, track.id);
     } else if (trim && trim.head > 0.05) {
-      try {
-        a.currentTime = trim.head;
-      } catch {
-        /* ignore */
-      }
+      applySeekWhenReady(a, trim.head, seq, track.id);
     }
     applySpeed();
     updateMediaSession(track);
@@ -1706,17 +1780,17 @@ function handleFailure(track: Track, err?: unknown): void {
   }
   const deckAt = el().currentTime;
   const at = deckAt > 1 ? deckAt : usePlayer.getState().position;
-  // Retry up to 2 times with client rotation & backoff before skipping a track;
-  // a track that played on for > 30 s gets its retry budget refreshed.
-  if (retryCount < 2 || at - retriedAt > 30) {
-    if (at - retriedAt > 30 && retryCount >= 2) retryCount = 0;
+  // Retry up to 3 times with fresh stream URL & exact resume position before skipping;
+  // a track that played smoothly for > 30 s gets its retry budget refreshed.
+  if (retryCount < MAX_RETRY_ATTEMPTS || at - retriedAt > 30) {
+    if (at - retriedAt > 30 && retryCount >= MAX_RETRY_ATTEMPTS) retryCount = 0;
     const attempt = retryCount;
     retryCount += 1;
     retriedAt = at;
-    // Resume where the song was, not from 0:00 (a stream dying mid-song).
+    // Resume where the song stopped, not from 0:00.
     pendingSeek = at;
     usePlayer.getState()._setPlaybackStatus("loading");
-    const delayMs = attempt === 0 ? 250 : 750;
+    const delayMs = attempt === 0 ? 250 : attempt === 1 ? 800 : 1600;
     if (retryTimer != null) window.clearTimeout(retryTimer);
     retryTimer = window.setTimeout(() => {
       retryTimer = null;
@@ -1776,11 +1850,39 @@ function handleFailure(track: Track, err?: unknown): void {
 
 let lastPositionState = 0;
 
+function syncNativeMediaKeepalive(track: Track | null, playing: boolean): void {
+  if (typeof window === "undefined") return;
+  const cap = (window as unknown as {
+    Capacitor?: {
+      Plugins?: {
+        MediaKeepalive?: { sync?: (opts: { playing: boolean; title: string; artist: string }) => Promise<void> };
+      };
+    };
+  }).Capacitor;
+  const plugin = cap?.Plugins?.MediaKeepalive;
+  if (plugin?.sync) {
+    void plugin
+      .sync({
+        playing,
+        title: track?.title ?? "",
+        artist: track?.artist ?? "",
+      })
+      .catch(() => undefined);
+  }
+}
+
 function updateMediaSession(track: Track | null): void {
+  const playing = usePlayer.getState().playing;
   window.bytune?.mediaSetMetadata(
     track ? { title: track.title, artist: track.artist, album: track.album || "Dynamusic", thumb: track.thumb } : null
   );
+  syncNativeMediaKeepalive(track, playing);
   if (typeof navigator === "undefined" || !("mediaSession" in navigator)) return;
+  try {
+    navigator.mediaSession.playbackState = playing ? "playing" : "paused";
+  } catch {
+    /* ignore */
+  }
   if (!track) {
     navigator.mediaSession.metadata = null;
     return;
@@ -1882,7 +1984,25 @@ function setupMediaSession(): void {
   window.bytune?.onMediaAction((a) =>
     actions.get(a.action)?.({ action: a.action, seekTime: a.seekTime } as MediaSessionActionDetails)
   );
-  window.setInterval(syncPositionState, 1000);
+  let prevPlaying = usePlayer.getState().playing;
+  let prevTrackId = shownTrack(usePlayer.getState())?.id ?? null;
+  usePlayer.subscribe((state) => {
+    const cur = shownTrack(state);
+    const curId = cur?.id ?? null;
+    if (state.playing !== prevPlaying || curId !== prevTrackId) {
+      prevPlaying = state.playing;
+      prevTrackId = curId;
+      try {
+        ms.playbackState = state.playing ? "playing" : "paused";
+      } catch {
+        /* ignore */
+      }
+      syncNativeMediaKeepalive(cur, state.playing);
+    }
+  });
+  window.setInterval(() => {
+    if (usePlayer.getState().playing) syncPositionState();
+  }, 1000);
 }
 
 /**

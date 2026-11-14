@@ -45,7 +45,9 @@ function detectInitialWindowLabel(): { label: string; isTauri: boolean } {
   if (explicit) {
     return { label: explicit, isTauri: false };
   }
+  const isCapacitor = "Capacitor" in window;
   const isMobileOrSidecarPort =
+    isCapacitor ||
     window.location.port === "47822" ||
     /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || "");
   return { label: isMobileOrSidecarPort ? "dynamusic" : "island", isTauri: false };
@@ -61,7 +63,12 @@ if (typeof window !== "undefined") {
   });
 }
 
-if (typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window) && "serviceWorker" in navigator) {
+if (
+  typeof window !== "undefined" &&
+  !("__TAURI_INTERNALS__" in window) &&
+  !("Capacitor" in window) &&
+  "serviceWorker" in navigator
+) {
   window.addEventListener("load", () => {
     navigator.serviceWorker.register("/sw.js").catch(() => undefined);
   });

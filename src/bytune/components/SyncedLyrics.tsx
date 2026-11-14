@@ -20,7 +20,7 @@ import { romanize } from "../lib/romanize";
 import { LYRICS_LOADING_LINES, pickLyricsLine } from "../lib/lyricsPhrases";
 import { usePlayer } from "../stores/player";
 import { useSettings } from "../stores/settings";
-import { useMobileMode } from "../stores/mobileMode";
+import { getInterpolatedPcPosition, useMobileMode } from "../stores/mobileMode";
 import type { LyricsResult, SyncedLyricWord } from "../types";
 
 /** How long the lyrics take to glide to the next line. */
@@ -209,11 +209,19 @@ export function LyricsView({
   const isPcRemote = mobileMode === "pc_remote" && !!pcState?.track;
 
   const clockPosition = useSyncExternalStore(subscribePlaybackClock, getPlaybackClock).position;
-  const storePosition = usePlayer((s) => s.position);
-  const localPosition = clockPosition > 0 || storePosition === 0 ? clockPosition : storePosition;
-  const position = isPcRemote ? (pcState.position ?? 0) : localPosition;
+  const [remotePos, setRemotePos] = useState(() => getInterpolatedPcPosition(pcState));
+  useEffect(() => {
+    setRemotePos(getInterpolatedPcPosition(pcState));
+    if (!isPcRemote || !pcState?.playing) return;
+    const id = window.setInterval(() => {
+      setRemotePos(getInterpolatedPcPosition(useMobileMode.getState().pcState));
+    }, 100);
+    return () => window.clearInterval(id);
+  }, [isPcRemote, pcState?.playing, pcState?.position, pcState?.serverTimestamp, pcState?.track?.id]);
+
+  const position = isPcRemote ? remotePos : clockPosition;
   const localPlaying = usePlayer((s) => s.playing);
-  const playing = isPcRemote ? pcState.playing : localPlaying;
+  const playing = isPcRemote ? Boolean(pcState?.playing) : localPlaying;
 
   const seek = (targetTime: number) => {
     if (isPcRemote) {

@@ -417,6 +417,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       return;
     }
     let midStreamRefreshes = 0;
+    let streamAbortedIncomplete = false;
     while (!res.destroyed && (finalTargetEnd === undefined || nextStart <= finalTargetEnd)) {
       const nextEnd = finalTargetEnd !== undefined ? Math.min(nextStart + CHUNK_SIZE - 1, finalTargetEnd) : nextStart + CHUNK_SIZE - 1;
       const nextRange = `bytes=${nextStart}-${nextEnd}`;
@@ -428,7 +429,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         chunkResp = null;
       }
 
-      if ((!chunkResp || !chunkResp.ok || !chunkResp.body) && trackId && midStreamRefreshes < 2) {
+      if ((!chunkResp || !chunkResp.ok || !chunkResp.body) && trackId && midStreamRefreshes < 3) {
         midStreamRefreshes++;
         console.warn(`[bytune] proxy mid-stream chunk ${chunkResp?.status ?? "err"} at ${nextStart} for ${trackId}, re-resolving`);
         try {
@@ -440,32 +441,45 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         }
       }
 
-      if (!chunkResp || !chunkResp.ok || !chunkResp.body) break;
+      if (!chunkResp || !chunkResp.ok || !chunkResp.body) {
+        streamAbortedIncomplete = true;
+        break;
+      }
 
       const chunkResult = await pipeBody(chunkResp.body, chunkCtl);
       if (chunkResult.written > 0) {
         nextStart += chunkResult.written;
         midStreamRefreshes = 0;
+        if (!chunkResult.ok && !res.destroyed && trackId && midStreamRefreshes < 3) {
+          midStreamRefreshes++;
+          try {
+            stream = await resolveStream(trackId, true, maxKbps, false, title, artist);
+          } catch {
+            streamAbortedIncomplete = true;
+            break;
+          }
+        }
       } else if (!chunkResult.ok || res.destroyed) {
+        streamAbortedIncomplete = !res.destroyed;
         break;
       } else {
         // Zero bytes and done means upstream EOF
         break;
       }
-
-      if (!chunkResult.ok) {
-        if (res.destroyed || !trackId || midStreamRefreshes >= 2) break;
-        midStreamRefreshes++;
-        try {
-          stream = await resolveStream(trackId, true, maxKbps, false, title, artist);
-        } catch {
-          break;
-        }
-      }
     }
 
     if (!res.destroyed) {
-      res.end();
+      if (
+        streamAbortedIncomplete &&
+        finalTargetEnd !== undefined &&
+        nextStart <= finalTargetEnd
+      ) {
+        // Never call res.end() cleanly on an incomplete range transfer: doing so
+        // makes Chromium fire a false "ended" event and skip tracks mid-song.
+        res.destroy(new Error("upstream_truncated"));
+      } else {
+        res.end();
+      }
     }
   } catch (err) {
     console.warn("[bytune] proxy error:", err instanceof Error ? err.message : err);

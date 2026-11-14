@@ -11,7 +11,7 @@
  */
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { BadgeCheck, Heart, Music2, Play, ThumbsDown, X } from "lucide-react";
-import { autoplayTail, isRadioSeed, shownTrack, usePlayer } from "../stores/player";
+import { autoplayTail, isRadioSeed, priorityTail, shownTrack, usePlayer } from "../stores/player";
 import { useMobileMode } from "../stores/mobileMode";
 import { useSettings } from "../stores/settings";
 import { useUI, type MenuItem } from "../stores/ui";
@@ -177,12 +177,24 @@ export function QueuePanel({ onClose }: { onClose: () => void }) {
   const localIndex = usePlayer((s) => s.index);
   const localRepeat = usePlayer((s) => s.repeat);
   const localTail = usePlayer(autoplayTail);
+  const localPriorityQueue = usePlayer((s) => s.priorityQueue);
+  const localPriorityLen = usePlayer(priorityTail);
+  const localContextUpcoming = useMemo(() => {
+    const start = usePlayer.getState().currentFromPriority
+      ? usePlayer.getState().contextIndex
+      : usePlayer.getState().contextIndex + 1;
+    return usePlayer.getState().contextQueue.slice(start);
+  }, [localQueue, localIndex, localTail, localPriorityLen]);
+
+  const remoteTrack = pcState?.track ?? null;
+  const remotePriority = pcState?.priorityQueue ?? [];
+  const remoteContext = pcState?.contextQueue ?? [];
 
   const queue = isPcRemote
     ? pcState?.queue && pcState.queue.length > 0
       ? pcState.queue
-      : pcState?.track
-        ? [pcState.track]
+      : remoteTrack
+        ? [remoteTrack, ...remotePriority, ...remoteContext]
         : []
     : localQueue;
   const index = isPcRemote ? Math.max(0, Math.min(pcState?.index ?? 0, Math.max(0, queue.length - 1))) : localIndex;
@@ -190,6 +202,9 @@ export function QueuePanel({ onClose }: { onClose: () => void }) {
   const repeat = isPcRemote ? ((pcState?.repeat as "off" | "all" | "one") || "off") : localRepeat;
   const jumpTo = usePlayer((s) => s.jumpTo);
   const removeAt = usePlayer((s) => s.removeAt);
+  const removePriority = usePlayer((s) => s.removePriority);
+  const clearPriority = usePlayer((s) => s.clearPriority);
+  const reorderPriority = usePlayer((s) => s.reorderPriority);
   const tail = isPcRemote ? Math.max(0, Math.min(pcState?.autoplayCount ?? 0, Math.max(0, queue.length - index - 1))) : localTail;
   const history = useLibrary((s) => s.history);
   const playTrack = usePlayer((s) => s.playTrack);
@@ -203,34 +218,64 @@ export function QueuePanel({ onClose }: { onClose: () => void }) {
   const likedIds = useMemo(() => new Set(liked.map((l) => l.id)), [liked]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
-  // Songs dragged onto the queue join it (after your own upcoming songs).
+  // Songs dragged onto the queue join the Priority Queue right after current song.
   const queueDrop = useTrackDrop((track) => {
     const s = usePlayer.getState();
-    if (track.id === s.queue[s.index]?.id) return; // e.g. the Now playing row dropped back on its own panel
+    if (track.id === (s.currentTrack ?? s.queue[s.index])?.id) return;
     const added = s.addToQueue([track]);
     const name = shortTitle(track.title);
-    useUI.getState().toast(added ? `Added "${name}" to the queue` : `"${name}" is already in your queue`);
+    useUI.getState().toast(added ? `Added "${name}" to Up Next` : `"${name}" is already in Up Next`);
   });
 
-  const current = queue[index] ?? null;
-  // One list: your upcoming songs, the AutoPlay line, then AutoPlay's suggestions.
+  const current = isPcRemote ? remoteTrack : (queue[index] ?? null);
   const suggestionsAt = queue.length - tail;
-  const own = queue.slice(index + 1, suggestionsAt);
+  const flatOwn = queue.slice(index + 1, suggestionsAt);
+  const priorityOwn: Track[] = isPcRemote
+    ? (pcState?.priorityQueue ?? [])
+    : (localPriorityQueue.length ? localPriorityQueue : flatOwn.slice(0, localPriorityLen));
+  const contextOwn: Track[] = isPcRemote
+    ? (pcState?.contextQueue && pcState.contextQueue.length > 0
+        ? pcState.contextQueue
+        : flatOwn.slice(priorityOwn.length))
+    : (localContextUpcoming.length > 0 ? localContextUpcoming : flatOwn.slice(priorityOwn.length));
   const suggestions = queue.slice(suggestionsAt);
-  const line = own.length; // the AutoPlay line's place in the list
-  const queueIndexOf = (p: number): number => (p < line ? index + 1 + p : suggestionsAt + p - line - 1);
+
+  // Partition indices cleanly inside one virtualized sortable container:
+  // [0 .. priorityCount-1] -> optional divider at priorityCount -> [ctxStart .. line-1] -> AutoPlay divider at line -> suggestions
+  const pLen = priorityOwn.length;
+  const hasPrioritySection = pLen > 0;
+  const ctxStart = hasPrioritySection ? pLen + 1 : 0;
+  const line = ctxStart + contextOwn.length;
+  const queueIndexOf = (p: number): number => {
+    if (hasPrioritySection && p < pLen) return index + 1 + p;
+    if (p >= ctxStart && p < line) return index + 1 + pLen + (p - ctxStart);
+    return suggestionsAt + p - line - 1;
+  };
   const sortable = useSortable({
-    signature: `${index}:${tail}:${queue
+    signature: `${index}:${pLen}:${contextOwn.length}:${tail}:${queue
       .slice(index)
       .map((t) => t.id)
       .join(",")}`,
     listRef,
     scrollRef,
-    // Your songs and AutoPlay's suggestions each reorder on their own side of the line.
-    clamp: (from, target) => (from < line ? Math.min(target, line - 1) : Math.max(target, line + 1)),
-    canDrag: (p) => (p < line ? line > 1 : p > line && suggestions.length > 1),
-    onCommit: (from, to) =>
-      usePlayer.getState().moveUpcoming(queueOffset + queueIndexOf(from), queueOffset + queueIndexOf(to)),
+    clamp: (from, target) => {
+      if (hasPrioritySection && from < pLen) return Math.min(Math.max(0, target), pLen - 1);
+      if (from >= ctxStart && from < line) return Math.min(Math.max(ctxStart, target), line - 1);
+      return Math.max(target, line + 1);
+    },
+    canDrag: (p) => {
+      if (hasPrioritySection && p < pLen) return pLen > 1;
+      if (hasPrioritySection && p === pLen) return false;
+      if (p < line) return contextOwn.length > 1;
+      return p > line && suggestions.length > 1;
+    },
+    onCommit: (from, to) => {
+      if (hasPrioritySection && from < pLen) {
+        reorderPriority(from, Math.min(Math.max(0, to), pLen - 1));
+        return;
+      }
+      usePlayer.getState().moveUpcoming(queueOffset + queueIndexOf(from), queueOffset + queueIndexOf(to));
+    },
   });
   // Long queues: only the rows near the view are built (art, scrolling titles, drag
   // handlers); the rest are plain row-high stand-ins, so a 3,000-song queue opens and
@@ -286,7 +331,7 @@ export function QueuePanel({ onClose }: { onClose: () => void }) {
     return `${id}#${n}`;
   };
   const rows = [
-    ...own.map((t, p) => {
+    ...priorityOwn.map((t, p) => {
       if (!built(p)) return standIn(stableKey(t.id), p);
       return (
         <TrackRow
@@ -296,12 +341,36 @@ export function QueuePanel({ onClose }: { onClose: () => void }) {
           sortable={sortable.rowProps(p)}
           onPlay={() => jumpTo(queueOffset + index + 1 + p)}
           onRemove={() => {
-            // Removing a row shifts the list up under a stationary
-            // pointer — the row now under it never fires mouseenter,
-            // so clear the hover wash here (navigate() does the same
-            // for view changes).
             useUI.getState().setTintThumb(null);
-            removeAt(queueOffset + index + 1 + p);
+            removePriority(p);
+          }}
+        />
+      );
+    }),
+    ...(hasPrioritySection
+      ? [
+          <div
+            key="next-from-playlist-hdr"
+            style={sortable.styleFor(pLen)}
+            className="flex items-center justify-between px-2 pt-3 pb-1 text-[12px] font-bold tracking-[-0.1px] text-ink-hi/65"
+          >
+            <span>Next From Playlist</span>
+          </div>,
+        ]
+      : []),
+    ...contextOwn.map((t, k) => {
+      const p = ctxStart + k;
+      if (!built(p)) return standIn(stableKey(t.id), p);
+      return (
+        <TrackRow
+          key={stableKey(t.id)}
+          track={t}
+          style={sortable.styleFor(p)}
+          sortable={sortable.rowProps(p)}
+          onPlay={() => jumpTo(queueOffset + index + 1 + pLen + k)}
+          onRemove={() => {
+            useUI.getState().setTintThumb(null);
+            removeAt(queueOffset + index + 1 + pLen + k);
           }}
         />
       );
@@ -419,15 +488,31 @@ export function QueuePanel({ onClose }: { onClose: () => void }) {
           {current && (
             <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto px-2 pb-3">
               <div className="flex items-center gap-3 px-2 pt-2 pb-1.5">
-                <h2 className="flex-1 text-[15px] font-bold tracking-[-0.2px] text-ink-hi">{inRoom ? "Up next in the room" : "Up next"}</h2>
-                {own.length > 0 && (
+                <h2 className="flex-1 text-[15px] font-bold tracking-[-0.2px] text-ink-hi">
+                  {inRoom
+                    ? "Up next in the room"
+                    : hasPrioritySection
+                      ? "Up Next (Priority Queue)"
+                      : "Next From Playlist"}
+                </h2>
+                {hasPrioritySection ? (
                   <button
-                    onClick={() => usePlayer.getState().clearUpcoming()}
+                    onClick={() => clearPriority()}
                     className="text-[13px] font-semibold text-ink-hi/75 hover:text-ink-hi transition-colors"
-                    title="Clear your upcoming songs (AutoPlay's stay)"
+                    title="Clear Priority Queue (your playlist stays paused until cleared)"
                   >
-                    Clear
+                    Clear Queue
                   </button>
+                ) : (
+                  contextOwn.length > 0 && (
+                    <button
+                      onClick={() => usePlayer.getState().clearUpcoming()}
+                      className="text-[13px] font-semibold text-ink-hi/75 hover:text-ink-hi transition-colors"
+                      title="Clear upcoming playlist songs (AutoPlay stays)"
+                    >
+                      Clear
+                    </button>
+                  )
                 )}
                 {!inRoom && (
                   <>
@@ -438,7 +523,7 @@ export function QueuePanel({ onClose }: { onClose: () => void }) {
                   </>
                 )}
               </div>
-              {own.length === 0 && suggestions.length === 0 && (
+              {priorityOwn.length === 0 && contextOwn.length === 0 && suggestions.length === 0 && (
                 <div className="px-2 pb-1 text-[13px] text-ink-hi/45">Your queue is empty.</div>
               )}
               <div ref={listRef} className="space-y-0.5">

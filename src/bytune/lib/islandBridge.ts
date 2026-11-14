@@ -3,6 +3,7 @@
  * via Tauri IPC (`update_music_state` command and `dynamusic://command` events).
  */
 import { shownTrack, usePlayer } from "../stores/player";
+import { getPlaybackClock } from "./playbackClock";
 import { useUI } from "../stores/ui";
 import { flushCoalescedStorage } from "./persist";
 
@@ -39,28 +40,47 @@ export function prepareDynamusicClose(): void {
 function handlePlayerCommand(cmd: string, payload?: unknown): void {
   const p = usePlayer.getState();
   switch (cmd) {
+    case "PLAY":
     case "play":
       p.setPlaying(true);
       break;
+    case "PAUSE":
     case "pause":
       p.setPlaying(false);
       break;
+    case "TOGGLE":
     case "toggle":
     case "toggle_play":
       p.toggle();
       break;
+    case "NEXT":
     case "next":
       p.next(true);
       break;
+    case "PREV":
     case "prev":
       p.prev();
       break;
+    case "SEEK":
     case "seek":
       if (typeof payload === "number") p.seek(payload);
       break;
+    case "VOLUME":
     case "set_volume":
       if (typeof payload === "number" && Number.isFinite(payload)) {
         p.setVolume(Math.max(0, Math.min(1, payload)));
+      }
+      break;
+    case "PLAY_NOW":
+      if (payload && typeof payload === "object") {
+        const pData = payload as { track?: any; tracks?: any[]; startIndex?: number; from?: string };
+        if (Array.isArray(pData.tracks) && pData.tracks.length > 0) {
+          p.playQueue(pData.tracks, pData.startIndex ?? 0, pData.from);
+        } else if (pData.track) {
+          p.playTrack(pData.track);
+        } else {
+          p.playTrack(payload as any);
+        }
       }
       break;
     case "play_track":
@@ -79,15 +99,43 @@ function handlePlayerCommand(cmd: string, payload?: unknown): void {
     case "jump_to":
       if (typeof payload === "number") p.jumpTo(payload);
       break;
+    case "ADD_PRIORITY_QUEUE":
+    case "PLAY_NEXT":
     case "add_to_queue":
       if (payload && typeof payload === "object") {
         const data = payload as { tracks?: any; playNext?: boolean };
+        const playNext = cmd === "PLAY_NEXT" ? true : Boolean(data.playNext);
         if ("tracks" in data && data.tracks) {
-          p.addToQueue(data.tracks, Boolean(data.playNext));
+          p.addToQueue(data.tracks, playNext);
         } else {
-          p.addToQueue(payload as any);
+          p.addToQueue(payload as any, playNext);
         }
       }
+      break;
+    case "REORDER_PRIORITY":
+      if (payload && typeof payload === "object") {
+        const m = payload as { from?: number; to?: number };
+        if (typeof m.from === "number" && typeof m.to === "number") {
+          p.reorderPriority(m.from, m.to);
+        }
+      }
+      break;
+    case "REMOVE_PRIORITY":
+      if (typeof payload === "number") p.removePriority(payload);
+      break;
+    case "CLEAR_PRIORITY":
+      p.clearPriority();
+      break;
+    case "REORDER_CONTEXT":
+      if (payload && typeof payload === "object") {
+        const m = payload as { from?: number; to?: number };
+        if (typeof m.from === "number" && typeof m.to === "number") {
+          p.reorderContext(m.from, m.to);
+        }
+      }
+      break;
+    case "REMOVE_CONTEXT":
+      if (typeof payload === "number") p.removeContext(payload);
       break;
     case "move_upcoming":
       if (payload && typeof payload === "object") {
@@ -117,6 +165,19 @@ function handlePlayerCommand(cmd: string, payload?: unknown): void {
       break;
   }
 }
+function slimTrack(qt: any) {
+  return {
+    id: qt.id,
+    title: qt.title,
+    artist: qt.artist,
+    artistId: qt.artistId,
+    album: qt.album,
+    albumId: qt.albumId,
+    duration: qt.duration,
+    thumb: qt.thumb,
+  };
+}
+
 export function initIslandBridge(): void {
   if (initialized || typeof window === "undefined") return;
   initialized = true;
@@ -130,6 +191,9 @@ export function initIslandBridge(): void {
     const track = shownTrack(s);
     const trackId = track?.id ?? "";
     const now = Date.now();
+    const clock = getPlaybackClock();
+    const livePos = clock.duration > 0 || clock.generation > 0 ? clock.position : s.position;
+    const liveDur = (clock.duration > 0 ? clock.duration : s.duration) || track?.duration || 0;
 
     if (
       !force &&
@@ -143,41 +207,34 @@ export function initIslandBridge(): void {
     lastPlaying = s.playing;
     lastSyncMs = now;
 
-    // Also forward state snapshot to sidecar so Mobile remote control can reflect live PC playback
+    // Also forward authoritative dual-queue state + serverTimestamp to sidecar for mobile WS sync
     if ("__TAURI_INTERNALS__" in window) {
       const qStart = Math.max(0, s.index - 2);
       const qEnd = Math.min(s.queue.length, s.index + 40);
-      const slimQueue = s.queue.slice(qStart, qEnd).map((qt) => ({
-        id: qt.id,
-        title: qt.title,
-        artist: qt.artist,
-        artistId: qt.artistId,
-        album: qt.album,
-        albumId: qt.albumId,
-        duration: qt.duration,
-        thumb: qt.thumb,
-      }));
+      const slimQueue = s.queue.slice(qStart, qEnd).map(slimTrack);
+      const ctxStart = s.currentFromPriority ? s.contextIndex : s.contextIndex + 1;
+      const upcomingCtx = s.contextQueue.slice(ctxStart, ctxStart + 40).map(slimTrack);
+      const priorityQ = s.priorityQueue.slice(0, 40).map(slimTrack);
+
       void fetch("http://127.0.0.1:47822/player/sync", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           state: {
-            track: track
-              ? {
-                  id: track.id,
-                  title: track.title,
-                  artist: track.artist,
-                  album: track.album,
-                  thumb: track.thumb,
-                  duration: s.duration || track.duration || 0,
-                }
-              : null,
+            track: track ? { ...slimTrack(track), duration: liveDur } : null,
+            trackId: track?.id ?? null,
             playing: s.playing,
-            position: s.position,
-            duration: s.duration,
+            isPlaying: s.playing,
+            position: livePos,
+            duration: liveDur,
             volume: s.volume,
             shuffle: s.shuffle,
             repeat: s.repeat,
+            playingFrom: s.playingFrom,
+            serverTimestamp: now,
+            priorityQueue: priorityQ,
+            contextQueue: upcomingCtx,
+            contextIndex: 0,
             queue: slimQueue,
             index: s.index - qStart,
             queueOffset: qStart,
@@ -199,8 +256,8 @@ export function initIslandBridge(): void {
                 album: track.album ?? null,
                 albumArt: track.thumb ?? null,
                 isPlaying: s.playing,
-                positionMs: Math.round((s.position || 0) * 1000),
-                durationMs: Math.round((s.duration || track.duration || 0) * 1000),
+                positionMs: Math.round((livePos || 0) * 1000),
+                durationMs: Math.round((liveDur || 0) * 1000),
                 volume: s.volume,
                 lyricsCurrentLine: null,
               }
@@ -218,11 +275,23 @@ export function initIslandBridge(): void {
       state.playing !== prevState.playing ||
       state.seekNonce !== prevState.seekNonce ||
       state.shuffle !== prevState.shuffle ||
+      state.repeat !== prevState.repeat ||
       state.index !== prevState.index ||
       state.queue !== prevState.queue ||
+      state.priorityQueue !== prevState.priorityQueue ||
+      state.contextQueue !== prevState.contextQueue ||
       state.volume !== prevState.volume;
     syncToIsland(force);
   });
+
+  // Authoritative 2-second heartbeat broadcast while playing on desktop
+  if ("__TAURI_INTERNALS__" in window) {
+    window.setInterval(() => {
+      if (usePlayer.getState().playing) {
+        syncToIsland(true);
+      }
+    }, 2000);
+  }
 
   // Initial sync
   setTimeout(() => syncToIsland(true), 250);
