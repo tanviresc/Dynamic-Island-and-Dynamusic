@@ -301,6 +301,19 @@ export const usePlayer = create<PlayerState>()(
       },
 
       playTrack(track) {
+        // If in Mobile PC Remote Mode, delegate playTrack to the PC instance
+        if (typeof window !== "undefined") {
+          try {
+            const mode = localStorage.getItem("dynamusic:mobile_mode");
+            if (mode === "pc_remote" && !("__TAURI_INTERNALS__" in window)) {
+              void import("./mobileMode").then((m) => m.useMobileMode.getState().sendPcCommand("play_track", track));
+              return;
+            }
+          } catch {
+            /* ignore */
+          }
+        }
+
         const { queue, index } = get();
         // Ahead of the current song only: an earlier copy is history, and
         // jumping back to it would replay everything after it.

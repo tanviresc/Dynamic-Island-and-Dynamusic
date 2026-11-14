@@ -165,6 +165,18 @@ function connectEventStream(): void {
             window.location.reload();
             return;
           }
+          if (parsed.channel === "pc:player_state") {
+            const state = parsed.args?.[0];
+            if (state && typeof window !== "undefined") {
+              void import("../stores/mobileMode").then((m) => m.useMobileMode.getState().setPcState(state as any));
+            }
+          }
+          if (parsed.channel === "pc:player_command") {
+            const data = (parsed.args?.[0] ?? {}) as { command?: string; payload?: unknown };
+            if (data.command && typeof window !== "undefined") {
+              window.postMessage({ type: "dynamusic:remote_command", command: data.command, payload: data.payload }, "*");
+            }
+          }
           if (parsed.channel === "store:updated") {
             const info = (parsed.args?.[0] ?? {}) as { name?: string };
             if (info.name === "library" && Date.now() - lastLocalLibraryWriteAt > 600) {

@@ -198,6 +198,8 @@ function decodeBinaryInput(val: any): any {
 
 const sseClients = new Set<http.ServerResponse>();
 
+let latestPlayerState: any = null;
+
 function broadcastSse(channel: string, ...args: any[]): void {
   const payload = JSON.stringify({ channel, args: encodeBinaryResult(args) });
   for (const res of sseClients) {
@@ -229,6 +231,51 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "GET" && url.pathname === "/health") {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/player/state") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: true, state: latestPlayerState }));
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/player/sync") {
+    const chunks: Buffer[] = [];
+    req.on("data", (c: Buffer) => chunks.push(c));
+    req.on("end", () => {
+      try {
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+        if (body.state) {
+          latestPlayerState = body.state;
+          broadcastSse("pc:player_state", body.state);
+        }
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
+      } catch {
+        res.writeHead(400);
+        res.end();
+      }
+    });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/player/command") {
+    const chunks: Buffer[] = [];
+    req.on("data", (c: Buffer) => chunks.push(c));
+    req.on("end", () => {
+      try {
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+        const cmd = body.command || "";
+        const payload = body.payload;
+        broadcastSse("pc:player_command", { command: cmd, payload });
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
+      } catch {
+        res.writeHead(400);
+        res.end();
+      }
+    });
     return;
   }
 

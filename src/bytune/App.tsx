@@ -11,6 +11,9 @@ import { RightRail } from "./components/RightRail";
 import { Sidebar } from "./components/Sidebar";
 import { Toasts } from "./components/Toasts";
 import { TopBar } from "./components/TopBar";
+import { MobileNavBar } from "./components/MobileNavBar";
+import { PcRemoteBar } from "./components/PcRemoteBar";
+import { useMobileMode } from "./stores/mobileMode";
 import { engineBoot } from "./lib/audio";
 import { initAutoplay } from "./lib/autoplay";
 import { setAmbientFromArtwork } from "./lib/ambient";
@@ -435,6 +438,9 @@ export default function App() {
   // A fresh Google user must choose their username before entering.
   if (session.mode === "account" && session.needsUsername) return <Onboarding initial="pickusername" />;
 
+  const mobileMode = useMobileMode((s) => s.mode);
+  const isMobileDevice = useMobileMode((s) => s.isMobileDevice);
+
   return (
     <div
       ref={shellRef}
@@ -447,7 +453,9 @@ export default function App() {
       {/* Three-pane shell: sidebar · content · right rail, over a black canvas.
           8px gaps and side padding; 4px strip above the play bar (Spotify). */}
       <div className="flex flex-1 min-h-0 gap-2 px-2 pb-1">
-        <Sidebar />
+        <div className="desktop-only-rail flex h-full">
+          <Sidebar />
+        </div>
         <main
           className="flex-1 min-w-0 flex flex-col bg-surface rounded-2xl overflow-hidden relative"
           {...panelDrop.props}
@@ -495,9 +503,17 @@ export default function App() {
             </>
           )}
         </main>
-        <RightRail />
+        <div className="desktop-only-rail flex h-full">
+          <RightRail />
+        </div>
       </div>
-      <PlayerBar />
+
+      {/* When in PC Remote Mode on mobile, show the live PC controller bar */}
+      {mobileMode === "pc_remote" ? <PcRemoteBar /> : <PlayerBar />}
+
+      {/* Floating Bottom Navigation Bar for Mobile */}
+      <MobileNavBar />
+
       <NowPlaying />
       <Dialog />
       <PlaylistPicker />

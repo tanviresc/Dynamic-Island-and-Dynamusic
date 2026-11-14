@@ -36,6 +36,41 @@ export function prepareDynamusicClose(): void {
   flushCoalescedStorage();
 }
 
+function handlePlayerCommand(cmd: string, payload?: unknown): void {
+  const p = usePlayer.getState();
+  switch (cmd) {
+    case "play":
+      p.setPlaying(true);
+      break;
+    case "pause":
+      p.setPlaying(false);
+      break;
+    case "toggle":
+    case "toggle_play":
+      p.toggle();
+      break;
+    case "next":
+      p.next(true);
+      break;
+    case "prev":
+      p.prev();
+      break;
+    case "seek":
+      if (typeof payload === "number") p.seek(payload);
+      break;
+    case "play_track":
+      if (payload && typeof payload === "object") {
+        p.playTrack(payload as any);
+      }
+      break;
+    case "close_stop":
+      prepareDynamusicClose();
+      break;
+    case "reopen_home":
+      resetDynamusicToHome();
+      break;
+  }
+}
 export function initIslandBridge(): void {
   if (initialized || typeof window === "undefined") return;
   initialized = true;
@@ -56,6 +91,34 @@ export function initIslandBridge(): void {
     lastTrackId = trackId;
     lastPlaying = s.playing;
     lastSyncMs = now;
+
+    // Also forward state snapshot to sidecar so Mobile remote control can reflect live PC playback
+    if ("__TAURI_INTERNALS__" in window) {
+      void fetch("http://127.0.0.1:47822/player/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          state: {
+            track: track
+              ? {
+                  id: track.id,
+                  title: track.title,
+                  artist: track.artist,
+                  album: track.album,
+                  thumb: track.thumb,
+                  duration: s.duration || track.duration || 0,
+                }
+              : null,
+            playing: s.playing,
+            position: s.position,
+            duration: s.duration,
+            volume: s.volume,
+            shuffle: s.shuffle,
+            repeat: s.repeat,
+          },
+        }),
+      }).catch(() => undefined);
+    }
 
     if (!("__TAURI_INTERNALS__" in window)) return;
 
@@ -90,6 +153,15 @@ export function initIslandBridge(): void {
   // Initial sync
   setTimeout(() => syncToIsland(true), 250);
 
+  // Listen for commands dispatched from Mobile PC Remote Mode
+  if (typeof window !== "undefined") {
+    window.addEventListener("message", (ev) => {
+      if (ev.data && typeof ev.data === "object" && ev.data.type === "dynamusic:remote_command") {
+        handlePlayerCommand(ev.data.command, ev.data.payload);
+      }
+    });
+  }
+
   if ("__TAURI_INTERNALS__" in window) {
     void import("@tauri-apps/api/event")
       .then(({ listen }) =>
@@ -98,31 +170,8 @@ export function initIslandBridge(): void {
             typeof event.payload === "string"
               ? event.payload
               : event.payload?.command ?? "";
-          const p = usePlayer.getState();
-          switch (cmd) {
-            case "play":
-              p.setPlaying(true);
-              break;
-            case "pause":
-              p.setPlaying(false);
-              break;
-            case "toggle":
-            case "toggle_play":
-              p.toggle();
-              break;
-            case "next":
-              p.next(true);
-              break;
-            case "prev":
-              p.prev();
-              break;
-            case "close_stop":
-              prepareDynamusicClose();
-              break;
-            case "reopen_home":
-              resetDynamusicToHome();
-              break;
-          }
+          const payload = typeof event.payload === "object" ? (event.payload as any)?.payload : undefined;
+          handlePlayerCommand(cmd, payload);
         })
       )
       .catch(() => undefined);

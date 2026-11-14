@@ -3,6 +3,35 @@
 @tailwind utilities;
 
 /* ============================================================
+   Mobile-Optimized Styles & Fluid Responsive Layout
+   ============================================================ */
+
+@media (max-width: 768px) {
+  /* Hide desktop-only rails & extra caption chrome on mobile devices */
+  .desktop-only-rail {
+    display: none !important;
+  }
+  .app-drag {
+    padding-top: env(safe-area-inset-top, 0px) !important;
+  }
+  .view-page {
+    padding-left: 1rem !important;
+    padding-right: 1rem !important;
+    padding-bottom: 7.5rem !important;
+  }
+  /* Sticky touch targets */
+  button, input, [role="button"] {
+    touch-action: manipulation;
+  }
+}
+
+@media (min-width: 769px) {
+  .mobile-only-nav {
+    display: none !important;
+  }
+}
+
+/* ============================================================
    Dynamusic — global styles & design-system utilities
    Apple-Music visual language, desktop-scale.
    ============================================================ */
