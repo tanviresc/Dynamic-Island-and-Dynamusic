@@ -16,7 +16,7 @@ export function MobileHeader() {
   const { color, letter } = avatarFor(sessionMode, username, shownName({ mode: sessionMode, username, displayName }));
 
   return (
-    <header className="sticky top-0 inset-x-0 z-30 h-14 bg-[#0a0a0c]/90 backdrop-blur-xl border-b border-white/10 px-3 flex items-center justify-between select-none">
+    <header className="sticky top-0 inset-x-0 z-30 h-14 bg-black/40 backdrop-blur-2xl backdrop-saturate-150 border-b border-white/10 px-3 flex items-center justify-between select-none">
       {/* Brand logo */}
       <button
         type="button"

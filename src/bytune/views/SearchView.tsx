@@ -616,9 +616,9 @@ export function SearchView() {
         }
         mobileInputRef.current?.blur();
       }}
-      className="sticky top-0 z-20 -mx-1 px-1 pt-1 pb-3 bg-surface/85 backdrop-blur-xl"
+      className="sticky top-0 z-20 -mx-1 px-1 pt-1 pb-3 bg-transparent"
     >
-      <div className="relative flex items-center h-11 rounded-full bg-surface-hi/95 border border-ink-hi/15 focus-within:border-primary/60 shadow-sm px-3.5 gap-2.5">
+      <div className="relative flex items-center h-11 rounded-full bg-white/[0.08] backdrop-blur-2xl backdrop-saturate-150 border border-white/15 focus-within:bg-white/[0.12] focus-within:border-white/30 shadow-sm px-3.5 gap-2.5 transition-colors">
         <SearchIcon className="w-4 h-4 text-ink-dim shrink-0" />
         <input
           id="mobile-search-input"
