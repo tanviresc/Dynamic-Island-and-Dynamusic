@@ -224,6 +224,7 @@ const api = {
     ipcRenderer.invoke("auth:signUp", username, password, displayName),
   authSignIn: (username: string, password: string) => ipcRenderer.invoke("auth:signIn", username, password),
   authSignInGoogle: () => ipcRenderer.invoke("auth:signInGoogle"),
+  authCancelGoogle: () => ipcRenderer.invoke("auth:cancelGoogle"),
   authContinueGuest: (displayName?: string) => ipcRenderer.invoke("auth:continueGuest", displayName),
   authClearGuestProfile: () => ipcRenderer.invoke("auth:clearGuestProfile"),
   authUsernameAvailable: (username: string) => ipcRenderer.invoke("auth:usernameAvailable", username),

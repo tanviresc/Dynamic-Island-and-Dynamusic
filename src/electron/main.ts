@@ -1004,46 +1004,63 @@ function registerIpc(): void {
    * into it. `changeOwner` archives whatever the guest did under the guest
    * slot, so a later "continue as guest" finds it again.
    */
-  const signIn = (authenticate: () => Promise<auth.SessionInfo>) => transition.serializeData(async () => {
-    await persist.drainWrites();
-    // A room belongs to the account in it: leave while that account can still say so.
-    await rooms.leaveRoom().catch(() => undefined);
-    const previous = transition.currentOwner();
-    const info = await authenticate();
-    const migrateGuest = previous === "guest" && info.isNewAccount === true;
-    await transition.changeOwner(info.userId ?? "guest", migrateGuest);
-    if (previous !== info.userId) {
-      sync.resetSyncState(info.userId ?? undefined);
-      stats.reloadStore();
-    }
-    // Spotify is kept per owner (electron/spotify.ts); a guest's goes along with their library.
-    if (migrateGuest && info.userId) await spotify.moveGuestSpotify(info.userId);
-    // The account's display name comes from the server (or one saved here while it couldn't take it goes up).
-    await auth.syncDisplayName();
-    await sync.syncNowExclusive().catch((err) => {
-      console.error("[bytune] login sync failed (account data not pulled):", err instanceof Error ? err.message : err);
-      sync.noteSyncFailure(err);
+  const signIn = async (authenticate: () => Promise<auth.SessionInfo>) => {
+    await transition.serializeData(async () => {
+      await persist.drainWrites();
+      // A room belongs to the account in it: leave while that account can still say so.
+      await rooms.leaveRoom().catch(() => undefined);
     });
-    mainWindow?.webContents.reload();
-    return info;
-  });
+    const info = await authenticate();
+    return transition.serializeData(async () => {
+      await persist.drainWrites();
+      const previous = transition.currentOwner();
+      const migrateGuest = previous === "guest" && info.isNewAccount === true;
+      await transition.changeOwner(info.userId ?? "guest", migrateGuest);
+      if (previous !== info.userId) {
+        sync.resetSyncState(info.userId ?? undefined);
+        stats.reloadStore();
+      }
+      // Spotify is kept per owner (electron/spotify.ts); a guest's goes along with their library.
+      if (migrateGuest && info.userId) await spotify.moveGuestSpotify(info.userId);
+      // The account's display name comes from the server (or one saved here while it couldn't take it goes up).
+      await auth.syncDisplayName();
+      await sync.syncNowExclusive().catch((err) => {
+        console.error("[bytune] login sync failed (account data not pulled):", err instanceof Error ? err.message : err);
+        sync.noteSyncFailure(err);
+      });
+      mainWindow?.webContents.reload();
+      return info;
+    });
+  };
   const text = (value: unknown): string | undefined => (typeof value === "string" ? value : undefined);
-  ipc.handle("auth:signUp", (_e, username: string, password: string, displayName: unknown) =>
-    signIn(() => auth.signUp(username, password, text(displayName) ?? "")));
-  ipc.handle("auth:signIn", (_e, username: string, password: string) => signIn(() => auth.signIn(username, password)));
+  ipc.handle("auth:signUp", (_e, username: string, password: string, displayName: unknown) => {
+    auth.cancelGoogleSignIn();
+    return signIn(() => auth.signUp(username, password, text(displayName) ?? ""));
+  });
+  ipc.handle("auth:signIn", (_e, username: string, password: string) => {
+    auth.cancelGoogleSignIn();
+    return signIn(() => auth.signIn(username, password));
+  });
   ipc.handle("auth:signInGoogle", () => signIn(() => auth.signInGoogle()));
-  ipc.handle("auth:continueGuest", (_e, displayName: unknown) => transition.serializeData(async () => {
-    // Checked before anything switches: a name that can't be kept stops the whole step.
-    const name = normalizeDisplayName(text(displayName) ?? "");
-    const problem = name ? displayNameProblem(name) : null;
-    if (problem) throw new Error(problem);
-    await transition.changeOwner("guest", false);
-    sync.resetSyncState();
-    stats.reloadStore();
-    const info = await auth.continueAsGuest(name || undefined);
-    mainWindow?.webContents.reload();
-    return info;
-  }));
+  ipc.handle("auth:cancelGoogle", () => {
+    auth.cancelGoogleSignIn();
+    return true;
+  });
+  ipc.handle("auth:continueGuest", (_e, displayName: unknown) => {
+    auth.cancelGoogleSignIn();
+    return transition.serializeData(async () => {
+      // Checked before anything switches: a name that can't be kept stops the whole step.
+      const name = normalizeDisplayName(text(displayName) ?? "");
+      const problem = name ? displayNameProblem(name) : null;
+      if (problem) throw new Error(problem);
+      await transition.changeOwner("guest", false);
+      sync.resetSyncState();
+      stats.reloadStore();
+      const info = await auth.continueAsGuest(name || undefined);
+      mainWindow?.webContents.reload();
+      return info;
+    });
+  });
   ipc.handle("auth:clearGuestProfile", () => auth.clearGuestProfile());
   ipc.handle("auth:usernameAvailable", async (_e, username: string) => {
     const problem = auth.validateUsername(String(username ?? ""));

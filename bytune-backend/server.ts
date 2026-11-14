@@ -4,13 +4,14 @@
  * and exposes all IPC channels over HTTP `/rpc` and Server-Sent Events `/events`.
  */
 import * as http from "http";
-import { invokeIpcChannel, onWebContentsSend } from "./electron-shim";
+import { emitProtocolUrl, invokeIpcChannel, onWebContentsSend } from "./electron-shim";
 import * as locallib from "../src/electron/local-library";
+
+const PORT = Number(process.env.BYTUNE_BACKEND_PORT || 47822);
+const bootDeepLink = process.argv.slice(1).find((a) => /^bytune:\/\//i.test(a));
 
 // Boot the entire ByTune main process (registers all IPC handlers, starts stream proxy, stats, sync, etc.)
 import "../src/electron/main";
-
-const PORT = Number(process.env.BYTUNE_BACKEND_PORT || 47822);
 
 function encodeBinaryResult(val: any): any {
   if (val == null) return val;
@@ -81,6 +82,39 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === "POST" && url.pathname === "/oauth-callback") {
+    const chunks: Buffer[] = [];
+    req.on("data", (c: Buffer) => chunks.push(c));
+    req.on("end", () => {
+      try {
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+        if (typeof body.url === "string" && /^bytune:\/\//i.test(body.url)) {
+          emitProtocolUrl(body.url);
+        }
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
+      } catch {
+        res.writeHead(400);
+        res.end();
+      }
+    });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/oauth/callback") {
+    const code = url.searchParams.get("code");
+    const errDesc = url.searchParams.get("error_description");
+    const synthetic = code
+      ? `bytune://oauth/callback?code=${encodeURIComponent(code)}`
+      : `bytune://oauth/callback?error_description=${encodeURIComponent(errDesc || "Sign-in cancelled")}`;
+    emitProtocolUrl(synthetic);
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(
+      "<!doctype html><html><body style='background:#0a0a0a;color:#fff;font-family:sans-serif;display:grid;place-items:center;height:100vh;margin:0'><div><h2>Signed in to Dynamusic</h2><p style='color:#999'>You can close this tab and return to Dynamusic.</p><script>window.close()</script></div></body></html>"
+    );
+    return;
+  }
+
   if (req.method === "GET" && url.pathname === "/events") {
     res.writeHead(200, {
       "Content-Type": "text/event-stream",
@@ -142,6 +176,16 @@ const server = http.createServer(async (req, res) => {
 
 server.on("error", (err: NodeJS.ErrnoException) => {
   if (err.code === "EADDRINUSE") {
+    if (bootDeepLink) {
+      fetch(`http://127.0.0.1:${PORT}/oauth-callback`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: bootDeepLink }),
+      })
+        .catch(() => {})
+        .finally(() => process.exit(0));
+      return;
+    }
     console.log(`[dynamusic-backend] port ${PORT} already in use (sidecar already running)`);
     process.exit(0);
   }
@@ -151,3 +195,4 @@ server.on("error", (err: NodeJS.ErrnoException) => {
 server.listen(PORT, "127.0.0.1", () => {
   console.log(`[dynamusic-backend] listening on http://127.0.0.1:${PORT}`);
 });
+

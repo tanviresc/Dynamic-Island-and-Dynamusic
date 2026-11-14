@@ -37,9 +37,12 @@ import brandText from "../assets/brand/bytune-Text.svg";
 type Screen = "choose" | "signup" | "signin" | "resume" | "restoring" | "pickusername" | "guestname";
 
 /** Raw provider/engine errors to short, human, actionable messages. */
-function friendlyError(err: unknown): string {
+function friendlyError(err: unknown): string | null {
   const raw = err instanceof Error ? err.message : String(err);
   const msg = raw.replace(/^\[.*?\]\s*/, "");
+  if (/cancelled|canceled/i.test(msg)) {
+    return null;
+  }
   if (/failed to fetch|fetch failed|networkerror|network error|timeout|timed out/i.test(msg)) {
     return "Couldn't connect right now. Check your connection and try again.";
   }
@@ -316,6 +319,7 @@ function UsernamePasswordForm({
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [busy, setBusy] = useState(false);
+  const [googleBusy, setGoogleBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const formatProblem = mode === "signup" && username.length > 0 ? usernameProblem(username) : null;
@@ -333,7 +337,12 @@ function UsernamePasswordForm({
 
   const google = async (): Promise<void> => {
     if (busy) return;
-    setBusy(true);
+    if (googleBusy) {
+      void window.bytune?.authCancelGoogle();
+      setGoogleBusy(false);
+      return;
+    }
+    setGoogleBusy(true);
     setError(null);
     try {
       const info = (await window.bytune?.authSignInGoogle()) as { needsUsername?: boolean } | undefined;
@@ -346,13 +355,17 @@ function UsernamePasswordForm({
       await useSession.getState().refresh();
     } catch (err) {
       setError(friendlyError(err));
-      setBusy(false);
+      setGoogleBusy(false);
     }
   };
 
   const submit = async (e: React.FormEvent): Promise<void> => {
     e.preventDefault();
     if (busy) return;
+    if (googleBusy) {
+      void window.bytune?.authCancelGoogle();
+      setGoogleBusy(false);
+    }
     if (mode === "signup") {
       const pwProblem = passwordProblem(password);
       if (pwProblem) {
@@ -387,7 +400,13 @@ function UsernamePasswordForm({
   const signup = mode === "signup";
   return (
     <form onSubmit={(e) => void submit(e)}>
-      <BackLink onClick={onBack} disabled={busy} />
+      <BackLink
+        onClick={() => {
+          if (googleBusy) void window.bytune?.authCancelGoogle();
+          onBack();
+        }}
+        disabled={busy}
+      />
       <Title lede={signup ? "No email needed, but a lost password can't be reset." : undefined}>
         {signup ? "Create your account" : "Sign in"}
       </Title>
@@ -441,12 +460,21 @@ function UsernamePasswordForm({
           )}
         </button>
         <button type="button" onClick={() => void google()} className={btnSecondary} disabled={busy}>
-          {busy ? <Spinner /> : <GoogleG className="w-[18px] h-[18px]" />} Continue with Google
+          {googleBusy ? <Spinner /> : <GoogleG className="w-[18px] h-[18px]" />}{" "}
+          {googleBusy ? "Waiting for browser… (Cancel)" : "Continue with Google"}
         </button>
       </div>
       <p className="ob-switch">
         {signup ? "Already have an account? " : "New to Dynamusic? "}
-        <button type="button" onClick={() => navigate(signup ? "signin" : "signup")} className="ob-link" disabled={busy}>
+        <button
+          type="button"
+          onClick={() => {
+            if (googleBusy) void window.bytune?.authCancelGoogle();
+            navigate(signup ? "signin" : "signup");
+          }}
+          className="ob-link"
+          disabled={busy}
+        >
           {signup ? "Sign in" : "Create an account"}
         </button>
       </p>
@@ -520,7 +548,11 @@ function ChooseContent({
   const [busy, setBusy] = useState<"none" | "google">("none");
 
   const google = async (): Promise<void> => {
-    if (busy !== "none") return;
+    if (busy === "google") {
+      void window.bytune?.authCancelGoogle();
+      setBusy("none");
+      return;
+    }
     setBusy("google");
     setError(null);
     try {
@@ -540,7 +572,14 @@ function ChooseContent({
     }
   };
 
-  const off = busy !== "none";
+  const pickWithCancel = (fn: () => void): void => {
+    if (busy === "google") {
+      void window.bytune?.authCancelGoogle();
+      setBusy("none");
+    }
+    fn();
+  };
+
   const icon = "w-[18px] h-[18px]";
   return (
     <div>
@@ -560,30 +599,26 @@ function ChooseContent({
           icon={<Cloud className={icon} />}
           title="Create an account"
           note="Keeps your library in sync on every computer"
-          onClick={() => onPick("signup")}
-          disabled={off}
+          onClick={() => pickWithCancel(() => onPick("signup"))}
         />
         <Way
           icon={busy === "google" ? <Spinner /> : <GoogleG className={icon} />}
           title="Continue with Google"
-          note={busy === "google" ? "Finish in your browser" : "Sign in or sign up through your browser"}
+          note={busy === "google" ? "Finish in your browser · Click to cancel" : "Sign in or sign up through your browser"}
           onClick={() => void google()}
           busy={busy === "google"}
-          disabled={off}
         />
         <Way
           icon={<KeyRound className={icon} />}
           title="Sign in"
           note="With your Dynamusic username and password"
-          onClick={() => onPick("signin")}
-          disabled={off}
+          onClick={() => pickWithCancel(() => onPick("signin"))}
         />
         <Way
           icon={<HardDrive className={icon} />}
           title="Continue as guest"
           note="Everything stays on this computer"
-          onClick={() => navigate("guestname")}
-          disabled={off}
+          onClick={() => pickWithCancel(() => navigate("guestname"))}
         />
       </ul>
       <ErrorNote msg={error} />

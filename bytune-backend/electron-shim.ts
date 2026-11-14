@@ -124,7 +124,28 @@ export const app: AppShim = {
     return true;
   },
   setAppUserModelId(_id: string): void {},
-  setAsDefaultProtocolClient(_protocol: string, _path?: string, _args?: string[]): boolean {
+  setAsDefaultProtocolClient(protocolName: string, _path?: string, _args?: string[]): boolean {
+    if (process.platform === "win32" && /^[a-z][a-z0-9+.-]*$/i.test(protocolName)) {
+      const serverScript = path.resolve(process.cwd(), "dist-bytune", "server.cjs");
+      const cmdValue = `"${process.execPath}" "${serverScript}" "%1"`;
+      const regScript = [
+        "$proto = $env:BYTUNE_PROTO",
+        "$cmd = $env:BYTUNE_PROTO_CMD",
+        '$baseKey = "HKCU:\\Software\\Classes\\$proto"',
+        "New-Item -Path $baseKey -Force | Out-Null",
+        'Set-ItemProperty -Path $baseKey -Name "(Default)" -Value "URL:Dynamusic Protocol" -Force',
+        'Set-ItemProperty -Path $baseKey -Name "URL Protocol" -Value "" -Force',
+        '$cmdKey = "$baseKey\\shell\\open\\command"',
+        "New-Item -Path $cmdKey -Force | Out-Null",
+        'Set-ItemProperty -Path $cmdKey -Name "(Default)" -Value $cmd -Force',
+      ].join("; ");
+      execFile(
+        "powershell.exe",
+        ["-NoProfile", "-Command", regScript],
+        { env: { ...process.env, BYTUNE_PROTO: protocolName, BYTUNE_PROTO_CMD: cmdValue }, windowsHide: true },
+        () => {}
+      );
+    }
     return true;
   },
   isDefaultProtocolClient(_protocol: string, _path?: string, _args?: string[]): boolean {
@@ -486,9 +507,27 @@ if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
   },
 };
 
+export function emitProtocolUrl(url: string): void {
+  appEmitter.emit("open-url", { preventDefault: () => {} }, url);
+  appEmitter.emit("second-instance", {}, [process.execPath, url]);
+}
+
 export const shell = {
   async openExternal(url: string): Promise<void> {
-    execFile("powershell.exe", ["-NoProfile", "-Command", "Start-Process", url], () => {});
+    if (!url || !/^https?:\/\/|^mailto:/i.test(url)) {
+      throw new Error("Invalid external URL");
+    }
+    await new Promise<void>((resolve, reject) => {
+      execFile(
+        "powershell.exe",
+        ["-NoProfile", "-Command", "Start-Process -FilePath $env:BYTUNE_OPEN_URL"],
+        { env: { ...process.env, BYTUNE_OPEN_URL: url }, windowsHide: true },
+        (err) => {
+          if (err) reject(err);
+          else resolve();
+        }
+      );
+    });
   },
   async openPath(p: string): Promise<string> {
     execFile("explorer.exe", [p], () => {});

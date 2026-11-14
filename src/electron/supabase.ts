@@ -416,7 +416,16 @@ function clearPendingOAuth(): void {
   }
 }
 
+export function cancelGoogleSignIn(): void {
+  if (pendingOAuthReject) {
+    const reject = pendingOAuthReject;
+    clearPendingOAuth();
+    reject(new Error("Google sign-in cancelled."));
+  }
+}
+
 export async function signInGoogle(): Promise<SessionInfo> {
+  cancelGoogleSignIn();
   const { data, error } = await supabase().auth.signInWithOAuth({
     provider: "google",
     options: {

@@ -408,6 +408,7 @@ export function initBytuneBridge(): void {
       documentScopePromise = null;
       return rpcInvoke("auth:signInGoogle");
     },
+    authCancelGoogle: () => rpcInvoke("auth:cancelGoogle").catch(() => false),
     authContinueGuest: async (displayName?: string) => {
       documentScopePromise = null;
       return rpcInvoke("auth:continueGuest", displayName);
