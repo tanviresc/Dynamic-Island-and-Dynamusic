@@ -1,7 +1,8 @@
-import { Play, Pause, Heart } from "lucide-react";
+import { Play, Pause, Heart, Smartphone, Monitor } from "lucide-react";
 import { usePlayer, shownTrack } from "../stores/player";
 import { useLibrary } from "../stores/library";
 import { useUI } from "../stores/ui";
+import { useMobileMode } from "../stores/mobileMode";
 
 export function MobileMiniPlayer() {
   const track = usePlayer(shownTrack);
@@ -12,6 +13,8 @@ export function MobileMiniPlayer() {
   const toggleLike = useLibrary((s) => s.toggleLike);
   const isLiked = useLibrary((s) => (track ? s.isLiked(track.id) : false));
   const toggleNowPlaying = useUI((s) => s.toggleNowPlaying);
+  const mode = useMobileMode((s) => s.mode);
+  const setMode = useMobileMode((s) => s.setMode);
 
   if (!track) return null;
 
@@ -41,6 +44,28 @@ export function MobileMiniPlayer() {
             {track.artist}
           </p>
         </div>
+
+        {/* Mode Switcher: Phone or PC Icon */}
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            setMode(mode === "phone" ? "pc_remote" : "phone");
+          }}
+          className="p-2 text-white/70 hover:text-white transition-all active:scale-90"
+          title={
+            mode === "phone"
+              ? "Mobile Mode (Tap to switch to PC Mode)"
+              : "PC Mode (Tap to switch to Mobile Mode)"
+          }
+          aria-label="Toggle playback mode"
+        >
+          {mode === "phone" ? (
+            <Smartphone className="w-4 h-4 text-white" />
+          ) : (
+            <Monitor className="w-4 h-4 text-emerald-400" />
+          )}
+        </button>
 
         {/* Like Button */}
         <button

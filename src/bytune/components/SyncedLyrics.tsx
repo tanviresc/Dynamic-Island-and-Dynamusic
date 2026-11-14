@@ -18,6 +18,7 @@ import { romanize } from "../lib/romanize";
 import { LYRICS_LOADING_LINES, pickLyricsLine } from "../lib/lyricsPhrases";
 import { usePlayer } from "../stores/player";
 import { useSettings } from "../stores/settings";
+import { useMobileMode } from "../stores/mobileMode";
 import type { LyricsResult, SyncedLyricWord } from "../types";
 
 /** How long the lyrics take to glide to the next line. */
@@ -102,19 +103,22 @@ function WordLine({
   variant,
   glow,
   offset,
+  currentPos,
+  isPlaying,
 }: {
   words: SyncedLyricWord[];
   spans: Array<{ start: number; end: number }>;
   variant: LyricsVariant;
   glow: boolean;
   offset: number;
+  currentPos: number;
+  isPlaying: boolean;
 }) {
-  const playing = usePlayer((st) => st.playing);
   const [, force] = useState(0);
   useEffect(() => {
     // The sweep only moves while audio is playing; parked at pause, the line
     // holds its last state instead of burning frames re-rendering.
-    if (!playing) return;
+    if (!isPlaying) return;
     let raf = 0;
     const tick = (): void => {
       force((n) => (n + 1) % 1000000);
@@ -122,11 +126,15 @@ function WordLine({
     };
     raf = window.requestAnimationFrame(tick);
     return () => window.cancelAnimationFrame(raf);
-  }, [playing]);
-  const pos = getPlaybackPosition() - offset;
+  }, [isPlaying]);
+
+  const liveClock = getPlaybackPosition();
+  const rawPos = liveClock > 0 ? liveClock : currentPos;
+  const pos = rawPos - offset;
   return (
-    <span className={lineSizeClass(variant)}
-      style={glow ? { filter: "drop-shadow(0 0 22px rgba(255,255,255,0.28))" } : undefined}
+    <span
+      className={`${lineSizeClass(variant)} text-white`}
+      style={glow ? { filter: "drop-shadow(0 0 24px rgba(255,255,255,0.45))" } : undefined}
     >
       {words.map((w, i) => {
         const span = spans[i] ?? { start: w.start, end: w.end };
@@ -140,11 +148,12 @@ function WordLine({
         return (
           <span
             key={i}
-              style={{
-                backgroundImage: `linear-gradient(90deg, rgb(var(--ink-hi)) ${pct}%, rgb(var(--ink-hi) / 0.28) ${pct}%)`,
+            style={{
+              backgroundImage: `linear-gradient(90deg, #ffffff ${pct}%, rgba(255,255,255,0.48) ${pct}%)`,
               WebkitBackgroundClip: "text",
               backgroundClip: "text",
               WebkitTextFillColor: "transparent",
+              filter: p > 0.05 ? "drop-shadow(0 0 14px rgba(255,255,255,0.5))" : undefined,
             }}
           >
             {i > 0 ? " " : ""}
@@ -167,11 +176,11 @@ function depthStyle(
 ): { className: string; style: React.CSSProperties } {
   const d = Math.min(Math.abs(dist), 4);
   // Sung lines sink away a touch harder than upcoming ones.
-  const opacity = [1, 0.5, 0.3, 0.18, 0.1][d] * (past && d > 0 ? 0.7 : 1);
+  const opacity = [1, 0.44, 0.28, 0.16, 0.1][d] * (past && d > 0 ? 0.75 : 1);
   const blurPx = blur ? [0, 1.2, 2.2, 3.2, 4][d] : 0;
-  const scale = [1, 0.975, 0.955, 0.94, 0.93][d];
+  const scale = [1.04, 0.97, 0.94, 0.92, 0.9][d];
   return {
-    className: "text-ink-hi transition-all duration-500 ease-out",
+    className: "transition-all duration-300 ease-out",
     style: {
       opacity,
       filter: d === 0 || blurPx === 0 ? undefined : `blur(${blurPx}px)`,
@@ -191,8 +200,22 @@ export function LyricsView({
   trackKey,
 }: LyricsViewProps & { offset?: number }) {
   const variant: LyricsVariant = hero ? "hero" : large ? "large" : "compact";
-  const position = usePlayer((s) => s.position);
-  const seek = usePlayer((s) => s.seek);
+  const mobileMode = useMobileMode((s) => s.mode);
+  const pcState = useMobileMode((s) => s.pcState);
+  const isPcRemote = mobileMode === "pc_remote" && !!pcState?.track;
+
+  const localPosition = usePlayer((s) => s.position);
+  const position = isPcRemote ? (pcState.position ?? 0) : localPosition;
+  const localPlaying = usePlayer((s) => s.playing);
+  const playing = isPcRemote ? pcState.playing : localPlaying;
+
+  const seek = (targetTime: number) => {
+    if (isPcRemote) {
+      useMobileMode.getState().sendPcCommand("seek", targetTime);
+    } else {
+      usePlayer.getState().seek(targetTime);
+    }
+  };
   // Appearance switches with defined mobile behavior: synced lyrics gates
   // the whole synced treatment, blur de-emphasis is separately toggled,
   // and the glow yields to reduced motion / reduced blur.
@@ -400,15 +423,18 @@ export function LyricsView({
                   key={`${line.time}-${i}`}
                   className="flex items-center gap-2 py-2 px-1"
                   title="Instrumental"
-                  style={{ opacity: Math.max(0.15, depth.style.opacity as number) }}
+                  style={{ opacity: Math.max(0.2, depth.style.opacity as number) }}
                 >
                   {[0, 1, 2].map((d) => (
                     <span
                       key={d}
-                      className={`w-1.5 h-1.5 rounded-full bg-ink-hi/80 ${active ? "animate-pulse" : ""}`}
+                      className={`w-2 h-2 rounded-full ${
+                        active
+                          ? "bg-white shadow-[0_0_12px_rgba(255,255,255,0.9)] animate-pulse"
+                          : "bg-white/40"
+                      }`}
                       style={{
                         animationDelay: `${d * 0.22}s`,
-                        boxShadow: active ? "0 0 12px rgba(255,255,255,0.5)" : undefined,
                       }}
                     />
                   ))}
@@ -440,22 +466,61 @@ export function LyricsView({
                 ref={i === activeIndex ? activeRef : undefined}
                 onClick={() => seek(Math.max(0, line.time + offset - 0.15))}
                 title="Jump here"
-                className={`block w-full text-left origin-left ${depth.className}`}
-                style={depth.style}
+                className={`group relative block w-full text-left origin-left ${
+                  active ? "text-white font-extrabold" : "text-white/60 font-semibold"
+                } ${depth.className}`}
+                style={
+                  active
+                    ? {
+                        opacity: 1,
+                        transform: "scale(1.04)",
+                        transformOrigin: "left center",
+                        filter: glowLines
+                          ? "drop-shadow(0 0 24px rgba(255,255,255,0.45))"
+                          : undefined,
+                      }
+                    : depth.style
+                }
               >
+                {/* Active singing indicator dot */}
+                {active && (
+                  <span
+                    className="inline-block w-2.5 h-2.5 rounded-full bg-white mr-2.5 mb-1 align-middle animate-pulse shadow-[0_0_14px_rgba(255,255,255,1)]"
+                    title="Singing now"
+                  />
+                )}
+
                 {wordSynced ? (
-                  <WordLine words={line.words!} spans={spans} variant={variant} glow={glowLines} offset={offset} />
+                  <WordLine
+                    words={line.words!}
+                    spans={spans}
+                    variant={variant}
+                    glow={glowLines}
+                    offset={offset}
+                    currentPos={position}
+                    isPlaying={playing}
+                  />
                 ) : (
                   <span
-                    className={lineSizeClass(variant)}
-                    style={active && glowLines ? { filter: "drop-shadow(0 0 22px rgba(255,255,255,0.28))" } : undefined}
+                    className={`${lineSizeClass(variant)} ${
+                      active ? "text-white font-black" : ""
+                    }`}
+                    style={
+                      active
+                        ? {
+                            color: "#ffffff",
+                            textShadow:
+                              "0 0 24px rgba(255,255,255,0.6), 0 0 45px rgba(255,255,255,0.25)",
+                          }
+                        : undefined
+                    }
                   >
                     {line.text}
                   </span>
                 )}
                 {line.bg && <span className={`block mt-1 opacity-70 ${subLineClass(variant)}`}>{line.bg.text}</span>}
                 {roman && (
-                  <span className={`block mt-1 text-ink-hi/60 ${subLineClass(variant)}`}>
+                  <span className={`block mt-1 text-white/60 ${subLineClass(variant)}`}>
                     {roman}
                   </span>
                 )}

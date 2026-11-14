@@ -43,6 +43,7 @@ import { FitText } from "./FitText";
 import { playFragmented, useCanvas } from "../lib/canvas";
 import { useLyricsOffset } from "../lib/lyricsOffset";
 import { useIdle } from "../lib/useIdle";
+import { useMobileMode } from "../stores/mobileMode";
 import type { LyricsResult } from "../types";
 
 /** How long the pointer rests before the controls and the cursor go (YouTube's wait). */
@@ -242,7 +243,10 @@ function FsLyrics({
       const a = art.getBoundingClientRect();
       const p = panel.getBoundingClientRect();
       if (p.height < 40) return;
-      const next = Math.min(0.6, Math.max(0.08, (a.top + a.height / 2 - p.top) / p.height));
+      const isStacked = a.bottom <= p.top + 20 || window.innerWidth < 1024;
+      const next = isStacked
+        ? 0.42
+        : Math.min(0.6, Math.max(0.08, (a.top + a.height / 2 - p.top) / p.height));
       // Half a pixel, so a glide moves the line every frame instead of in steps.
       setAnchor((prev) => (Math.abs(prev - next) * p.height > 0.5 ? next : prev));
     };
@@ -340,11 +344,17 @@ export function NowPlaying() {
     };
   }, [open]);
 
-  const track = usePlayer((s) => s.queue[s.index] ?? null);
-  // What the screen shows: switches to the incoming song half way through a
-  // blend. Lyrics stay on `track`, whose clock they follow.
-  const shown = usePlayer(shownTrack);
-  const playing = usePlayer((s) => s.playing);
+  const mobileMode = useMobileMode((s) => s.mode);
+  const pcState = useMobileMode((s) => s.pcState);
+  const isPcRemote = mobileMode === "pc_remote" && !!pcState?.track;
+
+  const localTrack = usePlayer((s) => s.queue[s.index] ?? null);
+  const localShown = usePlayer(shownTrack);
+  const localPlaying = usePlayer((s) => s.playing);
+
+  const track = isPcRemote ? pcState.track : localTrack;
+  const shown = isPcRemote ? pcState.track : localShown;
+  const playing = isPcRemote ? pcState.playing : localPlaying;
 
   const liked = useLibrary((s) => (shown ? s.liked.some((t) => t.id === shown.id) : false));
   const toggleLike = useLibrary((s) => s.toggleLike);

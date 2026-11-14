@@ -1,10 +1,12 @@
 import { useState } from "react";
-import { Monitor, Play, Pause, SkipForward, SkipBack, Volume2, Shuffle, Repeat, Heart } from "lucide-react";
+import { Monitor, Smartphone, Play, Pause, SkipForward, SkipBack, Volume2, Shuffle, Repeat, Heart } from "lucide-react";
 import { useMobileMode } from "../stores/mobileMode";
 import { useLibrary } from "../stores/library";
 import { fmtTime } from "../lib/format";
 
 export function PcRemoteBar() {
+  const mode = useMobileMode((s) => s.mode);
+  const setMode = useMobileMode((s) => s.setMode);
   const pcState = useMobileMode((s) => s.pcState);
   const sendCommand = useMobileMode((s) => s.sendPcCommand);
   const toggleLike = useLibrary((s) => s.toggleLike);
@@ -49,6 +51,28 @@ export function PcRemoteBar() {
             {track?.artist || "Use PC Mode to change PC songs"}
           </p>
         </div>
+
+        {/* Mode Switcher: Phone or PC Icon */}
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            setMode(mode === "phone" ? "pc_remote" : "phone");
+          }}
+          className="p-1.5 text-white/70 hover:text-white transition-all active:scale-90"
+          title={
+            mode === "phone"
+              ? "Mobile Mode (Tap to switch to PC Mode)"
+              : "PC Mode (Tap to switch to Mobile Mode)"
+          }
+          aria-label="Toggle playback mode"
+        >
+          {mode === "phone" ? (
+            <Smartphone className="w-4 h-4 text-white" />
+          ) : (
+            <Monitor className="w-4 h-4 text-emerald-400" />
+          )}
+        </button>
 
         {/* Favorite */}
         {track && (
