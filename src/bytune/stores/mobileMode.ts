@@ -22,6 +22,7 @@ interface MobileModeState {
   pcConnected: boolean;
   pcState: RemotePCPlayerState | null;
   setMode: (mode: MobileMode) => void;
+  setIsMobileDevice: (isMobile: boolean) => void;
   setPcState: (state: RemotePCPlayerState | null) => void;
   sendPcCommand: (command: string, payload?: unknown) => Promise<void>;
 }
@@ -43,11 +44,13 @@ function getBackendHost(): string {
 
 function checkIsMobile(): boolean {
   if (typeof window === "undefined") return false;
+  if ("__TAURI_INTERNALS__" in window) return false;
   const ua = navigator.userAgent || "";
   const isMobileUA = /Android|iPhone|iPad|iPod|Mobile/i.test(ua);
-  const isNarrow = window.innerWidth <= 768;
-  const isRemoteWeb = !("__TAURI_INTERNALS__" in window);
-  return isMobileUA || (isNarrow && isRemoteWeb);
+  const isLanHost = window.location.hostname !== "localhost" && window.location.hostname !== "127.0.0.1";
+  const isNarrow = window.innerWidth <= 840;
+  const isTouch = typeof navigator.maxTouchPoints === "number" && navigator.maxTouchPoints > 0;
+  return isMobileUA || isLanHost || (isTouch && isNarrow) || isNarrow;
 }
 
 export const useMobileMode = create<MobileModeState>((set, get) => ({
@@ -64,6 +67,8 @@ export const useMobileMode = create<MobileModeState>((set, get) => ({
       /* ignore */
     }
   },
+
+  setIsMobileDevice: (isMobileDevice) => set({ isMobileDevice }),
 
   setPcState: (pcState) => set({ pcState, pcConnected: Boolean(pcState?.track) }),
 
@@ -108,6 +113,12 @@ if (typeof window !== "undefined") {
 
     pollPcState();
     window.setInterval(pollPcState, 3000);
+
+    const onResize = () => {
+      useMobileMode.getState().setIsMobileDevice(checkIsMobile());
+    };
+    window.addEventListener("resize", onResize);
+    window.addEventListener("orientationchange", onResize);
   }
 }
 

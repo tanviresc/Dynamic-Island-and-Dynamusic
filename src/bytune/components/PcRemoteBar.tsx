@@ -17,7 +17,7 @@ export function PcRemoteBar() {
   const pct = duration > 0 ? Math.min(100, (position / duration) * 100) : 0;
 
   return (
-    <div className="fixed bottom-16 inset-x-0 z-40 bg-[#121214]/95 backdrop-blur-2xl border-t border-emerald-500/30 px-3 py-2 flex flex-col gap-1.5 shadow-2xl">
+    <div className="fixed bottom-[68px] inset-x-2 z-40 bg-[#121214]/95 backdrop-blur-2xl border border-emerald-500/30 rounded-2xl p-2.5 flex flex-col gap-1.5 shadow-2xl select-none">
       {/* Indicator Tag */}
       <div className="flex items-center justify-between text-[11px] text-emerald-400 font-medium px-1">
         <span className="flex items-center gap-1.5">

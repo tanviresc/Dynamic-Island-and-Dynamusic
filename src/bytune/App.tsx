@@ -11,6 +11,8 @@ import { RightRail } from "./components/RightRail";
 import { Sidebar } from "./components/Sidebar";
 import { Toasts } from "./components/Toasts";
 import { TopBar } from "./components/TopBar";
+import { MobileHeader } from "./components/MobileHeader";
+import { MobileMiniPlayer } from "./components/MobileMiniPlayer";
 import { MobileNavBar } from "./components/MobileNavBar";
 import { PcRemoteBar } from "./components/PcRemoteBar";
 import { useMobileMode } from "./stores/mobileMode";
@@ -441,6 +443,45 @@ export default function App() {
   // A fresh Google user must choose their username before entering.
   if (session.mode === "account" && session.needsUsername) return <Onboarding initial="pickusername" />;
 
+  if (isMobileDevice) {
+    return (
+      <div
+        ref={shellRef}
+        className="h-screen flex flex-col ambient-root text-ink overflow-hidden select-none origin-center bg-base"
+      >
+        <MobileHeader />
+
+        <main
+          className="flex-1 min-w-0 flex flex-col bg-surface overflow-hidden relative"
+          {...panelDrop.props}
+        >
+          <CoverGlow />
+          <SwipeArrow />
+          {lyricsCenter ? (
+            <LyricsCenter />
+          ) : (
+            <div ref={viewScrollRef} className="flex-1 min-h-0 overflow-y-auto no-scrollbar relative" id="view-scroll">
+              <div key={`${viewReloadNonce}:${viewName}`} className="view-page animate-rise-in px-3 pt-3 pb-36">
+                <ErrorBoundary>
+                  <CurrentView />
+                </ErrorBoundary>
+              </div>
+            </div>
+          )}
+        </main>
+
+        {mobileMode === "pc_remote" ? <PcRemoteBar /> : <MobileMiniPlayer />}
+        <MobileNavBar />
+
+        <NowPlaying />
+        <Dialog />
+        <PlaylistPicker />
+        <ContextMenu />
+        <Toasts />
+      </div>
+    );
+  }
+
   return (
     <div
       ref={shellRef}
@@ -453,7 +494,7 @@ export default function App() {
       {/* Three-pane shell: sidebar · content · right rail, over a black canvas.
           8px gaps and side padding; 4px strip above the play bar (Spotify). */}
       <div className="flex flex-1 min-h-0 gap-2 px-2 pb-1">
-        <div className="desktop-only-rail flex h-full">
+        <div className="flex h-full">
           <Sidebar />
         </div>
         <main
@@ -480,9 +521,9 @@ export default function App() {
                   PanelScrollbar draws the thumb over the page instead. */}
               <div ref={viewScrollRef} className="flex-1 min-h-0 overflow-y-auto no-scrollbar relative" id="view-scroll">
                 {/* The reload nonce rides in the key: a bump remounts the current
-                    view so its data effects re-run — that is the Refresh button's
-                    mechanism everywhere except Home (which re-orchestrates its
-                    feed without a remount). */}
+                  view so its data effects re-run — that is the Refresh button's
+                  mechanism everywhere except Home (which re-orchestrates its
+                  feed without a remount). */}
                 <div key={`${viewReloadNonce}:${viewName}`} className="view-page animate-rise-in px-10 pt-5 pb-6">
                   <ErrorBoundary>
                     <CurrentView />
@@ -503,16 +544,12 @@ export default function App() {
             </>
           )}
         </main>
-        <div className="desktop-only-rail flex h-full">
+        <div className="flex h-full">
           <RightRail />
         </div>
       </div>
 
-      {/* When in PC Remote Mode on mobile, show the live PC controller bar */}
-      {!("__TAURI_INTERNALS__" in window) && mobileMode === "pc_remote" ? <PcRemoteBar /> : <PlayerBar />}
-
-      {/* Floating Bottom Navigation Bar for Mobile */}
-      {!("__TAURI_INTERNALS__" in window) && <MobileNavBar />}
+      <PlayerBar />
 
       <NowPlaying />
       <Dialog />

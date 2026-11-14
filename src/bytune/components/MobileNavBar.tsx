@@ -1,6 +1,6 @@
 import { Home, Compass, Library, Smartphone, Monitor } from "lucide-react";
 import { useUI } from "../stores/ui";
-import { useMobileMode, type MobileMode } from "../stores/mobileMode";
+import { useMobileMode } from "../stores/mobileMode";
 
 export function MobileNavBar() {
   const view = useUI((s) => s.view);
@@ -9,73 +9,70 @@ export function MobileNavBar() {
   const setMode = useMobileMode((s) => s.setMode);
 
   return (
-    <nav className="mobile-only-nav fixed bottom-0 inset-x-0 h-16 bg-[#0a0a0c]/90 backdrop-blur-xl border-t border-white/10 z-40 flex items-center justify-around px-2 select-none">
+    <nav className="fixed bottom-0 inset-x-0 h-16 bg-[#0a0a0c]/95 backdrop-blur-xl border-t border-white/10 z-40 flex items-center justify-around px-4 select-none safe-bottom">
+      {/* Home Tab */}
       <button
         type="button"
         onClick={() => navigate({ name: "home" })}
-        className={`flex flex-col items-center gap-1 py-1 px-2.5 rounded-lg transition-colors ${
-          view.name === "home" ? "text-white font-medium" : "text-white/50 hover:text-white"
+        className={`flex flex-col items-center gap-1 py-1 px-3 rounded-xl transition-all ${
+          view.name === "home" ? "text-white font-semibold scale-105" : "text-white/50 hover:text-white"
         }`}
       >
-        <Home className="w-5 h-5" />
-        <span className="text-[10px] leading-tight tracking-tight">Home</span>
+        <Home className={`w-5 h-5 ${view.name === "home" ? "stroke-[2.5]" : "stroke-[1.75]"}`} />
+        <span className="text-[11px] leading-tight">Home</span>
       </button>
 
+      {/* Explore / Search Tab */}
       <button
         type="button"
         onClick={() => navigate({ name: "search" })}
-        className={`flex flex-col items-center gap-1 py-1 px-2.5 rounded-lg transition-colors ${
-          view.name === "search" ? "text-white font-medium" : "text-white/50 hover:text-white"
+        className={`flex flex-col items-center gap-1 py-1 px-3 rounded-xl transition-all ${
+          view.name === "search" || view.name === "explore" ? "text-white font-semibold scale-105" : "text-white/50 hover:text-white"
         }`}
       >
-        <Compass className="w-5 h-5" />
-        <span className="text-[10px] leading-tight tracking-tight">Explore</span>
+        <Compass className={`w-5 h-5 ${view.name === "search" || view.name === "explore" ? "stroke-[2.5]" : "stroke-[1.75]"}`} />
+        <span className="text-[11px] leading-tight">Search</span>
       </button>
 
+      {/* Library Tab */}
       <button
         type="button"
         onClick={() => navigate({ name: "library" })}
-        className={`flex flex-col items-center gap-1 py-1 px-2.5 rounded-lg transition-colors ${
-          view.name === "library" || view.name === "playlist" ? "text-white font-medium" : "text-white/50 hover:text-white"
+        className={`flex flex-col items-center gap-1 py-1 px-3 rounded-xl transition-all ${
+          view.name === "library" || view.name === "playlist" || view.name === "downloads" || view.name === "local"
+            ? "text-white font-semibold scale-105"
+            : "text-white/50 hover:text-white"
         }`}
       >
-        <Library className="w-5 h-5" />
-        <span className="text-[10px] leading-tight tracking-tight">Library</span>
+        <Library className={`w-5 h-5 ${view.name === "library" || view.name === "playlist" ? "stroke-[2.5]" : "stroke-[1.75]"}`} />
+        <span className="text-[11px] leading-tight">Library</span>
       </button>
 
       <div className="h-6 w-px bg-white/10 my-auto" />
 
-      {/* Mode Switch: Mobile Mode vs PC Remote Mode */}
-      <div className="flex items-center bg-white/10 p-0.5 rounded-full border border-white/10">
-        <button
-          type="button"
-          onClick={() => setMode("phone")}
-          title="Phone Mode: play and listen on this device"
-          className={`flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-semibold transition-all ${
-            mode === "phone"
-              ? "bg-white text-black shadow-sm"
-              : "text-white/60 hover:text-white"
-          }`}
-        >
-          <Smartphone className="w-3.5 h-3.5" />
-          <span>Phone</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setMode("pc_remote")}
-          title="PC Mode: control playback on your PC from phone"
-          className={`flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-semibold transition-all ${
-            mode === "pc_remote"
-              ? "bg-emerald-500 text-black shadow-sm"
-              : "text-white/60 hover:text-white"
-          }`}
-        >
-          <Monitor className="w-3.5 h-3.5" />
-          <span>PC</span>
-        </button>
-      </div>
+      {/* Mode Switcher */}
+      <button
+        type="button"
+        onClick={() => setMode(mode === "phone" ? "pc_remote" : "phone")}
+        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-semibold border transition-all ${
+          mode === "pc_remote"
+            ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/40"
+            : "bg-white/10 text-white border-white/20"
+        }`}
+        title={`Current mode: ${mode === "phone" ? "Phone" : "PC Remote"}. Tap to switch.`}
+      >
+        {mode === "pc_remote" ? (
+          <>
+            <Monitor className="w-3.5 h-3.5 text-emerald-400" />
+            <span>PC Mode</span>
+          </>
+        ) : (
+          <>
+            <Smartphone className="w-3.5 h-3.5 text-white" />
+            <span>Phone Mode</span>
+          </>
+        )}
+      </button>
     </nav>
   );
 }
-
