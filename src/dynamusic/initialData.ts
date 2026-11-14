@@ -10,7 +10,7 @@ export const TEMPER_CITY_ARTIST: ArtistProfile = {
   verified: true,
   monthlyListeners: "135M monthly listeners",
   subscribers: "4.8M subscribers",
-  bio: "Temper City is an alternative rock band made up of vocalist Eytan Peled and producers Chen Kordova and Aviv Barenkholt. Blending atmospheric post-punk aesthetics with modern distortion and cinematic electronics, their debut breakout single 'Self Aware' captivated millions worldwide.",
+  bio: "Temper City is an Israeli alternative rock band made up of vocalist Eytan Peled and producers Chen Kordova and Aviv Barenbolt. Blending atmospheric post-punk aesthetics with modern distortion and cinematic electronics, their debut breakout single 'Self Aware' captivated millions worldwide.",
   topTracks: [
     {
       id: "temper-1",

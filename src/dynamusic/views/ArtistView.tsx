@@ -5,7 +5,7 @@ import { TEMPER_CITY_ARTIST, EYE_ARTWORK } from "../initialData";
 import { Track } from "../types";
 
 export const ArtistView: React.FC<{ artistId?: string }> = ({ artistId }) => {
-  const { navView, artists, playTrack, currentTrack, isPlaying, toggleLike, isLiked } = useDynamusic();
+  const { navView, artists, playTrack, currentTrack, toggleLike, isLiked } = useDynamusic();
   const [isFollowing, setIsFollowing] = useState<boolean>(true);
 
   const targetId =

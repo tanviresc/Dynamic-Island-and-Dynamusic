@@ -1,6 +1,6 @@
 import React from "react";
-import { Play, Shuffle, ExternalLink } from "lucide-react";
-import { SpotifyIcon, SPOTIFY_GREEN } from "../components/SpotifyIcon";
+import { Play, Shuffle } from "lucide-react";
+import { SpotifyIcon } from "../components/SpotifyIcon";
 import { useDynamusic } from "../useDynamusicStore";
 import { SPOTIFY_PLAYLISTS } from "../initialData";
 

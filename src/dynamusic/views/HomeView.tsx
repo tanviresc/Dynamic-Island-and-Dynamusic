@@ -5,7 +5,7 @@ import { JUMP_BACK_IN_TRACKS, PLAYLISTS_FOR_YOU } from "../initialData";
 import { Track } from "../types";
 
 export const HomeView: React.FC = () => {
-  const { playTrack, currentTrack, isPlaying, navigate } = useDynamusic();
+  const { playTrack, currentTrack, isPlaying } = useDynamusic();
 
   const mixes = [
     {

@@ -1,8 +1,9 @@
 import React, { useEffect, useRef } from "react";
+import { X, Mic } from "lucide-react";
 import { useDynamusic } from "./useDynamusicStore";
 
 export const SyncedLyricsView: React.FC = () => {
-  const { currentTrack, lyrics, currentLyricIndex, seek } = useDynamusic();
+  const { currentTrack, lyrics, currentLyricIndex, seek, toggleLyricsCenter } = useDynamusic();
   const activeLineRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
@@ -18,68 +19,47 @@ export const SyncedLyricsView: React.FC = () => {
 
   if (!currentTrack) {
     return (
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "#666" }}>
+      <div className="flex items-center justify-center h-full text-white/50 text-[14px]">
         No track playing
       </div>
     );
   }
 
   return (
-    <div
-      style={{
-        display: "flex",
-        height: "100%",
-        padding: "32px",
-        gap: "40px",
-        overflow: "hidden",
-        position: "relative",
-      }}
-    >
+    <div className="relative flex h-full p-8 gap-10 overflow-hidden select-none bg-[#121214]">
       {/* Background ambient album glow */}
       <div
+        aria-hidden
+        className="pointer-events-none absolute -top-1/4 -left-1/4 w-3/4 h-3/4 opacity-30 blur-[100px]"
         style={{
-          position: "absolute",
-          top: "-20%",
-          left: "-10%",
-          width: "60%",
-          height: "80%",
-          background: `radial-gradient(circle, rgba(0, 194, 255, 0.15) 0%, transparent 70%)`,
-          filter: "blur(80px)",
-          pointerEvents: "none",
+          background: "radial-gradient(circle, rgba(185, 28, 28, 0.6) 0%, transparent 70%)",
         }}
       />
 
-      {/* Left side: Album Art & Track Info */}
-      <div
-        style={{
-          width: "320px",
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          justifyContent: "center",
-          flexShrink: 0,
-        }}
+      {/* Close lyrics button */}
+      <button
+        onClick={toggleLyricsCenter}
+        title="Close lyrics"
+        className="absolute top-4 right-4 z-20 w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 text-white flex items-center justify-center transition-colors"
       >
+        <X className="w-4 h-4" />
+      </button>
+
+      {/* Left side: Album Art & Track Info */}
+      <div className="w-[300px] flex flex-col items-center justify-center shrink-0 z-10">
         <img
           src={currentTrack.coverUrl}
           alt={currentTrack.title}
-          style={{
-            width: "280px",
-            height: "280px",
-            borderRadius: "16px",
-            objectFit: "cover",
-            boxShadow: "0 20px 40px rgba(0,0,0,0.7), 0 0 30px rgba(0, 194, 255, 0.25)",
-            marginBottom: "24px",
-          }}
+          className="w-64 h-64 rounded-2xl object-cover shadow-2xl mb-6 bg-black/40 border border-white/10"
         />
-        <h2 style={{ fontSize: "20px", fontWeight: 700, margin: "0 0 6px 0", color: "#fff", textAlign: "center" }}>
+        <h2 className="text-[22px] font-extrabold text-white text-center leading-tight">
           {currentTrack.title}
         </h2>
-        <p style={{ fontSize: "14px", margin: 0, color: "rgba(255,255,255,0.6)", textAlign: "center" }}>
+        <p className="text-[14px] font-medium text-white/60 text-center mt-1">
           {currentTrack.artist}
         </p>
         {currentTrack.album && (
-          <span style={{ fontSize: "12px", color: "rgba(255,255,255,0.4)", marginTop: "4px" }}>
+          <span className="text-[12px] text-white/40 mt-1">
             {currentTrack.album}
           </span>
         )}
@@ -88,40 +68,35 @@ export const SyncedLyricsView: React.FC = () => {
       {/* Right side: Auto-scrolling Synced Lyrics */}
       <div
         ref={scrollContainerRef}
+        className="flex-1 overflow-y-auto py-24 px-6 flex flex-col gap-6 relative z-10 custom-scroll"
         style={{
-          flex: 1,
-          overflowY: "auto",
-          padding: "80px 24px",
-          display: "flex",
-          flexDirection: "column",
-          gap: "24px",
           maskImage: "linear-gradient(to bottom, transparent 0%, black 15%, black 85%, transparent 100%)",
           WebkitMaskImage: "linear-gradient(to bottom, transparent 0%, black 15%, black 85%, transparent 100%)",
         }}
       >
         {lyrics.length === 0 ? (
-          <div style={{ color: "rgba(255,255,255,0.5)", fontSize: "16px", fontStyle: "italic", textAlign: "center", marginTop: "120px" }}>
-            Searching live lyrics on LRCLIB...
+          <div className="flex flex-col items-center justify-center my-auto gap-3 text-white/50">
+            <Mic className="w-8 h-8 text-white/30" />
+            <div className="text-[15px] font-medium italic">
+              Searching live synced lyrics on LRCLIB...
+            </div>
+            <div className="text-[12px] text-white/40">
+              Lyrics will appear automatically when found.
+            </div>
           </div>
         ) : (
           lyrics.map((line, idx) => {
             const isActive = idx === currentLyricIndex;
             return (
               <div
-                key={line.timeMs + line.text}
+                key={`${line.timeMs}-${idx}`}
                 ref={isActive ? activeLineRef : null}
                 onClick={() => seek(line.timeMs)}
-                style={{
-                  fontSize: isActive ? "28px" : "20px",
-                  fontWeight: isActive ? 800 : 600,
-                  color: isActive ? "#ffffff" : "rgba(255, 255, 255, 0.35)",
-                  textShadow: isActive ? "0 0 20px rgba(0, 194, 255, 0.7)" : "none",
-                  cursor: "pointer",
-                  transition: "all 0.3s cubic-bezier(0.16, 1, 0.3, 1)",
-                  transform: isActive ? "scale(1.02)" : "scale(1)",
-                  transformOrigin: "left center",
-                  userSelect: "none",
-                }}
+                className={`cursor-pointer transition-all duration-300 transform-gpu ${
+                  isActive
+                    ? "text-[28px] font-extrabold text-white scale-[1.02] origin-left drop-shadow-[0_0_16px_rgba(255,255,255,0.4)]"
+                    : "text-[20px] font-semibold text-white/30 hover:text-white/60"
+                }`}
               >
                 {line.text}
               </div>

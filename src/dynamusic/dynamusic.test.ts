@@ -1,6 +1,15 @@
 import { describe, it, expect } from "vitest";
 import { parseLrc, getCurrentLyric } from "./lyricsService";
 import { EQ_FREQUENCIES, EQ_PRESETS } from "./audioEngine";
+import {
+  TEMPER_CITY_ARTIST,
+  JUMP_BACK_IN_TRACKS,
+  LIKED_SONGS,
+  PLAYLISTS_FOR_YOU,
+  SPOTIFY_PLAYLISTS,
+  USER_FOLDERS,
+  ARTISTS_DATABASE,
+} from "./initialData";
 
 describe("Dynamusic LRCLIB Synced Lyrics Parser", () => {
   it("parses valid LRC format timestamps correctly", () => {
@@ -74,5 +83,43 @@ describe("Dynamusic 10-Band Graphic Equalizer", () => {
     const flat = EQ_PRESETS.find((p) => p.name === "Flat");
     expect(flat).toBeDefined();
     expect(flat!.gains.every((g) => g === 0)).toBe(true);
+  });
+});
+
+describe("Dynamusic Initial Replica Database (Matching ByTune Screenshot)", () => {
+  it("includes all 6 exact Jump back in cards from the screenshot", () => {
+    expect(JUMP_BACK_IN_TRACKS).toHaveLength(6);
+    expect(JUMP_BACK_IN_TRACKS[0]?.title).toBe("Self Aware");
+    expect(JUMP_BACK_IN_TRACKS[0]?.artist).toBe("Temper City");
+    expect(JUMP_BACK_IN_TRACKS[1]?.title).toBe("Blinding Lights");
+    expect(JUMP_BACK_IN_TRACKS[2]?.title).toBe("I Want You Back");
+    expect(JUMP_BACK_IN_TRACKS[3]?.title).toBe("Billie Jean");
+    expect(JUMP_BACK_IN_TRACKS[4]?.title).toBe("September");
+    expect(JUMP_BACK_IN_TRACKS[5]?.title).toBe("Gimme! Gimme! Gimme! (A Man After Midnight)");
+  });
+
+  it("includes the 9 Liked songs imported from Spotify", () => {
+    expect(LIKED_SONGS).toHaveLength(9);
+    for (const song of LIKED_SONGS) {
+      expect(song.isLiked).toBe(true);
+      expect(song.source).toBe("spotify");
+    }
+  });
+
+  it("has Temper City verified artist profile with top tracks, monthly listeners, and bio", () => {
+    expect(TEMPER_CITY_ARTIST.name).toBe("Temper City");
+    expect(TEMPER_CITY_ARTIST.verified).toBe(true);
+    expect(TEMPER_CITY_ARTIST.monthlyListeners).toBe("135M monthly listeners");
+    expect(TEMPER_CITY_ARTIST.topTracks.length).toBeGreaterThanOrEqual(5);
+    expect(TEMPER_CITY_ARTIST.bio).toContain("Israeli alternative rock band");
+    expect(ARTISTS_DATABASE["temper-city"]).toBeDefined();
+  });
+
+  it("has user folders and connected Spotify playlists", () => {
+    expect(USER_FOLDERS).toHaveLength(1);
+    expect(USER_FOLDERS[0]?.name).toBe("folder");
+    expect(USER_FOLDERS[0]?.playlists).toHaveLength(2);
+    expect(SPOTIFY_PLAYLISTS).toHaveLength(4);
+    expect(PLAYLISTS_FOR_YOU.length).toBeGreaterThanOrEqual(6);
   });
 });

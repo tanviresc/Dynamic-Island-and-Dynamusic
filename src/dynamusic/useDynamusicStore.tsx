@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from "react";
+import React, { createContext, useContext, useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Track, LyricLine, IPCMusicState, NavView, Playlist, PlaylistFolder, ArtistProfile } from "./types";
@@ -7,11 +7,10 @@ import { searchYouTubeMusic, parseLocalAudioFile } from "./musicService";
 import { fetchLyricsFromLrclib, getCurrentLyric } from "./lyricsService";
 import {
   TEMPER_CITY_ARTIST,
+  PLAYLISTS_FOR_YOU,
   ARTISTS_DATABASE,
   JUMP_BACK_IN_TRACKS,
   LIKED_SONGS,
-  PLAYLISTS_FOR_YOU,
-  SPOTIFY_PLAYLISTS,
   USER_FOLDERS,
 } from "./initialData";
 

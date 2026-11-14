@@ -2,7 +2,6 @@ import React from "react";
 import {
   Heart,
   BarChart2,
-  Folder,
   ArrowDownToLine,
   Plus,
   Pin,
