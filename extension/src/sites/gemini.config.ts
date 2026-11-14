@@ -25,6 +25,6 @@ export const geminiConfig: SiteConfig = {
     chatTitle: undefined, // Falls back to document.title
   },
   settlingDebounceMs: 400,
-  minGenerationDurationMs: 800,
+  minGenerationDurationMs: 300,
   notes: "Stop button or busy indicator during streaming. UNVERIFIED until tested on live gemini.google.com.",
 };

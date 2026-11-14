@@ -16,6 +16,12 @@ export const claudeConfig: SiteConfig = {
       '[data-testid="stop-button"]',
       'button.stop-button',
       '[aria-label="Stop Response"]',
+      "button:has(rect)",
+      "button:has(svg rect)",
+      "button:has(svg.lucide-square)",
+      '[data-is-streaming="true"]',
+      '[class*="streaming"]',
+      '[class*="Thinking"]',
     ],
     needsInput: [
       '[data-testid="tool-approval"]',
@@ -27,6 +33,6 @@ export const claudeConfig: SiteConfig = {
     chatTitle: undefined, // Falls back to document.title
   },
   settlingDebounceMs: 400,
-  minGenerationDurationMs: 800,
+  minGenerationDurationMs: 300,
   notes: "Stop button appears during generation in chat interface. UNVERIFIED until tested on live claude.ai.",
 };

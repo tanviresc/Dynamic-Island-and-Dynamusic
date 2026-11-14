@@ -135,6 +135,11 @@ export const IslandRoot: React.FC<IslandRootProps> = ({
 
     invoke("set_queue_focus", { takeFocus: true }).catch(() => {});
 
+    let isArmed = false;
+    const timer = setTimeout(() => {
+      isArmed = true;
+    }, 350);
+
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         handleCloseQueue();
@@ -142,13 +147,16 @@ export const IslandRoot: React.FC<IslandRootProps> = ({
     };
 
     const handleBlur = () => {
-      handleCloseQueue();
+      if (isArmed) {
+        handleCloseQueue();
+      }
     };
 
     window.addEventListener("keydown", handleKeyDown);
     window.addEventListener("blur", handleBlur);
 
     return () => {
+      clearTimeout(timer);
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("blur", handleBlur);
       invoke("set_queue_focus", { takeFocus: false }).catch(() => {});

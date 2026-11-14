@@ -8,6 +8,7 @@ import {
 
 let wsClient: WsClient | null = null;
 let currentSettings: ExtensionSettings = { ...DEFAULT_SETTINGS };
+let pendingEvents: ContractEvent[] = [];
 
 function generateUuid(): string {
   if (typeof crypto !== "undefined" && crypto.randomUUID) {
@@ -65,6 +66,14 @@ function initWsClient() {
   });
 
   wsClient.connect();
+
+  if (pendingEvents.length > 0) {
+    const toSend = [...pendingEvents];
+    pendingEvents = [];
+    for (const ev of toSend) {
+      wsClient.sendEvent(ev);
+    }
+  }
 }
 
 // 2. 30s Alarm Keepalive per §1.10.1 & §5.2
@@ -131,7 +140,11 @@ function handleContentEvent(
   };
 
   console.log(`[Island Background] Emitting event ${eventId} (${payload.source} ${payload.kind})`);
-  wsClient?.sendEvent(event);
+  if (wsClient) {
+    wsClient.sendEvent(event);
+  } else {
+    pendingEvents.push(event);
+  }
 }
 
 // 4. Focus Tracking and Reporting (§1.10.1 & §5.4)

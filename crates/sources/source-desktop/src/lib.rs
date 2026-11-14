@@ -87,7 +87,7 @@ pub fn default_desktop_apps() -> Vec<DesktopAppConfig> {
             id: "claude-desktop".to_string(),
             display_name: "Claude".to_string(),
             source: Source::Claude,
-            process_names: vec!["claude.exe".to_string()],
+            process_names: vec!["claude.exe".to_string(), "claude-desktop.exe".to_string()],
             enabled: true,
             detection: DetectionMode::Uia,
             window_title_contains: None,
@@ -97,7 +97,7 @@ pub fn default_desktop_apps() -> Vec<DesktopAppConfig> {
             display_name: "ChatGPT".to_string(),
             source: Source::Chatgpt,
             process_names: vec!["chatgpt.exe".to_string(), "openai.exe".to_string()],
-            enabled: false,
+            enabled: true,
             detection: DetectionMode::Uia,
             window_title_contains: None,
         },
@@ -105,8 +105,8 @@ pub fn default_desktop_apps() -> Vec<DesktopAppConfig> {
             id: "gemini-desktop".to_string(),
             display_name: "Gemini".to_string(),
             source: Source::Gemini,
-            process_names: vec!["gemini.exe".to_string()],
-            enabled: false,
+            process_names: vec!["gemini.exe".to_string(), "google-gemini.exe".to_string()],
+            enabled: true,
             detection: DetectionMode::Uia,
             window_title_contains: None,
         },
@@ -227,8 +227,8 @@ impl UiaSignalDetector {
             app,
             state: UiaState::Idle,
             generation_start_time: None,
-            settling_debounce_ms: 1500,
-            min_generation_duration_ms: 800,
+            settling_debounce_ms: 400,
+            min_generation_duration_ms: 300,
             gen_counter: 0,
             seen_prompt_instances: Vec::new(),
         }
@@ -329,17 +329,24 @@ impl UiaSignalDetector {
 
 #[cfg(windows)]
 fn find_process_window(target_process: &str) -> Option<(isize, String)> {
-    use windows::Win32::Foundation::{BOOL, HWND, LPARAM};
+    use windows::Win32::Foundation::{BOOL, HWND, LPARAM, RECT};
     use windows::Win32::System::ProcessStatus::GetProcessImageFileNameW;
     use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
     use windows::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
+        EnumWindows, GetWindowRect, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
         IsWindowVisible,
     };
 
+    struct Candidate {
+        hwnd: isize,
+        title: String,
+        area: i64,
+        has_title: bool,
+    }
+
     struct SearchCtx {
         proc_name: String,
-        result: Option<(isize, String)>,
+        best: Option<Candidate>,
     }
 
     unsafe extern "system" fn enum_cb(hwnd: HWND, lparam: LPARAM) -> BOOL {
@@ -347,6 +354,15 @@ fn find_process_window(target_process: &str) -> Option<(isize, String)> {
         if !IsWindowVisible(hwnd).as_bool() {
             return BOOL(1);
         }
+
+        let mut rect = RECT::default();
+        let _ = GetWindowRect(hwnd, &mut rect);
+        let width = rect.right - rect.left;
+        let height = rect.bottom - rect.top;
+        if width < 150 || height < 150 {
+            return BOOL(1);
+        }
+
         let mut pid: u32 = 0;
         let _ = GetWindowThreadProcessId(hwnd, Some(&mut pid));
         if pid == 0 {
@@ -369,8 +385,30 @@ fn find_process_window(target_process: &str) -> Option<(isize, String)> {
                                 title = String::from_utf16_lossy(&title_buf[..read_len as usize]);
                             }
                         }
-                        ctx.result = Some((hwnd.0 as isize, title));
-                        return BOOL(0);
+                        let has_title = !title.trim().is_empty();
+                        let area = width as i64 * height as i64;
+                        let cand = Candidate {
+                            hwnd: hwnd.0 as isize,
+                            title,
+                            area,
+                            has_title,
+                        };
+
+                        let replace = match &ctx.best {
+                            None => true,
+                            Some(current) => {
+                                if cand.has_title && !current.has_title {
+                                    true
+                                } else if cand.has_title == current.has_title {
+                                    cand.area > current.area
+                                } else {
+                                    false
+                                }
+                            }
+                        };
+                        if replace {
+                            ctx.best = Some(cand);
+                        }
                     }
                 }
             }
@@ -380,12 +418,12 @@ fn find_process_window(target_process: &str) -> Option<(isize, String)> {
 
     let mut ctx = SearchCtx {
         proc_name: target_process.to_string(),
-        result: None,
+        best: None,
     };
     unsafe {
         let _ = EnumWindows(Some(enum_cb), LPARAM(&mut ctx as *mut _ as _));
     }
-    ctx.result
+    ctx.best.map(|c| (c.hwnd, c.title))
 }
 
 #[cfg(windows)]
@@ -398,6 +436,7 @@ fn probe_window_state(hwnd: isize) -> (bool, Option<String>) {
         CUIAutomation, IUIAutomation, TreeScope_Descendants, UIA_ButtonControlTypeId,
         UIA_ControlTypePropertyId,
     };
+    use windows::Win32::UI::WindowsAndMessaging::FindWindowExW;
 
     unsafe {
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
@@ -408,9 +447,23 @@ fn probe_window_state(hwnd: isize) -> (bool, Option<String>) {
             Err(_) => return (false, None),
         };
 
-        let root_el = match uia.ElementFromHandle(HWND(hwnd as _)) {
+        // If this is an Electron/Chromium app, search for the Chrome_RenderWidgetHostHWND child window
+        let target_hwnd = match FindWindowExW(
+            HWND(hwnd as _),
+            HWND(std::ptr::null_mut()),
+            windows::core::w!("Chrome_RenderWidgetHostHWND"),
+            None,
+        ) {
+            Ok(child) if !child.0.is_null() => child,
+            _ => HWND(hwnd as _),
+        };
+
+        let root_el = match uia.ElementFromHandle(target_hwnd) {
             Ok(el) => el,
-            Err(_) => return (false, None),
+            Err(_) => match uia.ElementFromHandle(HWND(hwnd as _)) {
+                Ok(el) => el,
+                Err(_) => return (false, None),
+            },
         };
 
         let val = windows::core::VARIANT::from(UIA_ButtonControlTypeId.0);
@@ -426,17 +479,30 @@ fn probe_window_state(hwnd: isize) -> (bool, Option<String>) {
             if let Ok(count) = elements.Length() {
                 for i in 0..count {
                     if let Ok(btn) = elements.GetElement(i) {
-                        if let Ok(name) = btn.CurrentName() {
-                            let name_str = name.to_string();
-                            let lower = name_str.to_lowercase();
-                            if lower.contains("stop") {
-                                is_generating = true;
-                            } else if lower.contains("allow")
-                                || lower.contains("approve")
-                                || lower.contains("confirm")
-                            {
-                                needs_input = Some(name_str);
-                            }
+                        let name_str = btn.CurrentName().map(|n| n.to_string()).unwrap_or_default();
+                        let auto_id = btn
+                            .CurrentAutomationId()
+                            .map(|n| n.to_string())
+                            .unwrap_or_default();
+                        let help_text = btn
+                            .CurrentHelpText()
+                            .map(|n| n.to_string())
+                            .unwrap_or_default();
+
+                        let lower =
+                            format!("{} {} {}", name_str, auto_id, help_text).to_lowercase();
+                        if lower.contains("stop") || lower.contains("cancel") {
+                            is_generating = true;
+                        } else if lower.contains("allow")
+                            || lower.contains("approve")
+                            || lower.contains("confirm")
+                            || lower.contains("permission")
+                        {
+                            needs_input = Some(if !name_str.is_empty() {
+                                name_str
+                            } else {
+                                "Action requires confirmation".to_string()
+                            });
                         }
                     }
                 }
@@ -598,11 +664,11 @@ mod tests {
             UiaState::Settling { started_at: 3000 }
         ));
 
-        // Advance 1000ms (debounce not yet reached)
-        assert!(detector.tick(false, None, 4000).is_none());
+        // Advance 200ms (debounce 400ms not yet reached)
+        assert!(detector.tick(false, None, 3200).is_none());
 
-        // Debounce reached at t=4500 (3000 + 1500)
-        let ev = detector.tick(false, None, 4500).expect("done emitted");
+        // Debounce reached at t=3400 (3000 + 400)
+        let ev = detector.tick(false, None, 3400).expect("done emitted");
         assert_eq!(ev.kind, Kind::Done);
         assert_eq!(detector.state(), UiaState::Idle);
     }
@@ -618,12 +684,12 @@ mod tests {
         detector.tick(false, None, 2000);
         assert!(matches!(detector.state(), UiaState::Settling { .. }));
 
-        // Resumes at t=2500 (before 1500ms debounce)
-        detector.tick(true, None, 2500);
+        // Resumes at t=2200 (before 400ms debounce)
+        detector.tick(true, None, 2200);
         assert_eq!(detector.state(), UiaState::Generating);
 
-        // No event should be emitted at t=3500
-        assert!(detector.tick(true, None, 3500).is_none());
+        // No event should be emitted at t=2800
+        assert!(detector.tick(true, None, 2800).is_none());
     }
 
     #[test]

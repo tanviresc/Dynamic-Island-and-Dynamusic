@@ -1222,9 +1222,9 @@ Additional notes: how to identify the main vs child conversation, the task title
 | A: `UserNotificationListener` unpackaged | Denied | `GetAccessStatus()` returns `Denied` for unpackaged Win32 process without explicit settings grant or package identity |
 | B: sparse package identity | Skipped | Requires self-signed cert installed into Machine Root, avoided in favor of UIA |
 | C: UI Automation | Supported | Structure-only element inspection without text reading works across desktop AI windows |
-| Candidate: Claude | Detected | Installed at `C:\Users\My PC\AppData\Local\AnthropicClaude\claude.exe` (`claude.exe`) |
-| Candidate: ChatGPT | Configured | Configured with process names `chatgpt.exe`, `openai.exe` |
-| Candidate: Gemini | Configured | Configured with process name `gemini.exe` |
+| Candidate: Claude | Detected & Fixed | Installed at `claude.exe`. Window probe updated to filter main visible window (`width >= 150 && height >= 150`) and inspect `Chrome_RenderWidgetHostHWND` child window |
+| Candidate: ChatGPT | Enabled & Fixed | Enabled by default; matches `chatgpt.exe` and `openai.exe` with `Chrome_RenderWidgetHostHWND` child probe |
+| Candidate: Gemini | Enabled & Fixed | Enabled by default; matches `gemini.exe` and `google-gemini.exe` with child window probe |
 
 ### 7.7 Gmail (Phase 7)
 
@@ -1322,6 +1322,8 @@ Statuses: **CONFIRMED** (stated by the user's requirements) / **DEFAULT (unconfi
 | D-053 | SQLite Isolated Store Actor Pattern | `rusqlite` connection is isolated to a dedicated background task via an async mpsc channel, guaranteeing zero Tokio thread pool blocking and thread safety | CONFIRMED (technical refinement) |
 | D-054 | Antigravity Inspector Target Prioritization | Pre-check confirmed `%USERPROFILE%\.gemini\antigravity-ide` exists; inspector specifically prioritizes this subfolder while watching `%USERPROFILE%\.gemini` | CONFIRMED (technical refinement) |
 | D-055 | Click-Through Screen Coordinate Mapping & Refined Island Geometry | Window-relative hit rectangles from `surfaceRef` are translated into screen pixels using `GetWindowRect` and `GetDpiForWindow` in the adaptive click-through thread. Everywhere outside the visible capsule or micro-dot has `WS_EX_TRANSPARENT` active, ensuring 100% click-through for desktop and background applications. Island geometry reduced by 30% (height 28px, min-width 130px, max-width 340px, font 10.5px), center-aligned, with 25px margin-top, sharp 5px micro-dot, and 1.5s smooth layout transitions | CONFIRMED |
+| D-056 | 1px Visual Dot with 28px Interactive Hitbox & Blur Guard | Dot visual size set to 1px × 1px with subtle, non-excessive glow aura. The interactive click container is wrapped in a 28×28px transparent hit area so OS hit-testing and cursor detection reliably receive clicks without subpixel truncation. Queue panel blur listener has a 350ms arming guard to avoid instant dismissal on initial window focus acquisition | CONFIRMED |
+| D-057 | Electron/Chromium Child Window & RenderWidgetHostHWND UIA Targeting | `find_process_window` filters for visible windows with dimensions ≥150×150 to ignore invisible 0×0 helper processes. `probe_window_state` inspects `Chrome_RenderWidgetHostHWND` to directly expose the web DOM to UI Automation. Modern streaming selectors added for ChatGPT and Claude web apps, and service worker buffers events during initial load | CONFIRMED |
 
 ---
 

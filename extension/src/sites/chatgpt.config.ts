@@ -16,6 +16,11 @@ export const chatgptConfig: SiteConfig = {
       'button[aria-label*="Stop streaming" i]',
       'button[aria-label*="Stop" i][data-testid*="stop"]',
       '[data-testid="fruitjuice-stop-button"]',
+      "button:has(rect)",
+      "button:has(svg rect)",
+      ".result-streaming",
+      '[data-is-streaming="true"]',
+      ".result-thinking",
     ],
     needsInput: [
       '[data-testid="confirmation-modal"]',
@@ -26,6 +31,6 @@ export const chatgptConfig: SiteConfig = {
     chatTitle: undefined, // Falls back to document.title
   },
   settlingDebounceMs: 400,
-  minGenerationDurationMs: 800,
+  minGenerationDurationMs: 300,
   notes: "Stop generation button toggles in the prompt composer footer. UNVERIFIED until tested on live chatgpt.com.",
 };
