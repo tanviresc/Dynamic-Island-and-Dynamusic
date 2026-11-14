@@ -2,16 +2,22 @@ import React from "react";
 import { motion } from "motion/react";
 import { invoke } from "@tauri-apps/api/core";
 import { standardMotion, reducedMotion } from "./motion";
+import { TimelineScrubber } from "./TimelineScrubber";
 
 export interface MusicPillProps {
   title: string;
   artist: string;
   albumArt?: string;
   isPlaying: boolean;
+  positionMs?: number;
+  durationMs?: number;
   isReducedMotion?: boolean;
   onHoverEnter?: () => void;
   onHoverLeave?: () => void;
   onClickBody?: () => void;
+  onSeek?: (targetSeconds: number) => void;
+  onInteractionStart?: () => void;
+  onInteractionEnd?: () => void;
   unreadCount?: number;
   onOpenQueue?: () => void;
 }
@@ -21,28 +27,50 @@ export const MusicPill: React.FC<MusicPillProps> = ({
   artist,
   albumArt,
   isPlaying,
+  positionMs = 0,
+  durationMs = 0,
   isReducedMotion = false,
   onHoverEnter,
   onHoverLeave,
   onClickBody,
+  onSeek,
+  onInteractionStart,
+  onInteractionEnd,
   unreadCount = 0,
   onOpenQueue,
 }) => {
   const motionPreset = isReducedMotion ? reducedMotion : standardMotion;
+  const pillWidth = unreadCount > 0 ? 336 : 300;
+
+  const handleControlPointerDown = (e: React.PointerEvent) => {
+    e.stopPropagation();
+    onInteractionStart?.();
+  };
 
   const handlePrev = (e: React.MouseEvent) => {
     e.stopPropagation();
     invoke("send_music_command", { command: "prev" }).catch(() => {});
+    onInteractionEnd?.();
   };
 
   const handleTogglePlay = (e: React.MouseEvent) => {
     e.stopPropagation();
     invoke("send_music_command", { command: "toggle_play" }).catch(() => {});
+    onInteractionEnd?.();
   };
 
   const handleNext = (e: React.MouseEvent) => {
     e.stopPropagation();
     invoke("send_music_command", { command: "next" }).catch(() => {});
+    onInteractionEnd?.();
+  };
+
+  const handleSeek = (targetSeconds: number) => {
+    if (onSeek) {
+      onSeek(targetSeconds);
+    } else {
+      invoke("send_music_command", { command: "seek", payload: targetSeconds }).catch(() => {});
+    }
   };
 
   const handleBodyClick = () => {
@@ -61,41 +89,56 @@ export const MusicPill: React.FC<MusicPillProps> = ({
       onMouseEnter={onHoverEnter}
       onMouseLeave={onHoverLeave}
       className="island-interactive"
-      layoutId="island-surface"
       initial={{
-        width: 1,
-        height: 1,
-        borderRadius: 0.5,
+        scaleX: 0.45,
+        scaleY: 0.65,
+        y: -8,
         opacity: 0,
+        clipPath: "inset(0% 18% 0% 18% round 24px)",
       }}
       animate={{
-        width: unreadCount > 0 ? 320 : 270,
-        height: 36,
-        borderRadius: 18,
+        scaleX: 1,
+        scaleY: 1,
+        y: 0,
         opacity: 1,
+        clipPath: "inset(0% 0% 0% 0% round 20px)",
       }}
       exit={{
-        width: 1,
-        height: 1,
-        borderRadius: 0.5,
+        scaleX: 0.5,
+        scaleY: 0.7,
+        y: -8,
         opacity: 0,
-        transition: motionPreset.disappear.layout,
+        transition: motionPreset.disappear.layout as any,
       }}
-      transition={motionPreset.appear.layout}
+      transition={motionPreset.appear.layout as any}
       style={{
+        width: pillWidth,
+        borderRadius: 20,
+        transformOrigin: "50% 0%",
+        willChange: "transform, opacity, clip-path",
         backgroundColor: "#000000",
-        border: "1px solid rgba(255, 255, 255, 0.25)",
-        boxShadow: `0 0 12px 2px rgba(255, 255, 255, 0.25), 0 0 24px 4px ${glowColor}, 0 0 50px 10px ${glowColor}66, inset 0 1px 1px 0 rgba(255, 255, 255, 0.50)`,
+        border: "1px solid rgba(255, 255, 255, 0.28)",
+        boxShadow: `0 0 14px 2px rgba(255, 255, 255, 0.25), 0 0 28px 5px ${glowColor}, inset 0 1px 1px 0 rgba(255, 255, 255, 0.45)`,
         cursor: "pointer",
         display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        padding: "0 12px",
+        flexDirection: "column",
+        justifyContent: "center",
+        padding: "7px 12px 6px",
+        gap: 4,
         overflow: "hidden",
         position: "relative",
       }}
-      title="Click anywhere to open Dynamusic"
+      title="Click album or title to open Dynamusic"
     >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          width: "100%",
+          minWidth: 0,
+        }}
+      >
       {/* Left: Album Thumbnail + Title / Artist */}
       <div style={{ display: "flex", alignItems: "center", gap: "8px", overflow: "hidden", flex: 1, minWidth: 0 }}>
         {albumArt ? (
@@ -175,7 +218,7 @@ export const MusicPill: React.FC<MusicPillProps> = ({
           <motion.div
             key={i}
             animate={{
-              height: isPlaying ? [3, Math.round(h * 12), 4, Math.round(h * 10), 3] : 3,
+              scaleY: isPlaying ? [0.25, h, 0.35, h * 0.85, 0.25] : 0.25,
             }}
             transition={{
               repeat: Infinity,
@@ -184,8 +227,11 @@ export const MusicPill: React.FC<MusicPillProps> = ({
             }}
             style={{
               width: "2px",
+              height: "12px",
+              transformOrigin: "bottom center",
               backgroundColor: isPlaying ? "#00c2ff" : "rgba(255, 255, 255, 0.3)",
               borderRadius: "1px",
+              willChange: "transform",
             }}
           />
         ))}
@@ -200,16 +246,19 @@ export const MusicPill: React.FC<MusicPillProps> = ({
           flexShrink: 0,
         }}
         onClick={(e) => e.stopPropagation()}
+        onPointerDown={(e) => e.stopPropagation()}
       >
         <button
+          type="button"
+          onPointerDown={handleControlPointerDown}
           onClick={handlePrev}
           style={{
             background: "transparent",
             border: "none",
-            color: "rgba(255,255,255,0.8)",
+            color: "rgba(255,255,255,0.85)",
             cursor: "pointer",
-            fontSize: "11px",
-            padding: "2px",
+            fontSize: "12px",
+            padding: "5px 6px",
             display: "flex",
             alignItems: "center",
           }}
@@ -219,16 +268,18 @@ export const MusicPill: React.FC<MusicPillProps> = ({
         </button>
 
         <button
+          type="button"
+          onPointerDown={handleControlPointerDown}
           onClick={handleTogglePlay}
           style={{
-            width: "20px",
-            height: "20px",
+            width: "26px",
+            height: "26px",
             borderRadius: "50%",
             background: "#ffffff",
             color: "#000000",
             border: "none",
             cursor: "pointer",
-            fontSize: "10px",
+            fontSize: "11px",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
@@ -240,14 +291,16 @@ export const MusicPill: React.FC<MusicPillProps> = ({
         </button>
 
         <button
+          type="button"
+          onPointerDown={handleControlPointerDown}
           onClick={handleNext}
           style={{
             background: "transparent",
             border: "none",
-            color: "rgba(255,255,255,0.8)",
+            color: "rgba(255,255,255,0.85)",
             cursor: "pointer",
-            fontSize: "11px",
-            padding: "2px",
+            fontSize: "12px",
+            padding: "5px 6px",
             display: "flex",
             alignItems: "center",
           }}
@@ -259,6 +312,8 @@ export const MusicPill: React.FC<MusicPillProps> = ({
         {/* Optional Notification Badge if unread items exist */}
         {unreadCount > 0 && (
           <button
+            type="button"
+            onPointerDown={handleControlPointerDown}
             onClick={(e) => {
               e.stopPropagation();
               onOpenQueue?.();
@@ -280,6 +335,18 @@ export const MusicPill: React.FC<MusicPillProps> = ({
           </button>
         )}
       </div>
+      </div>
+
+      {/* Bottom Row: Interactive Draggable Timeline Scrubber */}
+      <TimelineScrubber
+        compact
+        positionMs={positionMs}
+        durationMs={durationMs}
+        isPlaying={isPlaying}
+        onSeek={handleSeek}
+        onInteractionStart={onInteractionStart}
+        onInteractionEnd={onInteractionEnd}
+      />
     </motion.div>
   );
 };

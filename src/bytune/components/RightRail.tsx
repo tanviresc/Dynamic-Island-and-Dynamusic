@@ -12,6 +12,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { BadgeCheck, Heart, Music2, Play, ThumbsDown, X } from "lucide-react";
 import { autoplayTail, isRadioSeed, shownTrack, usePlayer } from "../stores/player";
+import { useMobileMode } from "../stores/mobileMode";
 import { useSettings } from "../stores/settings";
 import { useUI, type MenuItem } from "../stores/ui";
 import { dontPlay, useAutoplayInfo } from "../lib/autoplay";
@@ -21,6 +22,7 @@ import { RoomPanel } from "./RoomPanel";
 import { useRoom } from "../stores/room";
 import { upgradeArtwork, wideArtwork } from "../lib/artwork";
 import { useDrag, useTrackDrop } from "../lib/dnd";
+import { useSwipeGesture } from "../lib/useSwipeGesture";
 import { useSortable, type SortableRowProps } from "../lib/useSortable";
 import { fmtTime, shortTitle, titleSource } from "../lib/format";
 import { FitText } from "./FitText";
@@ -33,14 +35,28 @@ import { playSource } from "../lib/recs/playback";
 /** The queue's "Now playing" row — draggable like every other song row. */
 function QueueCurrentRow({ track }: { track: Track }) {
   const drag = useDrag({ track });
+  const mobileMode = useMobileMode((s) => s.mode);
+  const pcState = useMobileMode((s) => s.pcState);
+  const isPcRemote = mobileMode === "pc_remote" && Boolean(pcState?.track);
   // Read here, not in QueuePanel: play/pause then doesn't re-render every queue row.
-  const playing = usePlayer((s) => s.playing);
+  const localPlaying = usePlayer((s) => s.playing);
+  const playing = isPcRemote ? Boolean(pcState?.playing) : localPlaying;
+  const swipe = useSwipeGesture({
+    onSwipeRight: () => usePlayer.getState().next(true),
+    onSwipeLeft: () => usePlayer.getState().prev(),
+  });
   return (
     <div
       {...drag.props}
+      {...swipe.handlers}
       onContextMenu={(e) => {
         e.preventDefault();
         useUI.getState().openContextMenu(e.clientX, e.clientY, trackMenuItems(track));
+      }}
+      style={{
+        touchAction: "pan-y",
+        transform: swipe.offsetX ? `translate3d(${swipe.offsetX}px, 0, 0)` : undefined,
+        transition: swipe.dragging ? "none" : "transform 200ms cubic-bezier(0.22, 1, 0.36, 1)",
       }}
       className={`fit-host flex items-center gap-3 h-14 px-2 rounded-lg bg-ink-hi/[0.14] ${
         drag.dragging ? "opacity-40" : ""
@@ -153,12 +169,28 @@ const OVERSCAN = 10;
     and behavior as the right-rail queue; only the mount point differs. */
 export function QueuePanel({ onClose }: { onClose: () => void }) {
   const [tab, setTab] = useState<"queue" | "recent">("queue");
-  const queue = usePlayer((s) => s.queue);
-  const index = usePlayer((s) => s.index);
-  const repeat = usePlayer((s) => s.repeat);
+  const mobileMode = useMobileMode((s) => s.mode);
+  const pcState = useMobileMode((s) => s.pcState);
+  const isPcRemote = mobileMode === "pc_remote" && Boolean(pcState?.track);
+
+  const localQueue = usePlayer((s) => s.queue);
+  const localIndex = usePlayer((s) => s.index);
+  const localRepeat = usePlayer((s) => s.repeat);
+  const localTail = usePlayer(autoplayTail);
+
+  const queue = isPcRemote
+    ? pcState?.queue && pcState.queue.length > 0
+      ? pcState.queue
+      : pcState?.track
+        ? [pcState.track]
+        : []
+    : localQueue;
+  const index = isPcRemote ? Math.max(0, Math.min(pcState?.index ?? 0, Math.max(0, queue.length - 1))) : localIndex;
+  const queueOffset = isPcRemote ? (pcState?.queueOffset ?? 0) : 0;
+  const repeat = isPcRemote ? ((pcState?.repeat as "off" | "all" | "one") || "off") : localRepeat;
   const jumpTo = usePlayer((s) => s.jumpTo);
   const removeAt = usePlayer((s) => s.removeAt);
-  const tail = usePlayer(autoplayTail);
+  const tail = isPcRemote ? Math.max(0, Math.min(pcState?.autoplayCount ?? 0, Math.max(0, queue.length - index - 1))) : localTail;
   const history = useLibrary((s) => s.history);
   const playTrack = usePlayer((s) => s.playTrack);
   const autoplay = useSettings((s) => s.autoplay);
@@ -197,7 +229,8 @@ export function QueuePanel({ onClose }: { onClose: () => void }) {
     // Your songs and AutoPlay's suggestions each reorder on their own side of the line.
     clamp: (from, target) => (from < line ? Math.min(target, line - 1) : Math.max(target, line + 1)),
     canDrag: (p) => (p < line ? line > 1 : p > line && suggestions.length > 1),
-    onCommit: (from, to) => usePlayer.getState().moveUpcoming(queueIndexOf(from), queueIndexOf(to)),
+    onCommit: (from, to) =>
+      usePlayer.getState().moveUpcoming(queueOffset + queueIndexOf(from), queueOffset + queueIndexOf(to)),
   });
   // Long queues: only the rows near the view are built (art, scrolling titles, drag
   // handlers); the rest are plain row-high stand-ins, so a 3,000-song queue opens and
@@ -261,14 +294,14 @@ export function QueuePanel({ onClose }: { onClose: () => void }) {
           track={t}
           style={sortable.styleFor(p)}
           sortable={sortable.rowProps(p)}
-          onPlay={() => jumpTo(index + 1 + p)}
+          onPlay={() => jumpTo(queueOffset + index + 1 + p)}
           onRemove={() => {
             // Removing a row shifts the list up under a stationary
             // pointer — the row now under it never fires mouseenter,
             // so clear the hover wash here (navigate() does the same
             // for view changes).
             useUI.getState().setTintThumb(null);
-            removeAt(index + 1 + p);
+            removeAt(queueOffset + index + 1 + p);
           }}
         />
       );
@@ -289,7 +322,7 @@ export function QueuePanel({ onClose }: { onClose: () => void }) {
           track={t}
           style={sortable.styleFor(line + 1 + k)}
           sortable={sortable.rowProps(line + 1 + k)}
-          onPlay={() => jumpTo(suggestionsAt + k)}
+          onPlay={() => jumpTo(queueOffset + suggestionsAt + k)}
           actions={
             <>
               <button

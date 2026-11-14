@@ -1,6 +1,6 @@
 import React from "react";
 
-export type SourceType = "claude" | "chatgpt" | "gemini" | "antigravity" | "gmail";
+export type SourceType = "claude" | "chatgpt" | "gemini" | "antigravity" | "gmail" | "desktop";
 
 interface SourceIconProps {
   source: SourceType;
@@ -14,6 +14,7 @@ const SOURCE_COLORS: Record<SourceType, string> = {
   gemini: "#4C8DF6",
   antigravity: "#00C2FF",
   gmail: "#EA4335",
+  desktop: "#5E5CE6",
 };
 
 const SOURCE_GLYPHS: Record<SourceType, string> = {
@@ -22,6 +23,7 @@ const SOURCE_GLYPHS: Record<SourceType, string> = {
   gemini: "✦",
   antigravity: "A",
   gmail: "M",
+  desktop: "⌘",
 };
 
 export const SourceIcon: React.FC<SourceIconProps> = ({

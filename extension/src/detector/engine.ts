@@ -12,6 +12,8 @@ export interface DetectorOptions {
   callbacks: DetectorCallbacks;
   /** Injectable query selector for testability */
   querySelector?: (selector: string) => Element | null;
+  /** Injectable multi-element selector for button text matching */
+  querySelectorAll?: (selector: string) => Iterable<Element>;
   /** Injectable time source in ms for testability */
   now?: () => number;
 }
@@ -20,9 +22,11 @@ export class DetectorEngine {
   private config: SiteConfig;
   private callbacks: DetectorCallbacks;
   private querySelector: (selector: string) => Element | null;
+  private querySelectorAll: (selector: string) => Iterable<Element>;
   private now: () => number;
 
   private state: DetectorState = "idle";
+  private networkGenerating = false;
   private generationStartTime = 0;
   private settlingStartTime = 0;
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -39,6 +43,10 @@ export class DetectorEngine {
       options.querySelector ||
       ((sel: string) =>
         typeof document !== "undefined" ? document.querySelector(sel) : null);
+    this.querySelectorAll =
+      options.querySelectorAll ||
+      ((sel: string) =>
+        typeof document !== "undefined" ? document.querySelectorAll(sel) : []);
     this.now = options.now || (() => Date.now());
   }
 
@@ -50,12 +58,18 @@ export class DetectorEngine {
     return this.genCounter;
   }
 
+  public setNetworkGenerating(active: boolean): void {
+    if (this.networkGenerating === active) return;
+    this.networkGenerating = active;
+    this.evaluate();
+  }
+
   /**
    * Evaluates the DOM and updates the state machine.
    * Can be invoked on MutationObserver callbacks or polling ticks.
    */
   public evaluate(): void {
-    const isGenerating = this.checkIsGenerating();
+    const isGenerating = this.networkGenerating || this.checkIsGenerating();
     const currentTime = this.now();
 
     // 1. Check needs_input prompts
@@ -107,34 +121,56 @@ export class DetectorEngine {
   }
 
   private checkNeedsInput(): void {
+    const notifyPromptElement = (el: Element, fallbackLabel?: string) => {
+      let promptId = el.getAttribute("data-island-prompt-id");
+      if (!promptId) {
+        this.promptCounter += 1;
+        promptId = `prompt-${this.promptCounter}`;
+        try {
+          el.setAttribute("data-island-prompt-id", promptId);
+        } catch {
+          // In case element is not mock-settable
+        }
+      }
+
+      if (!this.seenPromptIds.has(promptId)) {
+        this.seenPromptIds.add(promptId);
+        const promptText = el.getAttribute("aria-label") || fallbackLabel || undefined;
+        this.callbacks.onNeedsInput({
+          promptId,
+          promptText,
+        });
+      }
+    };
+
     for (const selector of this.config.selectors.needsInput) {
       try {
         const el = this.querySelector(selector);
         if (el) {
-          // Find or create prompt ID
-          let promptId = el.getAttribute("data-island-prompt-id");
-          if (!promptId) {
-            this.promptCounter += 1;
-            promptId = `prompt-${this.promptCounter}`;
-            try {
-              el.setAttribute("data-island-prompt-id", promptId);
-            } catch {
-              // In case element is not mock-settable
-            }
-          }
-
-          if (!this.seenPromptIds.has(promptId)) {
-            this.seenPromptIds.add(promptId);
-            const promptText = el.getAttribute("aria-label") || undefined;
-            this.callbacks.onNeedsInput({
-              promptId,
-              promptText,
-            });
-          }
+          notifyPromptElement(el);
           return;
         }
       } catch {
         continue;
+      }
+    }
+
+    const matchers = this.config.selectors.needsInputTextMatchers;
+    if (matchers && matchers.length > 0) {
+      try {
+        const candidates = this.querySelectorAll(
+          '[role="dialog"] button, [role="alertdialog"] button, main button, form button'
+        );
+        for (const el of candidates) {
+          const text = (el.textContent || "").trim().toLowerCase();
+          if (!text || text.length > 48) continue;
+          if (matchers.some((m) => text === m || text.startsWith(`${m} `))) {
+            notifyPromptElement(el, "Action approval needed");
+            return;
+          }
+        }
+      } catch {
+        /* ignore DOM scan failure */
       }
     }
   }

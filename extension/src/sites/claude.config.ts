@@ -23,13 +23,23 @@ export const claudeConfig: SiteConfig = {
       'form button[aria-label*="Stop" i]',
       'fieldset button[aria-label*="Stop" i]',
       '[data-is-streaming="true"]',
+      '[data-testid="chat-input-grid-container"] button[aria-label*="Stop" i]',
     ],
     needsInput: [
       '[data-testid="tool-approval"]',
       '[data-testid="permission-dialog"]',
+      '[data-testid*="approval" i]',
       'button[aria-label*="Allow" i]',
       'button[aria-label*="Approve" i]',
       '[role="alertdialog"] button:not([aria-label*="Close" i])',
+    ],
+    needsInputTextMatchers: [
+      "allow once",
+      "allow for this chat",
+      "allow always",
+      "allow",
+      "approve",
+      "confirm",
     ],
     chatTitle: undefined, // Falls back to document.title
   },

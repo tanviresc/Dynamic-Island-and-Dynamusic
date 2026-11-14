@@ -65,14 +65,14 @@ pub fn get_window_dpi_scale(_hwnd: isize) -> f64 {
 pub fn get_adaptive_poll_interval_ms(point: (i32, i32), hit_rect: Option<&Rect>) -> u64 {
     let rect = match hit_rect {
         Some(r) if !r.is_empty() => r,
-        _ => return 250, // when hidden or no hit rect, idle poll
+        _ => return 200, // when hidden or no hit rect, idle poll
     };
 
     let dist = calculate_cursor_distance_to_rect(point, rect);
-    if dist < 80.0 {
-        33 // near or inside: high responsiveness (30 fps)
+    if dist < 120.0 {
+        16 // near or inside: responsive (~60 fps) so dot hover/click lands immediately
     } else {
-        100 // far: low CPU overhead
+        60 // far: low CPU overhead
     }
 }
 
@@ -131,23 +131,23 @@ mod tests {
         // Point inside
         assert_eq!(
             get_adaptive_poll_interval_ms((700, 30), Some(&hit_rect)),
-            33
+            16
         );
 
         // Point near (30px away)
         assert_eq!(
             get_adaptive_poll_interval_ms((700, 80), Some(&hit_rect)),
-            33
+            16
         );
 
         // Point far (300px away)
         assert_eq!(
             get_adaptive_poll_interval_ms((700, 350), Some(&hit_rect)),
-            100
+            60
         );
 
         // Hidden (None)
-        assert_eq!(get_adaptive_poll_interval_ms((700, 30), None), 250);
+        assert_eq!(get_adaptive_poll_interval_ms((700, 30), None), 200);
     }
 
     #[test]

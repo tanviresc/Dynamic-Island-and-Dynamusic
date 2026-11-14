@@ -15,6 +15,7 @@ import { DEFAULT_SETTINGS, ExtensionSettings, Source } from "../types";
   let detectorEngine: DetectorEngine | null = null;
   let mutationObserver: MutationObserver | null = null;
   let pollInterval: ReturnType<typeof setInterval> | null = null;
+  let pageMessageListener: ((ev: MessageEvent) => void) | null = null;
 
   function loadSettingsAndStart() {
     if (typeof chrome === "undefined" || !chrome.storage?.local) {
@@ -110,8 +111,31 @@ import { DEFAULT_SETTINGS, ExtensionSettings, Source } from "../types";
       childList: true,
       subtree: true,
       attributes: true,
-      attributeFilter: ["aria-label", "data-testid", "data-test-id", "data-is-streaming", "disabled", "class"],
+      attributeFilter: [
+        "aria-label",
+        "data-testid",
+        "data-test-id",
+        "data-is-streaming",
+        "data-state",
+        "disabled",
+        "aria-disabled",
+        "hidden",
+        "class",
+      ],
     });
+
+    // Listen to MAIN-world fetch/EventSource stream lifecycle events
+    pageMessageListener = (ev: MessageEvent) => {
+      if (ev.source !== window || ev.origin !== window.location.origin) return;
+      const data = ev.data as { __island?: string; event?: string } | null;
+      if (!data || data.__island !== "island-page-hook") return;
+      if (data.event === "stream_active") {
+        detectorEngine?.setNetworkGenerating(true);
+      } else if (data.event === "stream_idle") {
+        detectorEngine?.setNetworkGenerating(false);
+      }
+    };
+    window.addEventListener("message", pageMessageListener);
 
     // 4. Fallback polling tick (500 ms)
     pollInterval = setInterval(() => {
@@ -164,6 +188,10 @@ import { DEFAULT_SETTINGS, ExtensionSettings, Source } from "../types";
   }
 
   function teardown() {
+    if (pageMessageListener) {
+      window.removeEventListener("message", pageMessageListener);
+      pageMessageListener = null;
+    }
     if (mutationObserver) {
       mutationObserver.disconnect();
       mutationObserver = null;

@@ -58,10 +58,56 @@ function handlePlayerCommand(cmd: string, payload?: unknown): void {
     case "seek":
       if (typeof payload === "number") p.seek(payload);
       break;
+    case "set_volume":
+      if (typeof payload === "number" && Number.isFinite(payload)) {
+        p.setVolume(Math.max(0, Math.min(1, payload)));
+      }
+      break;
     case "play_track":
       if (payload && typeof payload === "object") {
         p.playTrack(payload as any);
       }
+      break;
+    case "play_queue":
+      if (payload && typeof payload === "object") {
+        const q = payload as { tracks?: any[]; startIndex?: number; from?: string };
+        if (Array.isArray(q.tracks) && q.tracks.length > 0) {
+          p.playQueue(q.tracks, q.startIndex ?? 0, q.from);
+        }
+      }
+      break;
+    case "jump_to":
+      if (typeof payload === "number") p.jumpTo(payload);
+      break;
+    case "add_to_queue":
+      if (payload && typeof payload === "object") {
+        const data = payload as { tracks?: any; playNext?: boolean };
+        if ("tracks" in data && data.tracks) {
+          p.addToQueue(data.tracks, Boolean(data.playNext));
+        } else {
+          p.addToQueue(payload as any);
+        }
+      }
+      break;
+    case "move_upcoming":
+      if (payload && typeof payload === "object") {
+        const m = payload as { from?: number; to?: number };
+        if (typeof m.from === "number" && typeof m.to === "number") {
+          p.moveUpcoming(m.from, m.to);
+        }
+      }
+      break;
+    case "remove_at":
+      if (typeof payload === "number") p.removeAt(payload);
+      break;
+    case "clear_upcoming":
+      p.clearUpcoming();
+      break;
+    case "toggle_shuffle":
+      p.toggleShuffle();
+      break;
+    case "cycle_repeat":
+      p.cycleRepeat();
       break;
     case "close_stop":
       prepareDynamusicClose();
@@ -85,7 +131,12 @@ export function initIslandBridge(): void {
     const trackId = track?.id ?? "";
     const now = Date.now();
 
-    if (!force && trackId === lastTrackId && s.playing === lastPlaying && now - lastSyncMs < 1500) {
+    if (
+      !force &&
+      trackId === lastTrackId &&
+      s.playing === lastPlaying &&
+      now - lastSyncMs < (s.playing ? 250 : 1500)
+    ) {
       return;
     }
     lastTrackId = trackId;
@@ -94,6 +145,18 @@ export function initIslandBridge(): void {
 
     // Also forward state snapshot to sidecar so Mobile remote control can reflect live PC playback
     if ("__TAURI_INTERNALS__" in window) {
+      const qStart = Math.max(0, s.index - 2);
+      const qEnd = Math.min(s.queue.length, s.index + 40);
+      const slimQueue = s.queue.slice(qStart, qEnd).map((qt) => ({
+        id: qt.id,
+        title: qt.title,
+        artist: qt.artist,
+        artistId: qt.artistId,
+        album: qt.album,
+        albumId: qt.albumId,
+        duration: qt.duration,
+        thumb: qt.thumb,
+      }));
       void fetch("http://127.0.0.1:47822/player/sync", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -115,6 +178,10 @@ export function initIslandBridge(): void {
             volume: s.volume,
             shuffle: s.shuffle,
             repeat: s.repeat,
+            queue: slimQueue,
+            index: s.index - qStart,
+            queueOffset: qStart,
+            autoplayCount: Math.max(0, Math.min(s.autoplayCount, s.queue.length - s.index - 1)),
           },
         }),
       }).catch(() => undefined);
@@ -146,7 +213,14 @@ export function initIslandBridge(): void {
   usePlayer.subscribe((state, prevState) => {
     const track = shownTrack(state);
     const prevTrack = shownTrack(prevState);
-    const force = track?.id !== prevTrack?.id || state.playing !== prevState.playing;
+    const force =
+      track?.id !== prevTrack?.id ||
+      state.playing !== prevState.playing ||
+      state.seekNonce !== prevState.seekNonce ||
+      state.shuffle !== prevState.shuffle ||
+      state.index !== prevState.index ||
+      state.queue !== prevState.queue ||
+      state.volume !== prevState.volume;
     syncToIsland(force);
   });
 

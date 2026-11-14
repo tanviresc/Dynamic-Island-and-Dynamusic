@@ -1,29 +1,59 @@
+import { useSyncExternalStore } from "react";
 import { Play, Pause, Heart, Smartphone, Monitor } from "lucide-react";
 import { usePlayer, shownTrack } from "../stores/player";
 import { useLibrary } from "../stores/library";
 import { useUI } from "../stores/ui";
 import { useMobileMode } from "../stores/mobileMode";
+import { getPlaybackClock, subscribePlaybackClock } from "../lib/playbackClock";
+import { useSwipeGesture } from "../lib/useSwipeGesture";
+
+function MiniProgressBar({ fallbackDuration }: { fallbackDuration: number }) {
+  const clock = useSyncExternalStore(subscribePlaybackClock, getPlaybackClock);
+  const dur = clock.duration > 0 ? clock.duration : fallbackDuration;
+  const ratio = dur > 0 ? Math.min(1, Math.max(0, clock.position / dur)) : 0;
+  return (
+    <div className="w-full h-1 bg-white/10 rounded-full overflow-hidden">
+      <div
+        className="h-full w-full bg-white rounded-full will-change-transform transition-transform duration-150 ease-linear"
+        style={{ transform: `scaleX(${ratio})`, transformOrigin: "left center" }}
+      />
+    </div>
+  );
+}
 
 export function MobileMiniPlayer() {
   const track = usePlayer(shownTrack);
   const isPlaying = usePlayer((s) => s.playing);
+  const playbackStatus = usePlayer((s) => s.playbackStatus);
+  const storeDuration = usePlayer((s) => s.duration);
   const toggle = usePlayer((s) => s.toggle);
-  const position = usePlayer((s) => s.position);
-  const duration = usePlayer((s) => s.duration);
   const toggleLike = useLibrary((s) => s.toggleLike);
   const isLiked = useLibrary((s) => (track ? s.isLiked(track.id) : false));
   const toggleNowPlaying = useUI((s) => s.toggleNowPlaying);
   const mode = useMobileMode((s) => s.mode);
   const setMode = useMobileMode((s) => s.setMode);
 
-  if (!track) return null;
+  const swipe = useSwipeGesture({
+    onSwipeRight: () => usePlayer.getState().next(true),
+    onSwipeLeft: () => usePlayer.getState().prev(),
+    disabled: !track,
+  });
 
-  const pct = duration > 0 ? Math.min(100, (position / duration) * 100) : 0;
+  if (!track) return null;
 
   return (
     <div
-      onClick={toggleNowPlaying}
-      className="fixed bottom-[68px] inset-x-2 z-40 bg-[#16161a]/95 backdrop-blur-2xl border border-white/10 rounded-2xl p-2 flex flex-col gap-1.5 shadow-2xl cursor-pointer select-none active:scale-[0.99] transition-transform"
+      {...swipe.handlers}
+      onClick={() => {
+        if (swipe.consumeDidSwipe()) return;
+        toggleNowPlaying();
+      }}
+      style={{
+        touchAction: "pan-y",
+        transform: `translate3d(${swipe.offsetX}px, 0, 0)`,
+        transition: swipe.dragging ? "none" : "transform 200ms cubic-bezier(0.22, 1, 0.36, 1)",
+      }}
+      className="fixed bottom-[68px] inset-x-2 z-40 bg-[#16161a]/95 backdrop-blur-2xl border border-white/10 rounded-2xl p-2 flex flex-col gap-1.5 shadow-2xl cursor-pointer select-none will-change-transform active:scale-[0.985]"
     >
       <div className="flex items-center gap-3">
         {/* Cover Thumbnail */}
@@ -88,18 +118,22 @@ export function MobileMiniPlayer() {
             e.stopPropagation();
             toggle();
           }}
-          className="w-9 h-9 rounded-full bg-white text-black flex items-center justify-center shadow-lg active:scale-90 transition-transform shrink-0"
+          className="w-9 h-9 rounded-full bg-white text-black flex items-center justify-center shadow-lg active:scale-90 transition-transform shrink-0 relative"
           title={isPlaying ? "Pause" : "Play"}
           aria-label={isPlaying ? "Pause" : "Play"}
         >
+          {(playbackStatus === "loading" || playbackStatus === "buffering") && (
+            <span
+              className="pointer-events-none absolute inset-[-3px] rounded-full border-2 border-white/30 border-t-white animate-spin"
+              aria-hidden="true"
+            />
+          )}
           {isPlaying ? <Pause className="w-4 h-4 fill-current" /> : <Play className="w-4 h-4 fill-current ml-0.5" />}
         </button>
       </div>
 
-      {/* Progress Bar Line */}
-      <div className="w-full h-1 bg-white/10 rounded-full overflow-hidden">
-        <div className="h-full bg-white rounded-full transition-all duration-200" style={{ width: `${pct}%` }} />
-      </div>
+      {/* GPU-composited Progress Bar Line isolated from root renders */}
+      <MiniProgressBar fallbackDuration={storeDuration} />
     </div>
   );
 }

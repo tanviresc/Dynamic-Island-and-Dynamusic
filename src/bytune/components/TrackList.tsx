@@ -1,10 +1,12 @@
-import { Fragment } from "react";
-import { AlertCircle, Check, Heart, Loader2, MoreHorizontal, Pause, Play } from "lucide-react";
+import { Fragment, useEffect, useRef, useState } from "react";
+import { AlertCircle, Check, Heart, ListPlus, Loader2, MoreHorizontal, Pause, Play } from "lucide-react";
 import { useLibrary } from "../stores/library";
 import { usePlayer } from "../stores/player";
+import { useMobileMode } from "../stores/mobileMode";
 import { tintHoverHandlers, useUI, type MenuItem } from "../stores/ui";
 import { trackMenuItems } from "../lib/trackActions";
 import { useDrag } from "../lib/dnd";
+import { useSwipeGesture } from "../lib/useSwipeGesture";
 import { fmtTime, shortTitle } from "../lib/format";
 import { Artwork, EqBars, EmptyState, ExplicitBadge } from "./primitives";
 import { PlayingLight, useRowLight } from "./RowLight";
@@ -56,6 +58,17 @@ function TrackRow({ track, index, isCurrent, isPlaying, onPlay, menuFor, showAlb
   const drag = useDrag({ track });
   const tint = tintHoverHandlers(track.thumb);
 
+  const swipe = useSwipeGesture({
+    onSwipeRight: isCurrent ? () => usePlayer.getState().next(true) : undefined,
+    onSwipeLeft: isCurrent
+      ? () => usePlayer.getState().prev()
+      : () => {
+          const added = usePlayer.getState().addToQueue(track);
+          const name = shortTitle(track.title);
+          useUI.getState().toast(added ? `Added "${name}" to queue` : `"${name}" is already in your queue`);
+        },
+  });
+
   const openMenu = (x: number, y: number): void => {
     openContextMenu(x, y, menuFor(track));
   };
@@ -63,21 +76,36 @@ function TrackRow({ track, index, isCurrent, isPlaying, onPlay, menuFor, showAlb
   return (
     <div
       {...drag.props}
+      {...swipe.handlers}
       onMouseEnter={(e) => {
         tint.onMouseEnter();
         onHover(e.currentTarget, track.thumb);
       }}
       onMouseLeave={tint.onMouseLeave}
-      onClick={() => onPlay(index)}
+      onClick={() => {
+        if (swipe.consumeDidSwipe()) return;
+        onPlay(index);
+      }}
       onContextMenu={(e) => {
         e.preventDefault();
         e.stopPropagation();
         openMenu(e.clientX, e.clientY);
       }}
-      className={`tl-row fit-host group flex items-center gap-3.5 h-[60px] px-3 rounded-lg cursor-pointer select-none ${
+      style={{
+        touchAction: "pan-y",
+        transform: swipe.offsetX ? `translate3d(${swipe.offsetX}px, 0, 0)` : undefined,
+        transition: swipe.dragging ? "none" : "transform 200ms cubic-bezier(0.22, 1, 0.36, 1)",
+      }}
+      className={`tl-row fit-host group relative flex items-center gap-3.5 h-[60px] px-3 rounded-lg cursor-pointer select-none ${
         isCurrent ? "bg-ink-hi/[0.06]" : "hover:bg-ink-hi/[0.04]"
       } ${drag.dragging ? "opacity-40" : ""}`}
     >
+      {!isCurrent && swipe.offsetX < -14 && (
+        <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 z-20 inline-flex items-center gap-1 rounded-full bg-emerald-500/20 border border-emerald-400/40 px-2 py-0.5 text-[11px] font-semibold text-emerald-300">
+          <ListPlus className="w-3 h-3" />
+          Queue
+        </span>
+      )}
       {/* The playing song keeps a soft light of its own cover. */}
       {isCurrent && <PlayingLight thumb={track.thumb} />}
       {/* index / hover play / eq */}
@@ -144,7 +172,7 @@ function TrackRow({ track, index, isCurrent, isPlaying, onPlay, menuFor, showAlb
         </div>
       )}
 
-      <div className="w-[88px] shrink-0 flex items-center justify-end gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+      <div className="w-[88px] shrink-0 flex items-center justify-end gap-0.5 opacity-100 md:opacity-0 md:group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
         <button
           onClick={(e) => {
             e.stopPropagation();
@@ -191,6 +219,10 @@ interface TrackListProps {
   emptyTitle?: string;
 }
 
+const VIRTUALIZE_THRESHOLD = 60;
+const DEFAULT_ROW_HEIGHT = 69;
+const OVERSCAN = 10;
+
 export function TrackList({
   tracks,
   onPlay,
@@ -201,15 +233,80 @@ export function TrackList({
   emptyLabel,
   emptyTitle = "Nothing here yet",
 }: TrackListProps) {
-  const currentId = usePlayer((s) => s.queue[s.index]?.id ?? null);
-  const playing = usePlayer((s) => s.playing);
+  const mobileMode = useMobileMode((s) => s.mode);
+  const pcState = useMobileMode((s) => s.pcState);
+  const isPcRemote = mobileMode === "pc_remote" && Boolean(pcState?.track);
+  const localCurrentId = usePlayer((s) => s.queue[s.index]?.id ?? null);
+  const localPlaying = usePlayer((s) => s.playing);
+  const currentId = isPcRemote ? (pcState?.track?.id ?? null) : localCurrentId;
+  const playing = isPcRemote ? Boolean(pcState?.playing) : localPlaying;
   const playQueue = usePlayer((s) => s.playQueue);
   const play = onPlay ?? ((i: number) => playQueue(tracks, i, from));
   const rowLight = useRowLight();
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const [rowHeight, setRowHeight] = useState(DEFAULT_ROW_HEIGHT);
+  const [windowRange, setWindowRange] = useState<{ start: number; end: number }>({
+    start: 0,
+    end: VIRTUALIZE_THRESHOLD,
+  });
+
+  const shouldVirtualize = tracks.length > VIRTUALIZE_THRESHOLD;
+
+  useEffect(() => {
+    if (!shouldVirtualize) return;
+    const scroller =
+      (listRef.current?.closest("#view-scroll") as HTMLElement | null) ??
+      (typeof document !== "undefined" ? document.getElementById("view-scroll") : null);
+    if (!scroller) {
+      setWindowRange({ start: 0, end: tracks.length });
+      return;
+    }
+
+    let raf = 0;
+    const measureAndSlice = () => {
+      raf = 0;
+      const listEl = listRef.current;
+      if (!listEl) return;
+      const firstRow = listEl.querySelector<HTMLElement>("[role='row']");
+      const h = firstRow ? Math.round(firstRow.getBoundingClientRect().height + 1) : rowHeight;
+      const step = h > 40 ? h : rowHeight;
+      if (step !== rowHeight && firstRow) setRowHeight(step);
+
+      const listTopInScroll =
+        scroller.scrollTop + listEl.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+      const viewTop = Math.max(0, scroller.scrollTop - listTopInScroll);
+      const viewBottom = Math.max(0, scroller.scrollTop + scroller.clientHeight - listTopInScroll);
+
+      const start = Math.max(0, Math.floor(viewTop / step) - OVERSCAN);
+      const end = Math.min(tracks.length, Math.ceil(viewBottom / step) + OVERSCAN);
+      setWindowRange((prev) =>
+        prev.start === start && prev.end === end ? prev : { start, end }
+      );
+    };
+
+    const onScroll = () => {
+      if (!raf) raf = window.requestAnimationFrame(measureAndSlice);
+    };
+
+    measureAndSlice();
+    scroller.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("resize", onScroll, { passive: true });
+    return () => {
+      if (raf) window.cancelAnimationFrame(raf);
+      scroller.removeEventListener("scroll", onScroll);
+      window.removeEventListener("resize", onScroll);
+    };
+  }, [shouldVirtualize, tracks.length, rowHeight]);
 
   if (!tracks.length) {
     return <EmptyState icon={Play} title={emptyTitle} body={emptyLabel ?? "Tracks will appear here."} />;
   }
+
+  const startIdx = shouldVirtualize ? Math.min(windowRange.start, tracks.length) : 0;
+  const endIdx = shouldVirtualize ? Math.min(windowRange.end, tracks.length) : tracks.length;
+  const topPad = shouldVirtualize ? startIdx * rowHeight : 0;
+  const bottomPad = shouldVirtualize ? Math.max(0, (tracks.length - endIdx) * rowHeight) : 0;
+  const visibleTracks = shouldVirtualize ? tracks.slice(startIdx, endIdx) : tracks;
 
   return (
     <div className="tl">
@@ -223,25 +320,30 @@ export function TrackList({
           <div className="w-11 shrink-0 text-right">Time</div>
         </div>
       )}
-      <div className="relative" onMouseLeave={rowLight.leave}>
+      <div ref={listRef} className="relative" onMouseLeave={rowLight.leave}>
         {rowLight.light}
-        {tracks.map((track, i) => (
-          <Fragment key={`${track.id}-${i}`}>
-            <TrackRow
-              track={track}
-              index={i}
-              isCurrent={track.id === currentId}
-              isPlaying={playing}
-              onPlay={play}
-              menuFor={menuFor}
-              showAlbum={showAlbum}
-              onHover={rowLight.hover}
-            />
-            {/* Hairline divider, inset to the title column — mobile's
-                ROW_DIVIDER_INSET clears the 52dp artwork the same way. */}
-            {i < tracks.length - 1 && <div className="h-px bg-ink-hi/[0.05] ml-[120px] mr-3" />}
-          </Fragment>
-        ))}
+        {topPad > 0 && <div style={{ height: topPad }} aria-hidden="true" />}
+        {visibleTracks.map((track, offset) => {
+          const i = startIdx + offset;
+          return (
+            <Fragment key={`${track.id}-${i}`}>
+              <TrackRow
+                track={track}
+                index={i}
+                isCurrent={track.id === currentId}
+                isPlaying={playing}
+                onPlay={play}
+                menuFor={menuFor}
+                showAlbum={showAlbum}
+                onHover={rowLight.hover}
+              />
+              {/* Hairline divider, inset to the title column — mobile's
+                  ROW_DIVIDER_INSET clears the 52dp artwork the same way. */}
+              {i < tracks.length - 1 && <div className="h-px bg-ink-hi/[0.05] ml-[120px] mr-3" />}
+            </Fragment>
+          );
+        })}
+        {bottomPad > 0 && <div style={{ height: bottomPad }} aria-hidden="true" />}
       </div>
     </div>
   );

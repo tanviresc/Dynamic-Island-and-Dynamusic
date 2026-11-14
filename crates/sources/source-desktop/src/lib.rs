@@ -47,7 +47,7 @@ impl DesktopAppConfig {
         }
 
         match self.source {
-            Source::Claude | Source::Chatgpt | Source::Gemini => {}
+            Source::Claude | Source::Chatgpt | Source::Gemini | Source::Desktop => {}
             _ => return Err(DesktopSourceError::UnsupportedSource(self.source)),
         }
 
@@ -134,6 +134,84 @@ pub struct ToastMetadata {
     pub timestamp: DateTime<Utc>,
 }
 
+fn clamp_chars(s: &str, max: usize) -> String {
+    let trimmed = s.trim();
+    if trimmed.chars().count() <= max {
+        trimmed.to_string()
+    } else {
+        trimmed
+            .chars()
+            .take(max.saturating_sub(1))
+            .collect::<String>()
+            + "…"
+    }
+}
+
+fn sanitize_ascii_key(s: &str, max: usize) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' || c == ':' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(max)
+        .collect()
+}
+
+fn infer_desktop_target(app_id: &str, app_display: &str) -> (String, Vec<String>) {
+    let id_lower = app_id.to_lowercase();
+    let disp_lower = app_display.to_lowercase();
+    let combined = format!("{} {}", id_lower, disp_lower);
+
+    let known: &[(&str, &str, &[&str])] = &[
+        ("discord", "Discord", &["Discord.exe", "Update.exe"]),
+        ("whatsapp", "WhatsApp", &["WhatsApp.exe"]),
+        ("visual studio code", "VS Code", &["Code.exe"]),
+        ("vscode", "VS Code", &["Code.exe"]),
+        ("slack", "Slack", &["slack.exe"]),
+        ("telegram", "Telegram", &["Telegram.exe"]),
+        ("teams", "Microsoft Teams", &["ms-teams.exe", "Teams.exe"]),
+        ("outlook", "Outlook", &["olk.exe", "OUTLOOK.EXE"]),
+        ("spotify", "Spotify", &["Spotify.exe"]),
+        ("signal", "Signal", &["Signal.exe"]),
+        ("cursor", "Cursor", &["Cursor.exe"]),
+    ];
+
+    for (needle, label, procs) in known {
+        if combined.contains(needle) {
+            return (
+                (*label).to_string(),
+                procs.iter().map(|p| (*p).to_string()).collect(),
+            );
+        }
+    }
+
+    let friendly = if !app_display.trim().is_empty() {
+        app_display.trim().to_string()
+    } else {
+        app_id
+            .split(&['.', '!', '\\', '/'][..])
+            .rfind(|part| !part.trim().is_empty())
+            .unwrap_or("Desktop App")
+            .trim()
+            .to_string()
+    };
+
+    let exe_stem: String = friendly
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .take(40)
+        .collect();
+    let proc_name = if exe_stem.is_empty() {
+        "explorer.exe".to_string()
+    } else {
+        format!("{}.exe", exe_stem)
+    };
+    (friendly, vec![proc_name])
+}
+
 pub struct ToastProcessor {
     apps: Vec<DesktopAppConfig>,
 }
@@ -144,7 +222,39 @@ impl ToastProcessor {
     }
 
     pub fn process_toast(&self, toast: &ToastMetadata) -> Option<Event> {
-        let app = self.apps.iter().find(|a| {
+        self.process_toast_with_id(toast, None)
+    }
+
+    pub fn process_toast_with_id(
+        &self,
+        toast: &ToastMetadata,
+        toast_id: Option<u32>,
+    ) -> Option<Event> {
+        let self_check = format!("{} {}", toast.app_id, toast.title).to_lowercase();
+        if self_check.contains("island-app")
+            || self_check.contains("com.island")
+            || self_check.trim() == "island"
+        {
+            return None;
+        }
+
+        let body_lower = toast.body.to_lowercase();
+        let title_lower = toast.title.to_lowercase();
+        let is_needs_input = body_lower.contains("approval")
+            || body_lower.contains("permission")
+            || body_lower.contains("confirm")
+            || body_lower.contains("question")
+            || body_lower.contains("incoming call")
+            || title_lower.contains("incoming call");
+
+        let kind = if is_needs_input {
+            Kind::NeedsInput
+        } else {
+            Kind::Done
+        };
+
+        // 1. Check explicitly configured AI desktop apps first
+        if let Some(app) = self.apps.iter().find(|a| {
             if !a.enabled {
                 return false;
             }
@@ -158,57 +268,99 @@ impl ToastProcessor {
                 .to_lowercase()
                 .contains(&a.display_name.to_lowercase());
             id_match || title_match
-        })?;
+        }) {
+            let title = clamp_chars(
+                &format!(
+                    "{} · {}",
+                    app.display_name,
+                    if is_needs_input {
+                        "Needs input"
+                    } else {
+                        "Task completed"
+                    }
+                ),
+                120,
+            );
+            let id_part = toast_id
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| toast.timestamp.timestamp_millis().to_string());
+            let dedupe_key =
+                sanitize_ascii_key(&format!("desktop:{}:{}:{}", app.source, kind, id_part), 200);
 
-        let body_lower = toast.body.to_lowercase();
-        let is_needs_input = body_lower.contains("approval")
-            || body_lower.contains("permission")
-            || body_lower.contains("confirm")
-            || body_lower.contains("question");
+            return Some(Event {
+                id: Uuid::new_v4(),
+                source: app.source,
+                surface: Surface::Desktop,
+                kind,
+                title,
+                text: clamp_chars(
+                    if toast.body.trim().is_empty() {
+                        "Response ready"
+                    } else {
+                        &toast.body
+                    },
+                    500,
+                ),
+                category: if is_needs_input {
+                    Some("Needs input".to_string())
+                } else {
+                    None
+                },
+                account: None,
+                target: Target::Process {
+                    process_names: app.process_names.clone(),
+                    window_title_contains: app.window_title_contains.clone(),
+                },
+                created_at: toast.timestamp,
+                dedupe_key,
+            });
+        }
 
-        let kind = if is_needs_input {
-            Kind::NeedsInput
+        // 2. Generic desktop app notifications (Discord, WhatsApp, VS Code, Slack, etc.)
+        if toast.app_id.trim().is_empty()
+            && toast.title.trim().is_empty()
+            && toast.body.trim().is_empty()
+        {
+            return None;
+        }
+
+        let (app_name, process_names) = infer_desktop_target(&toast.app_id, &toast.app_id);
+        let title_str = if !toast.title.trim().is_empty() {
+            clamp_chars(&format!("{} · {}", app_name, toast.title.trim()), 120)
         } else {
-            Kind::Done
+            clamp_chars(&app_name, 120)
         };
-
-        let title = format!(
-            "{} · {}",
-            app.display_name,
-            if is_needs_input {
-                "Needs input"
+        let text_str = clamp_chars(
+            if !toast.body.trim().is_empty() {
+                toast.body.trim()
+            } else if !toast.title.trim().is_empty() {
+                toast.title.trim()
             } else {
-                "Task completed"
-            }
+                "New notification"
+            },
+            500,
         );
-
-        let dedupe_key = format!(
-            "desktop:{}:{}:{}",
-            app.source,
-            kind,
-            toast.timestamp.timestamp_millis()
+        let id_part = toast_id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| toast.timestamp.timestamp_millis().to_string());
+        let app_slug = sanitize_ascii_key(&app_name.to_lowercase(), 48);
+        let dedupe_key = sanitize_ascii_key(
+            &format!("desktop:app:{}:{}:{}", app_slug, kind, id_part),
+            200,
         );
 
         Some(Event {
             id: Uuid::new_v4(),
-            source: app.source,
+            source: Source::Desktop,
             surface: Surface::Desktop,
             kind,
-            title,
-            text: if toast.body.is_empty() {
-                "Response ready".to_string()
-            } else {
-                toast.body.clone()
-            },
-            category: if is_needs_input {
-                Some("Needs input".to_string())
-            } else {
-                None
-            },
+            title: title_str,
+            text: text_str,
+            category: Some(clamp_chars(&app_name, 32)),
             account: None,
             target: Target::Process {
-                process_names: app.process_names.clone(),
-                window_title_contains: app.window_title_contains.clone(),
+                process_names,
+                window_title_contains: None,
             },
             created_at: toast.timestamp,
             dedupe_key,
@@ -391,7 +543,9 @@ fn find_process_window(target_process: &str) -> Option<(isize, String)> {
                 if let Some(file_name) = full.rsplit('\\').next() {
                     let target_base = ctx.proc_name.trim_end_matches(".exe");
                     if file_name.eq_ignore_ascii_case(&ctx.proc_name)
-                        || file_name.to_lowercase().starts_with(&target_base.to_lowercase())
+                        || file_name
+                            .to_lowercase()
+                            .starts_with(&target_base.to_lowercase())
                     {
                         let text_len = GetWindowTextLengthW(hwnd);
                         let mut title = String::new();
@@ -527,7 +681,8 @@ fn probe_window_state(hwnd: isize) -> (bool, Option<String>) {
                 if let Ok(count) = elements.Length() {
                     for i in 0..count {
                         if let Ok(btn) = elements.GetElement(i) {
-                            let name_str = btn.CurrentName().map(|n| n.to_string()).unwrap_or_default();
+                            let name_str =
+                                btn.CurrentName().map(|n| n.to_string()).unwrap_or_default();
                             let auto_id = btn
                                 .CurrentAutomationId()
                                 .map(|n| n.to_string())
@@ -566,11 +721,263 @@ fn probe_window_state(hwnd: isize) -> (bool, Option<String>) {
     }
 }
 
+#[cfg(windows)]
+fn extract_winrt_toast(
+    notif: &windows::UI::Notifications::UserNotification,
+) -> Option<(u32, ToastMetadata)> {
+    use windows::UI::Notifications::KnownNotificationBindings;
+
+    let id = notif.Id().ok()?;
+    let app_display = notif
+        .AppInfo()
+        .ok()
+        .and_then(|info| {
+            info.DisplayInfo()
+                .ok()
+                .and_then(|d| d.DisplayName().ok())
+                .map(|s| s.to_string())
+                .filter(|s| !s.trim().is_empty())
+                .or_else(|| info.AppUserModelId().ok().map(|s| s.to_string()))
+        })
+        .unwrap_or_default();
+
+    let binding_name = KnownNotificationBindings::ToastGeneric().ok()?;
+    let visual = notif.Notification().ok()?.Visual().ok()?;
+    let binding = visual.GetBinding(&binding_name).ok()?;
+    let text_elements = binding.GetTextElements().ok()?;
+    let count = text_elements.Size().ok().unwrap_or(0);
+
+    let mut lines: Vec<String> = Vec::new();
+    for i in 0..count {
+        if let Ok(elem) = text_elements.GetAt(i) {
+            if let Ok(txt) = elem.Text() {
+                let s = txt.to_string().trim().to_string();
+                if !s.is_empty() {
+                    lines.push(s);
+                }
+            }
+        }
+    }
+
+    let title = lines.first().cloned().unwrap_or_default();
+    let body = if lines.len() > 1 {
+        lines[1..].join(" · ")
+    } else {
+        String::new()
+    };
+
+    if app_display.is_empty() && title.is_empty() && body.is_empty() {
+        return None;
+    }
+
+    Some((
+        id,
+        ToastMetadata {
+            app_id: app_display,
+            title,
+            body,
+            timestamp: Utc::now(),
+        },
+    ))
+}
+
+#[cfg(windows)]
+fn poll_visible_toast_banner() -> Vec<ToastMetadata> {
+    use windows::Win32::Foundation::{BOOL, HWND, LPARAM};
+    use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
+    use windows::Win32::UI::Accessibility::{
+        CUIAutomation, IUIAutomation, TreeScope_Descendants, UIA_ControlTypePropertyId,
+        UIA_TextControlTypeId,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetClassNameW, GetWindowTextW, IsWindowVisible,
+    };
+
+    let mut results = Vec::new();
+    unsafe {
+        struct ToastWindowCtx {
+            hwnds: Vec<HWND>,
+        }
+        unsafe extern "system" fn enum_toast_cb(hwnd: HWND, lparam: LPARAM) -> BOOL {
+            if IsWindowVisible(hwnd).as_bool() {
+                let mut class_buf = [0u16; 128];
+                let class_len = GetClassNameW(hwnd, &mut class_buf);
+                let class_str = String::from_utf16_lossy(&class_buf[..class_len.max(0) as usize]);
+                if class_str == "Windows.UI.Core.CoreWindow" {
+                    let mut title_buf = [0u16; 256];
+                    let title_len = GetWindowTextW(hwnd, &mut title_buf);
+                    let title_str =
+                        String::from_utf16_lossy(&title_buf[..title_len.max(0) as usize]);
+                    let tl = title_str.to_lowercase();
+                    if tl.contains("notification") {
+                        let ctx = &mut *(lparam.0 as *mut ToastWindowCtx);
+                        ctx.hwnds.push(hwnd);
+                    }
+                }
+            }
+            BOOL(1)
+        }
+
+        let mut ctx = ToastWindowCtx { hwnds: Vec::new() };
+        let _ = EnumWindows(Some(enum_toast_cb), LPARAM(&mut ctx as *mut _ as isize));
+        if ctx.hwnds.is_empty() {
+            return results;
+        }
+
+        let Ok(uia): Result<IUIAutomation, _> =
+            CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)
+        else {
+            return results;
+        };
+        let val = windows::core::VARIANT::from(UIA_TextControlTypeId.0);
+        let Ok(cond) = uia.CreatePropertyCondition(UIA_ControlTypePropertyId, &val) else {
+            return results;
+        };
+
+        for hwnd in ctx.hwnds {
+            if let Ok(root) = uia.ElementFromHandle(hwnd) {
+                if let Ok(els) = root.FindAll(TreeScope_Descendants, &cond) {
+                    let count = els.Length().unwrap_or(0);
+                    let mut lines = Vec::new();
+                    for i in 0..count {
+                        if let Ok(el) = els.GetElement(i) {
+                            if let Ok(name) = el.CurrentName() {
+                                let s = name.to_string().trim().to_string();
+                                if !s.is_empty() && !lines.contains(&s) {
+                                    lines.push(s);
+                                }
+                            }
+                        }
+                    }
+                    if !lines.is_empty() {
+                        let app_id = lines.first().cloned().unwrap_or_default();
+                        let title = lines.get(1).cloned().unwrap_or_default();
+                        let body = if lines.len() > 2 {
+                            lines[2..].join(" · ")
+                        } else {
+                            String::new()
+                        };
+                        results.push(ToastMetadata {
+                            app_id,
+                            title,
+                            body,
+                            timestamp: Utc::now(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+    results
+}
+
+#[cfg(windows)]
+fn start_os_toast_watcher_thread(thread_tx: tokio::sync::mpsc::Sender<Event>) {
+    let _ = std::thread::Builder::new()
+        .name("island-os-toast-watcher".to_string())
+        .spawn(move || {
+            use std::collections::HashSet;
+            use windows::UI::Notifications::Management::{
+                UserNotificationListener, UserNotificationListenerAccessStatus,
+            };
+            use windows::UI::Notifications::NotificationKinds;
+            use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
+
+            unsafe {
+                let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+            }
+
+            let processor = ToastProcessor::new(default_desktop_apps());
+            let mut seen_ids: HashSet<u32> = HashSet::new();
+            let mut listener_opt: Option<UserNotificationListener> = None;
+
+            if let Ok(listener) = UserNotificationListener::Current() {
+                if let Ok(op) = listener.RequestAccessAsync() {
+                    if let Ok(status) = op.get() {
+                        if status == UserNotificationListenerAccessStatus::Allowed {
+                            if let Ok(existing_op) =
+                                listener.GetNotificationsAsync(NotificationKinds::Toast)
+                            {
+                                if let Ok(existing) = existing_op.get() {
+                                    let size = existing.Size().unwrap_or(0);
+                                    for i in 0..size {
+                                        if let Ok(n) = existing.GetAt(i) {
+                                            if let Ok(id) = n.Id() {
+                                                seen_ids.insert(id);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            listener_opt = Some(listener);
+                            tracing::info!("Windows UserNotificationListener active");
+                        } else {
+                            tracing::warn!(
+                                "UserNotificationListener access {:?}; using toast UIA banner fallback",
+                                status
+                            );
+                        }
+                    }
+                }
+            }
+
+            let mut seen_banner_keys: HashMap<String, i64> = HashMap::new();
+
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(550));
+                let now_ms = Utc::now().timestamp_millis();
+
+                if let Some(ref listener) = listener_opt {
+                    if let Ok(op) = listener.GetNotificationsAsync(NotificationKinds::Toast) {
+                        if let Ok(list) = op.get() {
+                            let size = list.Size().unwrap_or(0);
+                            for i in 0..size {
+                                if let Ok(notif) = list.GetAt(i) {
+                                    if let Some((nid, toast)) = extract_winrt_toast(&notif) {
+                                        if seen_ids.insert(nid) {
+                                            if let Some(ev) =
+                                                processor.process_toast_with_id(&toast, Some(nid))
+                                            {
+                                                if thread_tx.blocking_send(ev).is_err() {
+                                                    return;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if seen_ids.len() > 2000 {
+                                seen_ids.clear();
+                            }
+                        }
+                    }
+                } else {
+                    seen_banner_keys.retain(|_, ts| now_ms - *ts < 15_000);
+                    for toast in poll_visible_toast_banner() {
+                        let sig = format!("{}|{}|{}", toast.app_id, toast.title, toast.body);
+                        if seen_banner_keys.contains_key(&sig) {
+                            continue;
+                        }
+                        seen_banner_keys.insert(sig, now_ms);
+                        if let Some(ev) = processor.process_toast(&toast) {
+                            if thread_tx.blocking_send(ev).is_err() {
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+}
+
 pub fn start_desktop_watcher(
     event_tx: tokio::sync::mpsc::Sender<Event>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let (thread_tx, mut thread_rx) = tokio::sync::mpsc::channel::<Event>(32);
+
+        #[cfg(windows)]
+        start_os_toast_watcher_thread(thread_tx.clone());
 
         // Spawn dedicated OS thread for COM UIAutomation polling
         let _ = std::thread::Builder::new()
@@ -705,6 +1112,20 @@ mod tests {
             .process_toast(&approval_toast)
             .expect("event created");
         assert_eq!(app_event.kind, Kind::NeedsInput);
+
+        // Generic desktop app (Discord)
+        let discord_toast = ToastMetadata {
+            app_id: "Discord".into(),
+            title: "Direct Message".into(),
+            body: "New message waiting".into(),
+            timestamp: Utc::now(),
+        };
+        let mut generic_ev = processor
+            .process_toast_with_id(&discord_toast, Some(42))
+            .expect("generic desktop event created");
+        assert_eq!(generic_ev.source, Source::Desktop);
+        assert_eq!(generic_ev.surface, Surface::Desktop);
+        assert!(generic_ev.normalize_and_validate(Utc::now()).is_ok());
     }
 
     #[test]

@@ -3510,38 +3510,54 @@ html.reduce-motion .ob-way-go {
    transport, metadata chrome, secondary rows. Transform + opacity only;
    `both` fill so delayed elements hold their hidden state until their
    cue instead of flashing in early. */
-@keyframes fs-enter {
+@keyframes fs-sheet-in {
   from {
     opacity: 0;
-    transform: translateY(14px);
+    transform: translate3d(0, 26px, 0) scale(0.985);
   }
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+.fs-sheet-in {
+  animation: fs-sheet-in 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  will-change: transform, opacity;
+}
+
+@keyframes fs-enter {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 16px, 0) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
   }
 }
 .fs-enter {
-  animation: fs-enter 280ms var(--ease-enter) both;
+  animation: fs-enter 300ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  will-change: transform, opacity;
 }
 .fs-d1 { animation-delay: 40ms; }
 .fs-d2 { animation-delay: 90ms; }
 .fs-d3 { animation-delay: 140ms; }
 .fs-d4 { animation-delay: 190ms; }
 
-/* Exit: the room settles back — quick fade with a whisper of contraction.
-   Applied to the overlay root while the OS leaves fullscreen underneath. */
+/* Exit: the room settles back — crisp springy contraction on GPU compositor. */
 @keyframes fs-exit {
   from {
     opacity: 1;
-    transform: scale(1);
+    transform: translate3d(0, 0, 0) scale(1);
   }
   to {
     opacity: 0;
-    transform: scale(0.992);
+    transform: translate3d(0, 18px, 0) scale(0.985);
   }
 }
 .fs-exiting {
   animation: fs-exit 210ms var(--ease-exit) forwards;
+  will-change: transform, opacity;
 }
 
 /* ---------- fullscreen cinematic mode ----------
@@ -3646,6 +3662,11 @@ html.reduce-motion .ob-way-go {
   width: min(38vh, 32vw, 480px);
   transition: width 420ms var(--ease-enter);
 }
+@media (max-width: 1023px) {
+  .fs-art {
+    width: min(34dvh, 72vw, 315px);
+  }
+}
 .fs-idle {
   cursor: none;
 }
@@ -3676,6 +3697,11 @@ html.reduce-motion .ob-way-go {
 .fs-idle .fs-art {
   width: min(43.7vh, 36.8vw, 552px);
   transition: width 900ms cubic-bezier(0.45, 0, 0.2, 1);
+}
+@media (max-width: 1023px) {
+  .fs-idle .fs-art {
+    width: min(38dvh, 78vw, 340px);
+  }
 }
 /* Moving, the lyric lines get a layer of their own, so the per-frame shift
    is a layer offset rather than a repaint of every blurred line. */

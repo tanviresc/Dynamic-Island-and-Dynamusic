@@ -8,7 +8,7 @@ export interface MotionPresets {
     content: { opacity: { duration: number; ease: string } };
   };
   contentChange: {
-    layout: { type?: string; stiffness?: number; damping?: number; duration?: number; ease?: string | number[] };
+    layout: { type?: string; stiffness?: number; damping?: number; mass?: number; duration?: number; ease?: string | number[] };
     crossfade: { duration: number };
   };
   queueOpen: {
@@ -18,7 +18,7 @@ export interface MotionPresets {
     rowDelay: number;
   };
   queueClose: {
-    layout: { type?: string; stiffness?: number; damping?: number; duration?: number; ease?: string | number[] };
+    layout: { type?: string; stiffness?: number; damping?: number; mass?: number; duration?: number; ease?: string | number[] };
     rowDuration: number;
   };
   dotAppear: {
@@ -37,42 +37,41 @@ export interface MotionPresets {
 
 export const standardMotion: MotionPresets = {
   appear: {
-    layout: { duration: 1.5, ease: [0.16, 1, 0.3, 1] },
+    layout: { type: "spring", stiffness: 420, damping: 32, mass: 0.8 },
     content: {
-      opacity: { duration: 0.8, delay: 0.35, ease: "easeOut" },
-      filter: { duration: 0.8, delay: 0.35 },
+      opacity: { duration: 0.18, delay: 0.04, ease: "easeOut" },
     },
   },
   disappear: {
-    layout: { duration: 1.5, ease: [0.16, 1, 0.3, 1] },
+    layout: { type: "spring", stiffness: 480, damping: 36, mass: 0.7 },
     content: {
-      opacity: { duration: 0.35, ease: "easeInOut" },
+      opacity: { duration: 0.14, ease: "easeInOut" },
     },
   },
   contentChange: {
-    layout: { duration: 0.45, ease: [0.16, 1, 0.3, 1] },
-    crossfade: { duration: 0.25 },
+    layout: { type: "spring", stiffness: 420, damping: 32, duration: 0.25 },
+    crossfade: { duration: 0.18 },
   },
   queueOpen: {
-    layout: { duration: 0.45, ease: [0.16, 1, 0.3, 1] },
-    stagger: 0.04,
-    rowDuration: 0.30,
-    rowDelay: 0.15,
+    layout: { type: "spring", stiffness: 400, damping: 30, mass: 0.85 },
+    stagger: 0.025,
+    rowDuration: 0.18,
+    rowDelay: 0.04,
   },
   queueClose: {
-    layout: { duration: 0.30, ease: [0.16, 1, 0.3, 1] },
-    rowDuration: 0.15,
+    layout: { type: "spring", stiffness: 460, damping: 34, mass: 0.75 },
+    rowDuration: 0.12,
   },
   dotAppear: {
-    scale: { type: "spring", stiffness: 180, damping: 18 },
-    opacity: { duration: 0.35 },
+    scale: { type: "spring", stiffness: 420, damping: 24 },
+    opacity: { duration: 0.18 },
   },
   dotDisappear: {
-    duration: 0.30,
+    duration: 0.16,
     ease: "easeInOut",
   },
   dotColor: {
-    duration: 0.40,
+    duration: 0.25,
     ease: "easeInOut",
   },
 };

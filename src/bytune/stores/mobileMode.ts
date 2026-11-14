@@ -14,6 +14,10 @@ export interface RemotePCPlayerState {
   volume: number;
   shuffle: boolean;
   repeat: string;
+  queue?: Track[];
+  index?: number;
+  queueOffset?: number;
+  autoplayCount?: number;
 }
 
 interface MobileModeState {
@@ -60,11 +64,31 @@ export const useMobileMode = create<MobileModeState>((set, get) => ({
   pcState: null,
 
   setMode: (mode) => {
-    set({ mode });
     try {
       localStorage.setItem("dynamusic:mobile_mode", mode);
     } catch {
       /* ignore */
+    }
+    set({ mode });
+    // Strict audio isolation: switching to PC Remote Mode must immediately silence
+    // any playing phone audio so phone + PC never play at the same time.
+    if (mode === "pc_remote" && typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window)) {
+      try {
+        document.querySelectorAll("audio").forEach((a) => {
+          try {
+            a.pause();
+          } catch {
+            /* ignore */
+          }
+        });
+      } catch {
+        /* ignore */
+      }
+      void import("./player").then((p) => {
+        if (p.usePlayer.getState().playing) {
+          p.usePlayer.getState().setPlaying(false);
+        }
+      });
     }
   },
 

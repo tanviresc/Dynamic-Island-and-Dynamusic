@@ -1,19 +1,35 @@
-import React, { useState, useEffect } from "react";
+import React, { Suspense, lazy, useState, useEffect } from "react";
 import ReactDOM from "react-dom/client";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { IslandRoot } from "./island/IslandRoot";
-import { SettingsShell } from "./settings/SettingsShell";
-import { initBytuneBridge } from "./bytune/lib/initBytuneBridge";
-import { initIslandBridge } from "./bytune/lib/islandBridge";
-import ByTuneApp from "./bytune/App";
-import { PipApp } from "./bytune/pip/PipApp";
 import { ErrorBoundary } from "./bytune/components/ErrorBoundary";
-import { endIntro } from "./bytune/intro";
 import "./bytune/lib/platform";
 import "./bytune/index.css";
 import "./shared/theme.css";
 
-initBytuneBridge();
+const SettingsShell = lazy(() =>
+  import("./settings/SettingsShell").then((m) => ({ default: m.SettingsShell }))
+);
+const ByTuneApp = lazy(async () => {
+  const [{ initBytuneBridge }, { initIslandBridge }, { endIntro }, appMod] = await Promise.all([
+    import("./bytune/lib/initBytuneBridge"),
+    import("./bytune/lib/islandBridge"),
+    import("./bytune/intro"),
+    import("./bytune/App"),
+  ]);
+  initBytuneBridge();
+  initIslandBridge();
+  endIntro();
+  return appMod;
+});
+const PipApp = lazy(async () => {
+  const [{ initBytuneBridge }, pipMod] = await Promise.all([
+    import("./bytune/lib/initBytuneBridge"),
+    import("./bytune/pip/PipApp"),
+  ]);
+  initBytuneBridge();
+  return { default: pipMod.PipApp };
+});
 
 function detectInitialWindowLabel(): { label: string; isTauri: boolean } {
   try {
@@ -33,6 +49,16 @@ function detectInitialWindowLabel(): { label: string; isTauri: boolean } {
     window.location.port === "47822" ||
     /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || "");
   return { label: isMobileOrSidecarPort ? "dynamusic" : "island", isTauri: false };
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("unhandledrejection", (event) => {
+    // Prevent transient aborted network/audio promises from destabilizing mobile WebViews
+    const reason = event.reason as { name?: string; message?: string } | undefined;
+    if (reason && (reason.name === "AbortError" || String(reason.message || "").includes("aborted"))) {
+      event.preventDefault();
+    }
+  });
 }
 
 if (typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window) && "serviceWorker" in navigator) {
@@ -64,20 +90,28 @@ function RootRouter() {
 
   useEffect(() => {
     if (windowLabel === "dynamusic") {
-      initBytuneBridge();
-      initIslandBridge();
-      endIntro();
+      void import("./bytune/lib/initBytuneBridge").then((m) => m.initBytuneBridge());
+      void import("./bytune/lib/islandBridge").then((m) => m.initIslandBridge());
+      void import("./bytune/intro").then((m) => m.endIntro());
+    } else if (windowLabel === "pip") {
+      void import("./bytune/lib/initBytuneBridge").then((m) => m.initBytuneBridge());
     }
   }, [windowLabel]);
 
   if (windowLabel === "settings") {
-    return <SettingsShell />;
+    return (
+      <Suspense fallback={null}>
+        <SettingsShell />
+      </Suspense>
+    );
   }
 
   if (windowLabel === "pip") {
     return (
       <ErrorBoundary>
-        <PipApp />
+        <Suspense fallback={null}>
+          <PipApp />
+        </Suspense>
       </ErrorBoundary>
     );
   }
@@ -85,7 +119,9 @@ function RootRouter() {
   if (windowLabel === "dynamusic") {
     return (
       <ErrorBoundary>
-        <ByTuneApp />
+        <Suspense fallback={<div className="h-screen bg-[#0b0b0e]" />}>
+          <ByTuneApp />
+        </Suspense>
       </ErrorBoundary>
     );
   }

@@ -48,6 +48,7 @@ import { useJournal } from "../stores/journal";
 import type { Track } from "../types";
 import { requireBridge } from "./bridge";
 import { emitPlayEvent } from "./playEvents";
+import { resetPlaybackClock, setPlaybackBuffered, setPlaybackClock } from "./playbackClock";
 import { analyseTrack, peekAnalysis, type TrackAnalysis } from "./analysis";
 import { upgradeArtwork } from "./artwork";
 import { shortTitle } from "./format";
@@ -71,6 +72,11 @@ let pendingSeek = 0;
 let retryCount = 0;
 /** Where the song was when it was last retried: one that plays on for 30 s may retry again. */
 let retriedAt = -Infinity;
+let retryTimer: number | null = null;
+/** Pre-buffered next track on standby deck (idle mode, not blending). */
+let prebuffered: { id: string; url: string } | null = null;
+let lastStoreSyncAt = 0;
+let lastSyncedPos = -1;
 /** consecutive tracks that failed to play — stops auto-skipping eventually */
 let consecutiveFailures = 0;
 /** the unlinked-local-folder explainer fires once per failing streak, not per skip */
@@ -305,13 +311,33 @@ function prefetchLoudness(track: Track | null): void {
   analyse(track); // edges and beats ahead of a blend
   if (track.localPath || track.id.startsWith("local:")) {
     levelLocal(track);
+    void (async () => {
+      const url = await requireBridge().localTrackUrl(track.id);
+      if (!url || !elements || fade || armed) return;
+      const cur = usePlayer.getState().queue[usePlayer.getState().index];
+      if (!cur || cur.id === track.id || upNext(usePlayer.getState())?.id !== track.id) return;
+      if (prebuffered?.id === track.id && prebuffered.url === url) return;
+      const stand = standbyEl();
+      stand.src = url;
+      stand.load();
+      prebuffered = { id: track.id, url };
+    })().catch(() => undefined);
     return;
   }
   // No loudnessGains shortcut: a replayed track knows its gain but its
   // resolution has likely expired, and a warm `?meta=1` hit costs nothing.
   void (async () => {
     const url = await requireBridge().getStreamUrl(track.id, false, useSettings.getState().streamingQuality, track.title, track.artist);
-    if (url) await fetchLoudness(url, track);
+    if (!url) return;
+    void fetchLoudness(url, track);
+    if (!elements || fade || armed) return;
+    const cur = usePlayer.getState().queue[usePlayer.getState().index];
+    if (!cur || cur.id === track.id || upNext(usePlayer.getState())?.id !== track.id) return;
+    if (prebuffered?.id === track.id && prebuffered.url === url) return;
+    const stand = standbyEl();
+    stand.src = url;
+    stand.load();
+    prebuffered = { id: track.id, url };
   })().catch(() => undefined);
 }
 
@@ -682,23 +708,33 @@ export async function listOutputDevices(): Promise<OutputDeviceChoice[]> {
   return deviceChoices(devices);
 }
 
-function updateBuffered(): void {
+function updateBuffered(): number {
   const a = el();
-  if (!a) return;
+  if (!a) return 0;
   try {
     if (a.buffered.length > 0 && Number.isFinite(a.duration) && a.duration > 0) {
-      usePlayer.getState()._setBuffered(a.buffered.end(a.buffered.length - 1) / a.duration);
+      const ratio = a.buffered.end(a.buffered.length - 1) / a.duration;
+      setPlaybackBuffered(ratio);
+      usePlayer.getState()._setBuffered(ratio);
+      return ratio;
     }
   } catch {
     /* ignore */
   }
+  return 0;
 }
 
 function onTimeUpdate(): void {
   const a = el();
   if (!a) return;
-  usePlayer.getState()._setTime(a.currentTime, a.duration);
-  updateBuffered();
+  const buf = updateBuffered();
+  setPlaybackClock(a.currentTime, a.duration, buf);
+  const now = performance.now();
+  if (lastSyncedPos < 0 || Math.abs(a.currentTime - lastSyncedPos) > 2.5 || now - lastStoreSyncAt >= 1000) {
+    lastStoreSyncAt = now;
+    lastSyncedPos = a.currentTime;
+    usePlayer.getState()._setTime(a.currentTime, a.duration);
+  }
   const cur = usePlayer.getState().queue[usePlayer.getState().index];
   if (cur) accumulate(cur.id, a.currentTime);
   maybeArmTransition();
@@ -1169,15 +1205,21 @@ export function initAudioEngine(): void {
       if (i === mainIdx) updateBuffered();
     });
     e.addEventListener("waiting", () => {
-      if (i === mainIdx) usePlayer.getState()._setBuffering(true);
+      if (i === mainIdx) {
+        usePlayer.getState()._setBuffering(true);
+        usePlayer.getState()._setPlaybackStatus("buffering");
+      }
     });
     e.addEventListener("canplay", () => {
-      if (i === mainIdx) usePlayer.getState()._setBuffering(false);
+      if (i === mainIdx) {
+        usePlayer.getState()._setBuffering(false);
+        usePlayer.getState()._setPlaybackStatus(usePlayer.getState().playing ? "playing" : "idle");
+      }
     });
     e.addEventListener("playing", () => {
       if (eqCtx?.state === "suspended") void eqCtx.resume();
       if (i !== mainIdx) return;
-      usePlayer.getState()._setBuffering(false);
+      usePlayer.setState({ buffering: false, playbackStatus: "playing", error: null });
       consecutiveFailures = 0;
       localMissingToasted = false;
       const cur = usePlayer.getState().queue[usePlayer.getState().index];
@@ -1190,10 +1232,18 @@ export function initAudioEngine(): void {
         emitPlayEvent("resume", cur, el().currentTime, (accum?.playedMs ?? 0) / 1000, 0);
       }
     });
+    e.addEventListener("pause", () => {
+      if (i !== mainIdx) return;
+      if (!usePlayer.getState().playing && loadedId) {
+        usePlayer.getState()._setPlaybackStatus("idle");
+      }
+    });
     // Errors and natural ends must be caught on BOTH elements: after a
     // crossfade the other element becomes the session player.
     e.addEventListener("error", () => {
       if (i !== mainIdx) {
+        // Standby pre-buffer error is non-fatal; clear prebuffer so regular loadUrl resolves fresh.
+        prebuffered = null;
         // The standby deck failed while blending in: drop the blend so the
         // outgoing song plays out and the normal end path loads the next one.
         // Otherwise the music faded to silence and a dead deck was promoted.
@@ -1221,8 +1271,25 @@ export function initAudioEngine(): void {
 
 
 
+  const isPcRemoteAudioBlocked = (): boolean => {
+    if (typeof window === "undefined" || "__TAURI_INTERNALS__" in window) return false;
+    try {
+      return localStorage.getItem("dynamusic:mobile_mode") === "pc_remote";
+    } catch {
+      return false;
+    }
+  };
+
   usePlayer.subscribe((state, prev) => {
     if (!elements) return;
+    if (isPcRemoteAudioBlocked()) {
+      el().pause();
+      standbyEl().pause();
+      if (state.playing) {
+        usePlayer.getState().setPlaying(false);
+      }
+      return;
+    }
     const cur = state.queue[state.index] ?? null;
     const prevCur = prev.queue[prev.index] ?? null;
 
@@ -1331,6 +1398,9 @@ export function initAudioEngine(): void {
 
     if (state.seekNonce !== prev.seekNonce) {
       disarmSilenceTail();
+      setPlaybackClock(state.position, Number.isFinite(el().duration) ? el().duration : state.duration);
+      lastSyncedPos = state.position;
+      lastStoreSyncAt = performance.now();
       try {
         el().currentTime = state.position;
       } catch {
@@ -1420,12 +1490,35 @@ export function engineBoot(): void {
   initAudioEngine();
   const state = usePlayer.getState();
   const cur = state.queue[state.index] ?? null;
-  if (cur) void loadTrack(cur, false);
+  // Defer paused cold-boot resolution slightly so initial UI paint is instantaneous
+  if (cur) {
+    window.setTimeout(() => {
+      const now = usePlayer.getState();
+      if (!loadedId && now.queue[now.index]?.id === cur.id) {
+        void loadTrack(cur, now.playing);
+      }
+    }, 100);
+  }
 }
 
 async function loadTrack(track: Track | null, autoplay: boolean): Promise<void> {
   if (!elements) return;
+  if (typeof window !== "undefined" && !("__TAURI_INTERNALS__" in window)) {
+    try {
+      if (localStorage.getItem("dynamusic:mobile_mode") === "pc_remote") {
+        el().pause();
+        standbyEl().pause();
+        return;
+      }
+    } catch {
+      /* ignore */
+    }
+  }
   disarmSilenceTail();
+  if (retryTimer != null) {
+    window.clearTimeout(retryTimer);
+    retryTimer = null;
+  }
   // A fresh load is a new playback session: any arming still waiting on a
   // start belongs to the previous track and must not fire.
   transitionToken += 1;
@@ -1436,7 +1529,9 @@ async function loadTrack(track: Track | null, autoplay: boolean): Promise<void> 
     el().pause();
     el().removeAttribute("src");
     el().load();
-    usePlayer.setState({ position: 0, duration: 0, buffered: 0, buffering: false, error: null });
+    resetPlaybackClock(0);
+    lastSyncedPos = -1;
+    usePlayer.setState({ position: 0, duration: 0, buffered: 0, buffering: false, playbackStatus: "idle", error: null });
     updateMediaSession(null);
     return;
   }
@@ -1448,14 +1543,17 @@ async function loadTrack(track: Track | null, autoplay: boolean): Promise<void> 
   // The store keeps the position until the deck plays from it: zeroing it here lost a saved resume
   // point whose song could not load yet (offline at launch), on screen, on disk and for the next play.
   pendingSeek = usePlayer.getState().position;
+  resetPlaybackClock(track.duration || 0);
+  lastSyncedPos = pendingSeek;
   usePlayer.setState({
     buffering: true,
+    playbackStatus: "loading",
     error: null,
     duration: track.duration || 0,
   });
   analyse(track);
   await loadUrl(track, autoplay, false);
-  // Pre-warm the next track: its proxy-side stream resolution (so a skip
+  // Pre-warm the next track: its proxy-side stream resolution + standby buffer (so a skip
   // never waits on a getBasicInfo + probe roundtrip) and its loudness (a
   // crossfade needs the gain the moment it starts). After loadUrl, so the
   // current track's resolution goes first.
@@ -1471,6 +1569,51 @@ async function loadUrl(track: Track, autoplay: boolean, forceRotate: boolean): P
   if (!elements) return;
   const seq = ++loadSeq;
   try {
+    // Fast-path: if the upcoming track was already pre-buffered on the standby deck,
+    // promote it directly without re-resolving or tearing down the buffered element.
+    if (!forceRotate && !fade && !armed && prebuffered?.id === track.id && standbyEl().src) {
+      const oldMain = el();
+      mainIdx = mainIdx === 0 ? 1 : 0;
+      prebuffered = null;
+      try {
+        oldMain.pause();
+        oldMain.removeAttribute("src");
+        oldMain.load();
+      } catch {
+        /* ignore */
+      }
+      loadedId = track.id;
+      if (track.localPath || track.id.startsWith("local:")) levelLocal(track);
+      else void fetchLoudness(el().src, track);
+      refreshVolumes();
+      applyElementVolumes(1, 0);
+      const a = el();
+      const trim = silenceEdges(track.id);
+      if (pendingSeek > 0) {
+        try {
+          a.currentTime = pendingSeek;
+        } catch {
+          /* ignore */
+        }
+        pendingSeek = 0;
+      } else if (trim && trim.head > 0.05) {
+        try {
+          a.currentTime = trim.head;
+        } catch {
+          /* ignore */
+        }
+      }
+      applySpeed();
+      updateMediaSession(track);
+      if (autoplay || usePlayer.getState().playing) {
+        await a.play();
+      } else {
+        usePlayer.setState({ buffering: false, playbackStatus: "idle" });
+      }
+      if (trim && trim.tail > 0.05 && usePlayer.getState().playing) armSilenceTail(trim.tail);
+      return;
+    }
+
     if (track.localPath || track.id.startsWith("local:")) {
       const a = el();
       // Local files stream through the main-process proxy (a file:// src is
@@ -1502,7 +1645,7 @@ async function loadUrl(track: Track, autoplay: boolean, forceRotate: boolean): P
       if (autoplay || usePlayer.getState().playing) {
         await a.play();
       } else {
-        usePlayer.setState({ buffering: false });
+        usePlayer.setState({ buffering: false, playbackStatus: "idle" });
       }
       return;
     }
@@ -1539,7 +1682,7 @@ async function loadUrl(track: Track, autoplay: boolean, forceRotate: boolean): P
     if (autoplay || usePlayer.getState().playing) {
       await a.play();
     } else {
-      usePlayer.setState({ buffering: false });
+      usePlayer.setState({ buffering: false, playbackStatus: "idle" });
     }
     if (trim && trim.tail > 0.05 && usePlayer.getState().playing) armSilenceTail(trim.tail);
   } catch (err) {
@@ -1557,19 +1700,34 @@ function handleFailure(track: Track, err?: unknown): void {
   // with autoplay=true and start audio the user had stopped (also the landing
   // spot for play() promises aborted by an immediate pause). The next play
   // re-attempts the load from the top.
-  if (!state.playing) return;
+  if (!state.playing) {
+    usePlayer.getState()._setPlaybackStatus("idle");
+    return;
+  }
   const deckAt = el().currentTime;
   const at = deckAt > 1 ? deckAt : usePlayer.getState().position;
-  // Once per song, and again for a long song or podcast that played on for
-  // 30 s since; a failure straight after a retry skips instead of looping.
-  if (retryCount < 1 || at - retriedAt > 30) {
+  // Retry up to 2 times with client rotation & backoff before skipping a track;
+  // a track that played on for > 30 s gets its retry budget refreshed.
+  if (retryCount < 2 || at - retriedAt > 30) {
+    if (at - retriedAt > 30 && retryCount >= 2) retryCount = 0;
+    const attempt = retryCount;
     retryCount += 1;
     retriedAt = at;
     // Resume where the song was, not from 0:00 (a stream dying mid-song).
     pendingSeek = at;
-    void loadUrl(track, true, true);
+    usePlayer.getState()._setPlaybackStatus("loading");
+    const delayMs = attempt === 0 ? 250 : 750;
+    if (retryTimer != null) window.clearTimeout(retryTimer);
+    retryTimer = window.setTimeout(() => {
+      retryTimer = null;
+      const latest = usePlayer.getState();
+      if (latest.playing && latest.queue[latest.index]?.id === track.id) {
+        void loadUrl(track, true, true);
+      }
+    }, delayMs);
     return;
   }
+  usePlayer.getState()._setPlaybackStatus("error");
   if (inRoom()) {
     // The room decides what plays: skipping here would skip the song for everyone. This computer sits
     // the song out and plays the room's next one (lib/rooms).

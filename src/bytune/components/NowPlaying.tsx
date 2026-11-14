@@ -26,7 +26,7 @@
  */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
 import { flushSync } from "react-dom";
-import { ChevronDown, Heart, Music2 } from "lucide-react";
+import { ChevronDown, Heart, Monitor, Music2, Pause, Play, Shuffle, SkipBack, SkipForward, Smartphone } from "lucide-react";
 import { PlayerBar } from "./PlayerBar";
 import { QueuePanel } from "./RightRail";
 import { LyricsView } from "./SyncedLyrics";
@@ -43,7 +43,8 @@ import { FitText } from "./FitText";
 import { playFragmented, useCanvas } from "../lib/canvas";
 import { useLyricsOffset } from "../lib/lyricsOffset";
 import { useIdle } from "../lib/useIdle";
-import { useMobileMode } from "../stores/mobileMode";
+import { useSwipeGesture } from "../lib/useSwipeGesture";
+import { useMobileMode, type MobileMode } from "../stores/mobileMode";
 import type { LyricsResult } from "../types";
 
 /** How long the pointer rests before the controls and the cursor go (YouTube's wait). */
@@ -273,6 +274,90 @@ function FsLyrics({
   );
 }
 
+function MobileFullscreenControls({
+  playing,
+  shuffle,
+  mobileMode,
+  onToggleShuffle,
+  onPrev,
+  onTogglePlay,
+  onNext,
+  onToggleMode,
+}: {
+  playing: boolean;
+  shuffle: boolean;
+  mobileMode: MobileMode;
+  onToggleShuffle: () => void;
+  onPrev: () => void;
+  onTogglePlay: () => void;
+  onNext: () => void;
+  onToggleMode: () => void;
+}) {
+  return (
+    <div className="shrink-0 h-20 px-6 pb-3 flex items-center justify-between max-w-md mx-auto w-full select-none">
+      <button
+        type="button"
+        onClick={onToggleShuffle}
+        aria-label={shuffle ? "Unshuffle" : "Shuffle"}
+        aria-pressed={shuffle}
+        title={shuffle ? "Shuffle on" : "Shuffle off"}
+        className={`relative p-2.5 rounded-full transition-all active:scale-90 ${
+          shuffle ? "text-white" : "text-white/50 hover:text-white/85"
+        }`}
+      >
+        <Shuffle className="w-5 h-5" />
+        {shuffle && (
+          <span className="absolute bottom-1 left-1/2 -translate-x-1/2 w-1 h-1 rounded-full bg-white" />
+        )}
+      </button>
+
+      <button
+        type="button"
+        onClick={onPrev}
+        aria-label="Previous track"
+        title="Previous"
+        className="p-2.5 text-white/85 hover:text-white transition-transform active:scale-90"
+      >
+        <SkipBack className="w-6 h-6 fill-current" />
+      </button>
+
+      <button
+        type="button"
+        onClick={onTogglePlay}
+        aria-label={playing ? "Pause" : "Play"}
+        title={playing ? "Pause" : "Play"}
+        className="w-14 h-14 rounded-full bg-white text-black flex items-center justify-center shadow-lg transition-transform active:scale-95"
+      >
+        {playing ? <Pause className="w-6 h-6 fill-current" /> : <Play className="w-6 h-6 fill-current ml-0.5" />}
+      </button>
+
+      <button
+        type="button"
+        onClick={onNext}
+        aria-label="Next track"
+        title="Next"
+        className="p-2.5 text-white/85 hover:text-white transition-transform active:scale-90"
+      >
+        <SkipForward className="w-6 h-6 fill-current" />
+      </button>
+
+      <button
+        type="button"
+        onClick={onToggleMode}
+        aria-label={mobileMode === "phone" ? "Phone Mode" : "PC Remote Mode"}
+        title={mobileMode === "phone" ? "Playing on Phone (tap for PC)" : "Controlling PC (tap for Phone)"}
+        className="p-2.5 rounded-full transition-transform active:scale-90"
+      >
+        {mobileMode === "phone" ? (
+          <Smartphone className="w-4 h-4 text-white/85" />
+        ) : (
+          <Monitor className="w-4 h-4 text-emerald-400" />
+        )}
+      </button>
+    </div>
+  );
+}
+
 /* ================================================================ the view */
 
 export function NowPlaying() {
@@ -309,8 +394,8 @@ export function NowPlaying() {
       mountedRef.current = true;
       setMounted(true);
       setExiting(false);
-      enteredFsRef.current = !useUI.getState().osFullscreen;
-      void window.bytune?.setFullScreen(true);
+      enteredFsRef.current = !useUI.getState().osFullscreen && typeof window !== "undefined" && window.innerWidth >= 768;
+      if (enteredFsRef.current) void window.bytune?.setFullScreen(true);
       return undefined;
     }
     if (!mountedRef.current) return undefined;
@@ -345,16 +430,26 @@ export function NowPlaying() {
   }, [open]);
 
   const mobileMode = useMobileMode((s) => s.mode);
+  const isMobileDevice = useMobileMode((s) => s.isMobileDevice);
+  const setMobileMode = useMobileMode((s) => s.setMode);
   const pcState = useMobileMode((s) => s.pcState);
   const isPcRemote = mobileMode === "pc_remote" && !!pcState?.track;
 
   const localTrack = usePlayer((s) => s.queue[s.index] ?? null);
   const localShown = usePlayer(shownTrack);
   const localPlaying = usePlayer((s) => s.playing);
+  const localShuffle = usePlayer((s) => s.shuffle);
 
   const track = isPcRemote ? pcState.track : localTrack;
   const shown = isPcRemote ? pcState.track : localShown;
   const playing = isPcRemote ? pcState.playing : localPlaying;
+  const shuffle = isPcRemote ? Boolean(pcState?.shuffle) : localShuffle;
+
+  const artSwipe = useSwipeGesture({
+    onSwipeRight: () => usePlayer.getState().next(true),
+    onSwipeLeft: () => usePlayer.getState().prev(),
+    disabled: !track,
+  });
 
   const liked = useLibrary((s) => (shown ? s.liked.some((t) => t.id === shown.id) : false));
   const toggleLike = useLibrary((s) => s.toggleLike);
@@ -421,7 +516,7 @@ export function NowPlaying() {
   // a menu or dialog, the controls stay. It holds through the exit fade, so
   // leaving never replays the re-centring.
   const menuOpen = useUI((s) => !!(s.contextMenu || s.dialog || s.playlistPicker));
-  const idle = useIdle(mounted && playing && !menuOpen, IDLE_MS, ".fs-chrome");
+  const idle = useIdle(mounted && playing && !menuOpen && !isMobileDevice, IDLE_MS, ".fs-chrome");
   // While the room re-centres, the lyric lines ride their own layer
   // (.fs-moving in index.css): shifted by layout every frame, they would be
   // repainted, blur and all, every frame. Only while moving, since a layer
@@ -452,33 +547,33 @@ export function NowPlaying() {
 
   return (
     <div
-      className={`fixed inset-0 z-[100] overflow-hidden bg-black animate-fade-in ${
+      className={`fixed inset-0 z-[100] overflow-hidden bg-black fs-sheet-in ${
         exiting ? "fs-exiting" : ""
       } ${idle ? "fs-idle" : ""} ${moving ? "fs-moving" : ""}`}
     >
       <FsBackdrop artwork={shown?.thumb ?? null} boost={boost} legacy={legacyMesh} />
 
       <div className="relative h-full flex flex-col">
-        {/* Fullscreen entry hint — Spotify's "To exit full screen, press Esc".
-            Parked inside the header band so it never covers the mode switch
-            that sits at the top of the lyrics column. */}
-        <div
-          aria-live="polite"
-          className={`absolute left-1/2 top-2 z-30 -translate-x-1/2 pointer-events-none transition-all duration-300 ${
-            escToastShown ? "opacity-100 translate-y-0" : "opacity-0 -translate-y-3"
-          }`}
-        >
-          <div className="flex items-center gap-2.5 rounded-lg border border-white/10 bg-[#1c1c1e]/95 px-4 py-3 shadow-float">
-            <span className="text-[14.5px] text-white">To exit full screen, press</span>
-            <kbd className="grid h-7 min-w-[36px] place-items-center rounded-[5px] border border-white/40 px-2 text-[13px] text-white">
-              Esc
-            </kbd>
+        {/* Fullscreen entry hint — desktop only */}
+        {!isMobileDevice && (
+          <div
+            aria-live="polite"
+            className={`absolute left-1/2 top-2 z-30 -translate-x-1/2 pointer-events-none transition-all duration-300 ${
+              escToastShown ? "opacity-100 translate-y-0" : "opacity-0 -translate-y-3"
+            }`}
+          >
+            <div className="flex items-center gap-2.5 rounded-lg border border-white/10 bg-[#1c1c1e]/95 px-4 py-3 shadow-float">
+              <span className="text-[14.5px] text-white">To exit full screen, press</span>
+              <kbd className="grid h-7 min-w-[36px] place-items-center rounded-[5px] border border-white/40 px-2 text-[13px] text-white">
+                Esc
+              </kbd>
+            </div>
           </div>
-        </div>
+        )}
 
         {/* Header — close (mobile: the iOS sheet-grabber). Idle, it fades
             and gives up its height. */}
-        <div className="fs-chrome fs-head relative h-14 shrink-0 flex items-center px-3">
+        <div className={`fs-chrome fs-head relative shrink-0 flex items-center px-3 ${isMobileDevice ? "h-11" : "h-14"}`}>
           <button
             onClick={close}
             title="Close (Esc)"
@@ -503,10 +598,22 @@ export function NowPlaying() {
           /* Body — artwork column and lyrics column share the space between
              the header and the play bar. Percent-based widths + min() sizing,
              so the composition holds from 16:9 laptops to ultrawides. */
-          <div className="flex-1 min-h-0 min-w-0 flex flex-col lg:flex-row items-stretch justify-center gap-8 lg:gap-12 xl:gap-20 px-8 lg:px-14 pb-4">
+          <div
+            className={`flex-1 min-h-0 min-w-0 flex flex-col lg:flex-row items-stretch justify-center ${
+              isMobileDevice ? "gap-3 px-5 pb-1" : "gap-8 lg:gap-12 xl:gap-20 px-8 lg:px-14 pb-4"
+            }`}
+          >
             {/* LEFT — the artwork is the hero; info and visualizer stay compact. */}
-            <div className="flex-1 lg:flex-none lg:w-[44%] xl:w-[42%] max-w-[640px] min-w-0 min-h-0 flex flex-col items-center justify-center">
-              <div className="relative w-full flex justify-center fs-enter">
+            <div className={`${isMobileDevice ? "shrink-0" : "flex-1"} lg:flex-none lg:w-[44%] xl:w-[42%] max-w-[640px] min-w-0 min-h-0 flex flex-col items-center justify-center`}>
+              <div
+                className="relative w-full flex justify-center fs-enter"
+                {...artSwipe.handlers}
+                style={{
+                  touchAction: "pan-y",
+                  transform: artSwipe.offsetX ? `translateX(${artSwipe.offsetX}px)` : undefined,
+                  transition: artSwipe.dragging ? "none" : "transform 220ms cubic-bezier(0.22, 1, 0.36, 1)",
+                }}
+              >
                 {/* Ambient glow — the sleeve's own accent, spilling behind it. */}
                 <div
                   aria-hidden
@@ -562,35 +669,66 @@ export function NowPlaying() {
                   the small fade instead of hard-swapping the words. */}
               <div
                 key={`fsmeta-${shown.id}`}
-                className="mt-7 flex flex-col items-center text-center max-w-full animate-meta-in"
+                className={`${isMobileDevice ? "mt-3 w-full" : "mt-7"} flex flex-col items-center text-center max-w-full animate-meta-in`}
               >
-                <div className="font-display text-[26px] xl:text-[30px] font-extrabold tracking-[-0.03em] text-white min-w-0 max-w-full">
-                  <FitText mode="auto" text={shortTitle(shown.title)} full={shown.title} />
-                </div>
-                <div className="text-[14px] xl:text-[15px] text-white/55 mt-1.5 min-w-0 max-w-full">
-                  <FitText mode="auto" text={shown.artist} />
-                </div>
-                {titleSource(shown.title) && <div className="text-[12.5px] text-white/40 mt-1">From {titleSource(shown.title)}</div>}
-                {/* Idle, the pill fades and its row closes up. */}
-                <div className="fs-chrome fs-like mt-4 h-8">
-                  <button
-                    onClick={() => toggleLike(shown)}
-                    title={liked ? "Remove from Liked Songs" : "Add to Liked Songs"}
-                    aria-pressed={liked}
-                    className="inline-flex items-center gap-2 h-8 px-4 rounded-full bg-white/[0.06] hover:bg-white/[0.11] text-white/60 hover:text-white text-[12.5px] font-semibold transition-all active:scale-95"
-                  >
-                    <Heart className={`w-3.5 h-3.5 shrink-0 ${liked ? "fill-current" : ""}`} />
-                    {liked ? "In Your Library" : "Add to Library"}
-                  </button>
-                </div>
+                {isMobileDevice ? (
+                  <div className="w-full grid grid-cols-[40px_1fr_40px] items-center gap-2">
+                    <span aria-hidden="true" />
+                    <div className="min-w-0 flex flex-col items-center text-center">
+                      <div className="font-display text-[20px] font-extrabold tracking-[-0.03em] text-white min-w-0 max-w-full">
+                        <FitText mode="auto" text={shortTitle(shown.title)} full={shown.title} />
+                      </div>
+                      <div className="text-[14px] text-white/55 mt-0.5 min-w-0 max-w-full">
+                        <FitText mode="auto" text={shown.artist} />
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => toggleLike(shown)}
+                      title={liked ? "Remove from Liked Songs" : "Add to Liked Songs"}
+                      aria-label={liked ? "Remove from Liked Songs" : "Add to Liked Songs"}
+                      aria-pressed={liked}
+                      className={`w-10 h-10 rounded-full flex items-center justify-center transition-all active:scale-90 ${
+                        liked
+                          ? "text-white bg-white/15"
+                          : "text-white/55 hover:text-white bg-white/[0.06]"
+                      }`}
+                    >
+                      <Heart key={liked ? "fs-liked" : "fs-unliked"} className={`w-5 h-5 animate-icon-pop ${liked ? "fill-white text-white" : ""}`} />
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <div className="font-display text-[26px] xl:text-[30px] font-extrabold tracking-[-0.03em] text-white min-w-0 max-w-full">
+                      <FitText mode="auto" text={shortTitle(shown.title)} full={shown.title} />
+                    </div>
+                    <div className="text-[14px] xl:text-[15px] text-white/55 mt-1.5 min-w-0 max-w-full">
+                      <FitText mode="auto" text={shown.artist} />
+                    </div>
+                    {titleSource(shown.title) && (
+                      <div className="text-[12.5px] text-white/40 mt-1">From {titleSource(shown.title)}</div>
+                    )}
+                    {/* Idle, the pill fades and its row closes up (desktop only). */}
+                    <div className="fs-chrome fs-like mt-4 h-8">
+                      <button
+                        onClick={() => toggleLike(shown)}
+                        title={liked ? "Remove from Liked Songs" : "Add to Liked Songs"}
+                        aria-pressed={liked}
+                        className="inline-flex items-center gap-2 h-8 px-4 rounded-full bg-white/[0.06] hover:bg-white/[0.11] text-white/60 hover:text-white text-[12.5px] font-semibold transition-all active:scale-95"
+                      >
+                        <Heart className={`w-3.5 h-3.5 shrink-0 ${liked ? "fill-current" : ""}`} />
+                        {liked ? "In Your Library" : "Add to Library"}
+                      </button>
+                    </div>
+                  </>
+                )}
               </div>
 
-              {/* Full-width row so the visualizer's percentage width resolves
-                  against the column, not a fit-content wrapper — a fit-content
-                  parent made the container resolve narrow and hug left. */}
-              <div className="mt-7 w-full flex justify-center fs-enter fs-d2">
-                <FsVisualizer playing={playing} />
-              </div>
+              {!isMobileDevice && (
+                <div className="mt-7 w-full flex justify-center fs-enter fs-d2">
+                  <FsVisualizer playing={playing} />
+                </div>
+              )}
             </div>
 
             {/* RIGHT — the mode switch over the existing lyrics / queue views.
@@ -598,7 +736,7 @@ export function NowPlaying() {
                 run from top to bottom. (The fade sits on an outer box: the
                 entrance's `both` fill would hold the switch's own opacity.) */}
             <div className="flex-1 min-w-0 min-h-0 max-w-[780px] flex flex-col py-1">
-              <div className="fs-chrome fs-switch shrink-0 h-10 mb-5">
+              <div className={`fs-chrome fs-switch shrink-0 ${isMobileDevice ? "h-9 mb-2" : "h-10 mb-5"}`}>
                 <div className="flex justify-center lg:justify-start fs-enter fs-d1">
                   <FsModeSwitch mode={mode} onChange={setMode} />
                 </div>
@@ -616,13 +754,22 @@ export function NowPlaying() {
           </div>
         )}
 
-        {/* The existing play bar — the exact component the shell renders,
-            unchanged; fullscreen adds nothing to it. No top border: the bar's
-            black and the backdrop's near-black floor meet seamlessly. Idle,
-            its dock closes and the bar fades as it slides off the bottom. */}
-        <div className="fs-chrome fs-dock h-[88px] shrink-0">
-          <PlayerBar />
-        </div>
+        {isMobileDevice ? (
+          <MobileFullscreenControls
+            playing={playing}
+            shuffle={shuffle}
+            mobileMode={mobileMode}
+            onToggleShuffle={() => usePlayer.getState().toggleShuffle()}
+            onPrev={() => usePlayer.getState().prev()}
+            onTogglePlay={() => usePlayer.getState().toggle()}
+            onNext={() => usePlayer.getState().next(true)}
+            onToggleMode={() => setMobileMode(mobileMode === "phone" ? "pc_remote" : "phone")}
+          />
+        ) : (
+          <div className="fs-chrome fs-dock h-[88px] shrink-0">
+            <PlayerBar />
+          </div>
+        )}
       </div>
     </div>
   );

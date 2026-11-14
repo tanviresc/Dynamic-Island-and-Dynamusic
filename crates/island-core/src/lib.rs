@@ -353,6 +353,16 @@ impl IslandCore {
                     Source::Claude => proc.contains("claude"),
                     Source::Chatgpt => proc.contains("chatgpt"),
                     Source::Gemini => proc.contains("gemini"),
+                    Source::Desktop => {
+                        if let Target::Process { process_names, .. } = target {
+                            process_names.iter().any(|p| {
+                                let stem = p.trim_end_matches(".exe").to_lowercase();
+                                !stem.is_empty() && stem != "explorer" && proc.contains(&stem)
+                            })
+                        } else {
+                            false
+                        }
+                    }
                     _ => false,
                 }
             }

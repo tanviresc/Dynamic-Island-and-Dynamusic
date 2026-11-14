@@ -11,8 +11,10 @@
  * word sweep, so the active word-synced line advances off its own rAF loop
  * reading the live element clock.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { createPortal } from "react-dom";
 import { getPlaybackPosition } from "../lib/audio";
+import { getPlaybackClock, subscribePlaybackClock } from "../lib/playbackClock";
 import { visibleLyricLines } from "../lib/lyricsLines";
 import { romanize } from "../lib/romanize";
 import { LYRICS_LOADING_LINES, pickLyricsLine } from "../lib/lyricsPhrases";
@@ -173,10 +175,11 @@ function depthStyle(
   dist: number,
   past: boolean,
   blur: boolean,
+  centered = false,
 ): { className: string; style: React.CSSProperties } {
   const d = Math.min(Math.abs(dist), 4);
-  // Sung and upcoming lines stay crisp and legible with smooth modern falloff
-  const opacity = [1, 0.68, 0.48, 0.38, 0.28][d] * (past && d > 0 ? 0.85 : 1);
+  // Active line is solid #ffffff; non-active past/upcoming lines stay translucent so the singing line pops
+  const opacity = (centered ? [1, 0.28, 0.21, 0.16, 0.12][d] : [1, 0.62, 0.42, 0.32, 0.24][d]) * (past && d > 0 ? 0.85 : 1);
   const blurPx = blur ? [0, 0.5, 1.0, 1.4, 1.8][d] : 0;
   const scale = [1.04, 0.98, 0.96, 0.94, 0.92][d];
   return {
@@ -185,7 +188,7 @@ function depthStyle(
       opacity,
       filter: d === 0 || blurPx === 0 ? undefined : `blur(${blurPx}px)`,
       transform: `scale(${scale})`,
-      transformOrigin: "left center",
+      transformOrigin: centered ? "center center" : "left center",
     },
   };
 }
@@ -201,10 +204,13 @@ export function LyricsView({
 }: LyricsViewProps & { offset?: number }) {
   const variant: LyricsVariant = hero ? "hero" : large ? "large" : "compact";
   const mobileMode = useMobileMode((s) => s.mode);
+  const isMobileDevice = useMobileMode((s) => s.isMobileDevice);
   const pcState = useMobileMode((s) => s.pcState);
   const isPcRemote = mobileMode === "pc_remote" && !!pcState?.track;
 
-  const localPosition = usePlayer((s) => s.position);
+  const clockPosition = useSyncExternalStore(subscribePlaybackClock, getPlaybackClock).position;
+  const storePosition = usePlayer((s) => s.position);
+  const localPosition = clockPosition > 0 || storePosition === 0 ? clockPosition : storePosition;
   const position = isPcRemote ? (pcState.position ?? 0) : localPosition;
   const localPlaying = usePlayer((s) => s.playing);
   const playing = isPcRemote ? pcState.playing : localPlaying;
@@ -417,15 +423,15 @@ export function LyricsView({
           {(lines ?? []).map((line, i) => {
             const active = i === activeIndex;
             const dist = i - activeIndex;
-            const depth = depthStyle(dist, i < activeIndex, blurLines);
+            const depth = depthStyle(dist, i < activeIndex, blurLines, isMobileDevice);
 
             if (line.gap) {
               return (
                 <div
                   key={`${line.time}-${i}`}
-                  className="flex items-center gap-2 py-2 px-1"
+                  className={`flex items-center gap-2 py-2 px-1 ${isMobileDevice ? "justify-center" : ""}`}
                   title="Instrumental"
-                  style={{ opacity: Math.max(0.2, depth.style.opacity as number) }}
+                  style={{ opacity: Math.max(0.16, depth.style.opacity as number) }}
                 >
                   {[0, 1, 2].map((d) => (
                     <span
@@ -468,17 +474,19 @@ export function LyricsView({
                 ref={i === activeIndex ? activeRef : undefined}
                 onClick={() => seek(Math.max(0, line.time + offset - 0.15))}
                 title="Jump here"
-                className={`group relative block w-full text-left origin-left transition-all duration-300 ${
+                className={`group relative block w-full transition-all duration-300 ${
+                  isMobileDevice ? "text-center origin-center" : "text-left origin-left"
+                } ${
                   active
-                    ? "text-white font-extrabold bg-white/[0.08] px-3.5 py-2.5 rounded-2xl border border-white/15 shadow-[0_4px_24px_rgba(0,0,0,0.5)]"
-                    : "text-white/60 font-semibold px-3 py-1.5 hover:text-white/80"
+                    ? "text-white font-extrabold px-3 py-1.5"
+                    : "text-white/55 font-semibold px-3 py-1.5 hover:text-white/80"
                 } ${depth.className}`}
                 style={
                   active
                     ? {
                         opacity: 1,
                         transform: "scale(1.04)",
-                        transformOrigin: "left center",
+                        transformOrigin: isMobileDevice ? "center center" : "left center",
                         filter: glowLines
                           ? "drop-shadow(0 0 24px rgba(255,255,255,0.45))"
                           : undefined,
@@ -486,14 +494,6 @@ export function LyricsView({
                     : depth.style
                 }
               >
-                {/* Active singing indicator: vibrant glowing pill bar */}
-                {active && (
-                  <span
-                    className="inline-block w-1.5 h-4 rounded-full bg-white mr-2.5 align-middle animate-pulse shadow-[0_0_12px_rgba(255,255,255,1)]"
-                    title="Singing now"
-                  />
-                )}
-
                 {wordSynced ? (
                   <WordLine
                     words={line.words!}
@@ -531,7 +531,11 @@ export function LyricsView({
               </button>
             );
           })}
-          {lyrics?.source && <p className="pt-4 text-[12px] font-medium text-ink-hi/45">Lyrics from {lyrics.source}</p>}
+          {lyrics?.source && (
+            <p className={`pt-4 text-[12px] font-medium text-ink-hi/35 ${isMobileDevice ? "text-center" : ""}`}>
+              Lyrics from {lyrics.source}
+            </p>
+          )}
         </div>
         <div aria-hidden="true" style={{ height: bottomSpacer, flexShrink: 0 }} />
         </div>
@@ -542,7 +546,9 @@ export function LyricsView({
   return (
     <div className="flex flex-col flex-1 min-h-0">
       <pre
-        className={`relative flex-1 min-h-0 overflow-y-auto whitespace-pre-wrap font-sans text-ink-dim ${
+        className={`relative flex-1 min-h-0 overflow-y-auto whitespace-pre-wrap font-sans ${
+          isMobileDevice ? "text-center text-white/40" : "text-ink-dim"
+        } ${
           hero ? "h-full text-[17px] leading-8 py-2" : large ? "h-full text-[15px] leading-7 py-2" : "text-[13px] leading-6 py-2"
         }`}
       >

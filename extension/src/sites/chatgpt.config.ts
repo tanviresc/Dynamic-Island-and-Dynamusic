@@ -23,12 +23,23 @@ export const chatgptConfig: SiteConfig = {
       '.result-streaming',
       '[data-is-streaming="true"]',
       '.result-thinking',
+      '[data-message-author-role="assistant"][data-is-streaming="true"]',
     ],
     needsInput: [
       '[data-testid="confirmation-modal"]',
       '[data-testid="approval-dialog"]',
       'button[data-testid*="confirm" i]',
+      'button[data-testid*="allow" i]',
       '[role="dialog"] button[data-testid*="allow" i]',
+      '[role="alertdialog"] button[data-testid*="confirm" i]',
+    ],
+    needsInputTextMatchers: [
+      "allow",
+      "allow once",
+      "allow always",
+      "approve",
+      "confirm",
+      "continue generating",
     ],
     chatTitle: undefined, // Falls back to document.title
   },

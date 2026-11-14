@@ -3,8 +3,7 @@ use island_core::{Effect, Input, IslandCore, Millis};
 use island_platform::{
     calculate_window_position, client_rect_to_screen_rect, enumerate_monitors,
     find_window_by_process_and_title, focus_window, get_adaptive_poll_interval_ms, get_cursor_pos,
-    get_window_dpi_scale, get_window_screen_rect, poll_platform_state, update_window_clickthrough,
-    MonitorInfo, Rect,
+    get_window_dpi_scale, get_window_screen_rect, poll_platform_state, MonitorInfo, Rect,
 };
 use island_secrets::{generate_pairing_token, SecretStore, WindowsSecretStore};
 use island_server::{start_server, ServerState, DEFAULT_PORT};
@@ -498,7 +497,11 @@ async fn open_dynamusic_window(app_handle: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn dynamusic_window_action(action: String, app_handle: AppHandle, state: State<'_, AppState>) -> Result<bool, String> {
+async fn dynamusic_window_action(
+    action: String,
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<bool, String> {
     if action == "open" {
         show_or_recreate_dynamusic(&app_handle);
         return Ok(true);
@@ -580,7 +583,11 @@ async fn send_music_command(
         command: String,
         payload: Option<serde_json::Value>,
     }
-    let _ = app_handle.emit("dynamusic://command", &CommandEvent { command, payload });
+    let _ = app_handle.emit_to(
+        "dynamusic",
+        "dynamusic://command",
+        &CommandEvent { command, payload },
+    );
     Ok(())
 }
 
@@ -701,8 +708,8 @@ pub fn run() {
                                 let win_rect_opt = get_window_screen_rect(raw_hwnd);
                                 let scale = get_window_dpi_scale(raw_hwnd);
 
-                                // 4px tolerance when checking entrance; 8px when checking exit
-                                let tolerance = if last_inside { 8 } else { 4 };
+                                // 6px tolerance when checking entrance; 12px hysteresis when checking exit
+                                let tolerance = if last_inside { 12 } else { 6 };
 
                                 let screen_hit_rect = match (rect_opt, win_rect_opt) {
                                     (Some(client_rect), Some(win_rect)) if !client_rect.is_empty() => {
@@ -729,7 +736,10 @@ pub fn run() {
                                     let win_main = win_clone.clone();
                                     let _ = win_clone.run_on_main_thread(move || {
                                         let _ = win_main.set_ignore_cursor_events(!inside);
-                                        update_window_clickthrough(raw_hwnd, inside);
+                                        #[cfg(target_os = "windows")]
+                                        if let Ok(hwnd) = win_main.hwnd() {
+                                            island_platform::update_window_clickthrough(hwnd.0 as isize, inside);
+                                        }
                                     });
                                     last_inside = inside;
                                 }
@@ -1188,10 +1198,6 @@ fn process_effects(
                                     SWP_NOACTIVATE | SWP_SHOWWINDOW,
                                 );
                             }
-                            let _ = win.set_size(tauri::Size::Logical(tauri::LogicalSize {
-                                width: 720.0,
-                                height: 500.0,
-                            }));
                         }
                     }
                 }

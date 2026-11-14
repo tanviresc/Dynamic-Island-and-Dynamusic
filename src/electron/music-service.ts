@@ -1133,29 +1133,31 @@ function isMatchingTrack(reqTitle: string, reqArtist: string, candTitle: string,
   return isTitleMatch && isArtistMatch;
 }
 
-/** Last-resort stream source: public Piped mirrors. */
+/** Last-resort stream source: public Piped mirrors (raced in parallel). */
 async function resolveViaPiped(videoId: string): Promise<string> {
   // The id lands in a URL path segment — a renderer- or cloud-supplied value
   // with separators or query syntax must never reshape the request.
   if (!/^[\w-]{6,20}$/.test(videoId)) throw new Error("Invalid video id");
-  for (const base of PIPED_INSTANCES) {
-    try {
-      const res = await fetch(`${base}/streams/${videoId}`, {
-        headers: { "User-Agent": UA },
-        signal: AbortSignal.timeout(12000),
-      });
-      if (!res.ok) continue;
-      const data: any = await res.json();
-      const audio: any[] = (data?.audioStreams ?? []).filter((s: any) => typeof s?.url === "string");
-      if (!audio.length) continue;
-      audio.sort((a, b) => (b?.bitrate ?? 0) - (a?.bitrate ?? 0));
-      const pick = audio.find((s) => /mp4|aac/i.test(String(s?.mimeType ?? ""))) ?? audio[0];
-      if (await probeUrl(pick.url)) return pick.url;
-    } catch {
-      /* try next instance */
-    }
+  try {
+    return await Promise.any(
+      PIPED_INSTANCES.map(async (base) => {
+        const res = await fetch(`${base}/streams/${videoId}`, {
+          headers: { "User-Agent": UA },
+          signal: AbortSignal.timeout(5000),
+        });
+        if (!res.ok) throw new Error(`Piped HTTP ${res.status}`);
+        const data: any = await res.json();
+        const audio: any[] = (data?.audioStreams ?? []).filter((s: any) => typeof s?.url === "string");
+        if (!audio.length) throw new Error("No Piped audioStreams");
+        audio.sort((a, b) => (b?.bitrate ?? 0) - (a?.bitrate ?? 0));
+        const pick = audio.find((s) => /mp4|aac/i.test(String(s?.mimeType ?? ""))) ?? audio[0];
+        if (!(await probeUrl(pick.url, 3500))) throw new Error("Piped probe failed");
+        return pick.url;
+      }),
+    );
+  } catch {
+    throw new Error("No Piped mirror had a playable stream");
   }
-  throw new Error("No Piped mirror had a playable stream");
 }
 
 /* Pure-JS DES-ECB decryptor for 320kbps fallback CDN when YouTube/Piped block a stream */
@@ -1361,27 +1363,38 @@ export function resolveStream(
     const tryInnerTube = async (): Promise<ResolvedStream> => {
       const yt = await getYT();
       const poToken: string | undefined = (yt as any).__poToken;
-      // IOS, VISIONOS and ANDROID_VR return reliable non-gated streams with deciphering
-      const clients = ["IOS", "VISIONOS", "ANDROID_VR", "YTMUSIC", "WEB", "ANDROID"] as const;
+      // Rotate from preferredClientIdx so retryStream actually cycles away from a failing client
+      const start = ((preferredClientIdx % STREAM_CLIENTS.length) + STREAM_CLIENTS.length) % STREAM_CLIENTS.length;
+      const ordered = [...STREAM_CLIENTS.slice(start), ...STREAM_CLIENTS.slice(0, start)];
+
+      const attemptClient = async (client: (typeof STREAM_CLIENTS)[number]): Promise<ResolvedStream> => {
+        const opts: any = { client };
+        if (poToken && client === "ANDROID") opts.po_token = poToken;
+        const info = await Promise.race([
+          yt.getBasicInfo(videoId, opts),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Timeout")), 4500)),
+        ]);
+        const picked = await pickAudio(info, yt, maxKbps, mp4Only, pin);
+        if (!picked) throw new Error(`No picked stream for ${client}`);
+        if (!(await probeUrl(picked.url, 3500))) throw new Error(`Probe failed for ${client}`);
+        const idx = STREAM_CLIENTS.indexOf(client);
+        if (idx >= 0) preferredClientIdx = idx;
+        return {
+          url: picked.url,
+          mime: picked.mime,
+          lufs: picked.lufs,
+          itag: picked.itag,
+          clen: picked.clen,
+        };
+      };
+
+      // Race clients in bounded concurrent batches for fast first byte without flooding all 7 at once
       let lastErr: unknown = null;
-      for (const client of clients) {
+      const batchSize = 3;
+      for (let i = 0; i < ordered.length; i += batchSize) {
+        const batch = ordered.slice(i, i + batchSize);
         try {
-          const opts: any = { client };
-          if (poToken && client === "ANDROID") opts.po_token = poToken;
-          const info = await Promise.race([
-            yt.getBasicInfo(videoId, opts),
-            new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Timeout")), 6000)),
-          ]);
-          const picked = await pickAudio(info, yt, maxKbps, mp4Only, pin);
-          if (!picked) continue;
-          if (!(await probeUrl(picked.url, 6000))) continue;
-          return {
-            url: picked.url,
-            mime: picked.mime,
-            lufs: picked.lufs,
-            itag: picked.itag,
-            clen: picked.clen,
-          };
+          return await Promise.any(batch.map((c) => attemptClient(c)));
         } catch (err) {
           lastErr = err;
         }
@@ -1401,24 +1414,10 @@ export function resolveStream(
       const winner = await Promise.any([tryInnerTube(), tryFallback()]);
       return cacheAndReturn(winner, streamTtlMs(winner.url, Date.now()));
     } catch {
-      /* continue to fallback attempts */
+      /* continue to parallel Piped mirrors */
     }
 
-    try {
-      const stream = await tryInnerTube();
-      return cacheAndReturn(stream, streamTtlMs(stream.url, Date.now()));
-    } catch {
-      /* continue */
-    }
-
-    try {
-      const stream = await tryFallback();
-      return cacheAndReturn(stream, streamTtlMs(stream.url, Date.now()));
-    } catch {
-      /* continue */
-    }
-
-    // High-speed Piped YouTube mirror for the exact videoId as emergency fallback
+    // High-speed Piped YouTube mirrors for the exact videoId as emergency fallback
     try {
       const url = await resolveViaPiped(videoId);
       return cacheAndReturn({ url, mime: "audio/mp4", lufs: null }, streamTtlMs(url, Date.now()));

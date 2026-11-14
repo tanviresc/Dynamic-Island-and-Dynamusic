@@ -198,4 +198,60 @@ describe("DetectorEngine", () => {
     expect(needsInputEvents.length).toBe(2);
     expect(needsInputEvents[1].promptId).toBe("prompt-2");
   });
+
+  it("drives generation completion via network lifecycle signal without DOM stop button", () => {
+    const doneEvents: any[] = [];
+    const engine = new DetectorEngine({
+      config: siteConfig,
+      callbacks: {
+        onDone: (d) => doneEvents.push(d),
+        onNeedsInput: () => {},
+      },
+      querySelector: () => null,
+      now: () => mockTime,
+    });
+
+    engine.setNetworkGenerating(true);
+    expect(engine.getState()).toBe("generating");
+
+    mockTime += 1200;
+    engine.setNetworkGenerating(false);
+    expect(engine.getState()).toBe("settling");
+
+    vi.advanceTimersByTime(1500);
+    expect(engine.getState()).toBe("idle");
+    expect(doneEvents.length).toBe(1);
+    expect(doneEvents[0].durationMs).toBe(1200);
+  });
+
+  it("matches needs_input approval buttons via text matcher", () => {
+    const needsInputEvents: any[] = [];
+    const allowBtn = {
+      ...createMockElement(),
+      textContent: "Allow once",
+    } as unknown as Element;
+
+    const configWithText: SiteConfig = {
+      ...siteConfig,
+      selectors: {
+        ...siteConfig.selectors,
+        needsInputTextMatchers: ["allow once", "confirm"],
+      },
+    };
+
+    const engine = new DetectorEngine({
+      config: configWithText,
+      callbacks: {
+        onDone: () => {},
+        onNeedsInput: (d) => needsInputEvents.push(d),
+      },
+      querySelector: () => null,
+      querySelectorAll: () => [allowBtn],
+      now: () => mockTime,
+    });
+
+    engine.evaluate();
+    expect(needsInputEvents.length).toBe(1);
+    expect(needsInputEvents[0].promptText).toBe("Action approval needed");
+  });
 });

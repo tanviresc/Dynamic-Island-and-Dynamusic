@@ -357,33 +357,42 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
 
     res.writeHead(status, outHeaders);
 
-    const pipeBody = async (body: ReadableStream<Uint8Array>): Promise<boolean> => {
+    const pipeBody = async (
+      body: ReadableStream<Uint8Array>,
+      activeCtl: AbortController,
+    ): Promise<{ ok: boolean; written: number }> => {
       const reader = body.getReader();
+      let written = 0;
       const onReqClose = () => {
         void reader.cancel().catch(() => undefined);
       };
       req.on("close", onReqClose);
-      let idle = setTimeout(() => ctl.abort(new Error("upstream stalled")), UPSTREAM_TIMEOUT_MS);
+      let idle = setTimeout(() => activeCtl.abort(new Error("upstream stalled")), UPSTREAM_TIMEOUT_MS);
       try {
         for (;;) {
           const { done, value } = await reader.read();
           clearTimeout(idle);
           if (done || res.destroyed) break;
-          if (value && value.length > 0 && !res.write(value)) {
-            await new Promise<void>((resolve) => {
-              const settle = () => {
-                res.off("drain", settle);
-                res.off("close", settle);
-                resolve();
-              };
-              res.once("drain", settle);
-              res.once("close", settle);
-            });
-            if (res.destroyed) break;
+          if (value && value.length > 0) {
+            written += value.length;
+            if (!res.write(value)) {
+              await new Promise<void>((resolve) => {
+                const settle = () => {
+                  res.off("drain", settle);
+                  res.off("close", settle);
+                  resolve();
+                };
+                res.once("drain", settle);
+                res.once("close", settle);
+              });
+              if (res.destroyed) break;
+            }
           }
-          idle = setTimeout(() => ctl.abort(new Error("upstream stalled")), UPSTREAM_TIMEOUT_MS);
+          idle = setTimeout(() => activeCtl.abort(new Error("upstream stalled")), UPSTREAM_TIMEOUT_MS);
         }
-        return !res.destroyed;
+        return { ok: !res.destroyed, written };
+      } catch {
+        return { ok: false, written };
       } finally {
         clearTimeout(idle);
         req.off("close", onReqClose);
@@ -392,8 +401,8 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     };
 
     // Pipe the first chunk
-    const firstOk = await pipeBody(upstream.body);
-    if (!firstOk || res.destroyed) return;
+    const firstResult = await pipeBody(upstream.body, ctl);
+    if (!firstResult.ok || res.destroyed) return;
 
     // If upstream returned full status 200 without content-range, or client range is fulfilled
     if (upstream.status === 200 && !cr) {
@@ -401,24 +410,58 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       return;
     }
 
-    // Sequentially stream subsequent chunks with bounded ranges (bypassing YouTube iOS SABR 403)
-    let nextStart = firstChunkEnd + 1;
+    // Sequentially stream subsequent chunks with bounded ranges (bypassing YouTube iOS SABR 403),
+    // automatically re-resolving an expired/403 upstream URL mid-song without breaking playback.
+    let nextStart = reqStart + firstResult.written;
+    if (nextStart <= firstChunkEnd && totalLength !== undefined && firstResult.written === 0) {
+      return;
+    }
+    let midStreamRefreshes = 0;
     while (!res.destroyed && (finalTargetEnd === undefined || nextStart <= finalTargetEnd)) {
       const nextEnd = finalTargetEnd !== undefined ? Math.min(nextStart + CHUNK_SIZE - 1, finalTargetEnd) : nextStart + CHUNK_SIZE - 1;
       const nextRange = `bytes=${nextStart}-${nextEnd}`;
-      const chunkCtl = new AbortController();
-      let chunkResp: Response;
+      let chunkCtl = new AbortController();
+      let chunkResp: Response | null = null;
       try {
         chunkResp = await fetchUpstream(stream.url, nextRange, chunkCtl);
       } catch {
+        chunkResp = null;
+      }
+
+      if ((!chunkResp || !chunkResp.ok || !chunkResp.body) && trackId && midStreamRefreshes < 2) {
+        midStreamRefreshes++;
+        console.warn(`[bytune] proxy mid-stream chunk ${chunkResp?.status ?? "err"} at ${nextStart} for ${trackId}, re-resolving`);
+        try {
+          stream = await resolveStream(trackId, true, maxKbps, false, title, artist);
+          chunkCtl = new AbortController();
+          chunkResp = await fetchUpstream(stream.url, nextRange, chunkCtl);
+        } catch {
+          chunkResp = null;
+        }
+      }
+
+      if (!chunkResp || !chunkResp.ok || !chunkResp.body) break;
+
+      const chunkResult = await pipeBody(chunkResp.body, chunkCtl);
+      if (chunkResult.written > 0) {
+        nextStart += chunkResult.written;
+        midStreamRefreshes = 0;
+      } else if (!chunkResult.ok || res.destroyed) {
+        break;
+      } else {
+        // Zero bytes and done means upstream EOF
         break;
       }
-      if (!chunkResp.ok || !chunkResp.body) break;
 
-      const chunkOk = await pipeBody(chunkResp.body);
-      if (!chunkOk || res.destroyed) break;
-
-      nextStart = nextEnd + 1;
+      if (!chunkResult.ok) {
+        if (res.destroyed || !trackId || midStreamRefreshes >= 2) break;
+        midStreamRefreshes++;
+        try {
+          stream = await resolveStream(trackId, true, maxKbps, false, title, artist);
+        } catch {
+          break;
+        }
+      }
     }
 
     if (!res.destroyed) {

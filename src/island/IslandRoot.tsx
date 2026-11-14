@@ -7,7 +7,7 @@ import { Pill, PillProps } from "./Pill";
 import { QueuePanel, QueueItem } from "./QueuePanel";
 import { MusicPill } from "./MusicPill";
 import { TopEdgeSnapTrigger } from "./TopEdgeSnapTrigger";
-import { IPCMusicState } from "../dynamusic/types";
+import { IPCMusicState } from "./types";
 
 export type IslandMode = "hidden" | "dot" | "pill" | "queue";
 
@@ -51,8 +51,27 @@ export const IslandRoot: React.FC<IslandRootProps> = ({
   const [dotColor, setDotColor] = useState<string>("#30D158");
   const [musicState, setMusicState] = useState<IPCMusicState | null>(null);
   const [isProximityActive, setIsProximityActive] = useState<boolean>(false);
-  const proximityTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const proximityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isInteractingRef = useRef<boolean>(false);
   const surfaceRef = useRef<HTMLDivElement>(null);
+
+  const PREVIEW_AUTO_HIDE_MS = 4000;
+
+  const clearPreviewTimer = () => {
+    if (proximityTimerRef.current) {
+      clearTimeout(proximityTimerRef.current);
+      proximityTimerRef.current = null;
+    }
+  };
+
+  const schedulePreviewCollapse = () => {
+    clearPreviewTimer();
+    if (isInteractingRef.current) return;
+    proximityTimerRef.current = setTimeout(() => {
+      proximityTimerRef.current = null;
+      setIsProximityActive(false);
+    }, PREVIEW_AUTO_HIDE_MS);
+  };
 
   const applyViewModel = (vm: BackendViewModel) => {
     setMode(vm.mode);
@@ -117,32 +136,33 @@ export const IslandRoot: React.FC<IslandRootProps> = ({
     return () => {
       unlistenView?.();
       unlistenMusic?.();
+      clearPreviewTimer();
     };
   }, []);
 
   const handleProximityTrigger = () => {
-    if (proximityTimerRef.current) {
-      clearTimeout(proximityTimerRef.current);
-      proximityTimerRef.current = null;
-    }
     setIsProximityActive(true);
+    schedulePreviewCollapse();
   };
 
   const handleMusicHoverEnter = () => {
-    if (proximityTimerRef.current) {
-      clearTimeout(proximityTimerRef.current);
-      proximityTimerRef.current = null;
-    }
     setIsProximityActive(true);
+    schedulePreviewCollapse();
   };
 
   const handleMusicHoverLeave = () => {
-    if (proximityTimerRef.current) {
-      clearTimeout(proximityTimerRef.current);
-    }
-    proximityTimerRef.current = setTimeout(() => {
-      setIsProximityActive(false);
-    }, 650);
+    // Strict 4-second auto-hide rule: collapse runs on the 4000ms timer from activation
+    // or interaction end, even if WebView drops onMouseLeave on transparent transitions.
+  };
+
+  const handleMusicInteractionStart = () => {
+    isInteractingRef.current = true;
+    clearPreviewTimer();
+  };
+
+  const handleMusicInteractionEnd = () => {
+    isInteractingRef.current = false;
+    schedulePreviewCollapse();
   };
 
   const handleOpenDynamusic = () => {
@@ -150,7 +170,13 @@ export const IslandRoot: React.FC<IslandRootProps> = ({
   };
 
   const handleMusicControl = (action: "play_pause" | "next" | "previous") => {
-    invoke("send_music_control", { action }).catch(() => {});
+    const command =
+      action === "play_pause" ? "toggle_play" : action === "previous" ? "prev" : "next";
+    invoke("send_music_command", { command }).catch(() => {});
+  };
+
+  const handleMusicSeek = (targetSeconds: number) => {
+    invoke("send_music_command", { command: "seek", payload: targetSeconds }).catch(() => {});
   };
 
   // Report hit rectangle to Rust / layout whenever mode, music state, or size changes
@@ -159,36 +185,65 @@ export const IslandRoot: React.FC<IslandRootProps> = ({
     const isShowingDot = !isShowingMusic && (mode === "dot" || (mode === "hidden" && queueItems.length > 0));
 
     const updateRect = () => {
+      const winWidth = window.innerWidth || 720;
+      const centerX = Math.round(winWidth / 2);
+
       if (mode === "hidden" && !isShowingMusic && queueItems.length === 0) {
         // Top edge snap trigger zone: 280px wide centered in 720px window (220 to 500), 28px tall
         const defaultTriggerHit = {
-          left: 220,
+          left: centerX - 140,
           top: 0,
-          right: 500,
+          right: centerX + 140,
           bottom: 28,
         };
-        onHitRectChange?.({ x: 220, y: 0, width: 280, height: 28 });
+        onHitRectChange?.({ x: defaultTriggerHit.left, y: 0, width: 280, height: 28 });
         invoke("update_hit_rect", { rect: defaultTriggerHit }).catch(() => {});
         return;
       }
 
+      if (isShowingDot) {
+        // Generous clickable hit-box covering the top-center approach and the expanded dot
+        const minDotHit = {
+          left: centerX - 38,
+          top: 0,
+          right: centerX + 38,
+          bottom: 84,
+        };
+        const rect = surfaceRef.current?.getBoundingClientRect();
+        const hit =
+          rect && rect.width >= 20 && rect.height >= 20
+            ? {
+                left: Math.min(minDotHit.left, Math.round(rect.left) - 12),
+                top: 0,
+                right: Math.max(minDotHit.right, Math.round(rect.right) + 12),
+                bottom: Math.max(minDotHit.bottom, Math.round(rect.bottom) + 12),
+              }
+            : minDotHit;
+        onHitRectChange?.({
+          x: hit.left,
+          y: hit.top,
+          width: hit.right - hit.left,
+          height: hit.bottom - hit.top,
+        });
+        invoke("update_hit_rect", { rect: hit }).catch(() => {});
+        return;
+      }
+
       if (surfaceRef.current) {
-        const rect = surfaceRef.current.getBoundingClientRect();
-        if (isShowingDot) {
+        const el = surfaceRef.current;
+        const child = el.firstElementChild as HTMLElement | null;
+        const rect = el.getBoundingClientRect();
+        // Use unscaled layout dimensions (offsetWidth/offsetHeight) so CSS scaleX/scaleY entrance transforms
+        // never trap outer controls (Prev/Play/Next/scrubber) outside the native click-through hit_rect.
+        const layoutW = Math.max(rect.width, el.offsetWidth || 0, child?.offsetWidth || 0);
+        const layoutH = Math.max(rect.height, el.offsetHeight || 0, child?.offsetHeight || 0);
+        if (layoutW >= 10 && layoutH >= 10) {
+          const cx = rect.width > 0 ? rect.left + rect.width / 2 : centerX;
           const hit = {
-            left: Math.round(rect.left) - 8,
-            top: Math.max(0, Math.round(rect.top) - 8),
-            right: Math.round(rect.right) + 8,
-            bottom: Math.round(rect.bottom) + 8,
-          };
-          onHitRectChange?.({ x: hit.left, y: hit.top, width: hit.right - hit.left, height: hit.bottom - hit.top });
-          invoke("update_hit_rect", { rect: hit }).catch(() => {});
-        } else {
-          const hit = {
-            left: Math.round(rect.left),
-            top: Math.round(rect.top),
-            right: Math.round(rect.right),
-            bottom: Math.round(rect.bottom),
+            left: Math.max(0, Math.round(cx - layoutW / 2) - 10),
+            top: isShowingMusic ? 0 : Math.max(0, Math.round(rect.top) - 8),
+            right: Math.min(winWidth, Math.round(cx + layoutW / 2) + 10),
+            bottom: Math.round(Math.max(rect.bottom, (el.offsetTop || 25) + layoutH)) + 10,
           };
           onHitRectChange?.({ x: hit.left, y: hit.top, width: hit.right - hit.left, height: hit.bottom - hit.top });
           invoke("update_hit_rect", { rect: hit }).catch(() => {});
@@ -197,11 +252,19 @@ export const IslandRoot: React.FC<IslandRootProps> = ({
     };
 
     updateRect();
+    const rafId = requestAnimationFrame(updateRect);
+    const settleTimer1 = setTimeout(updateRect, 100);
+    const settleTimer2 = setTimeout(updateRect, 300);
     const ro = new ResizeObserver(updateRect);
     if (surfaceRef.current) {
       ro.observe(surfaceRef.current);
     }
-    return () => ro.disconnect();
+    return () => {
+      cancelAnimationFrame(rafId);
+      clearTimeout(settleTimer1);
+      clearTimeout(settleTimer2);
+      ro.disconnect();
+    };
   }, [mode, musicState, isProximityActive, queueItems.length, onHitRectChange]);
 
   const handleTopTriggerHitRect = (rect: { x: number; y: number; width: number; height: number } | null) => {
@@ -313,7 +376,7 @@ export const IslandRoot: React.FC<IslandRootProps> = ({
       />
 
       <div ref={surfaceRef} style={{ display: "inline-flex", justifyContent: "center" }}>
-        <AnimatePresence mode="wait">
+        <AnimatePresence mode="popLayout" initial={false}>
           {mode === "pill" && currentNotification ? (
             <Pill
               key="pill"
@@ -334,6 +397,7 @@ export const IslandRoot: React.FC<IslandRootProps> = ({
               musicState={musicState}
               onOpenDynamusic={handleOpenDynamusic}
               onMusicControl={handleMusicControl}
+              onMusicSeek={handleMusicSeek}
             />
           ) : isProximityActive ? (
             <MusicPill
@@ -342,11 +406,20 @@ export const IslandRoot: React.FC<IslandRootProps> = ({
               artist={musicState?.artist || "Click to open player"}
               albumArt={musicState?.albumArt}
               isPlaying={musicState?.isPlaying ?? false}
+              positionMs={musicState?.positionMs ?? 0}
+              durationMs={musicState?.durationMs ?? 0}
               onHoverEnter={handleMusicHoverEnter}
               onHoverLeave={handleMusicHoverLeave}
               onClickBody={handleOpenDynamusic}
+              onSeek={handleMusicSeek}
+              onInteractionStart={handleMusicInteractionStart}
+              onInteractionEnd={handleMusicInteractionEnd}
               unreadCount={queueItems.length}
-              onOpenQueue={() => setMode("queue")}
+              onOpenQueue={() => {
+                clearPreviewTimer();
+                setIsProximityActive(false);
+                setMode("queue");
+              }}
               isReducedMotion={isReducedMotion}
             />
           ) : mode === "dot" || queueItems.length > 0 ? (

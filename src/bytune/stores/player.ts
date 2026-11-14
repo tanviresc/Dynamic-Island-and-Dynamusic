@@ -172,11 +172,14 @@ export function nextPass(queue: Track[]): Track[] {
   return out;
 }
 
+export type PlaybackStatus = "idle" | "loading" | "buffering" | "playing" | "error";
+
 interface PlayerState {
   queue: Track[];
   index: number;
   playing: boolean;
   buffering: boolean;
+  playbackStatus: PlaybackStatus;
   position: number;
   duration: number;
   /** 0..1 — how much of the current track the audio element has buffered */
@@ -246,10 +249,26 @@ interface PlayerState {
   _setTime(position: number, duration?: number): void;
   _setBuffered(ratio: number): void;
   _setBuffering(buffering: boolean): void;
+  _setPlaybackStatus(playbackStatus: PlaybackStatus): void;
   _setError(error: string | null): void;
 }
 
 const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v));
+
+function isPcRemoteClient(): boolean {
+  if (typeof window === "undefined" || "__TAURI_INTERNALS__" in window) return false;
+  try {
+    return localStorage.getItem("dynamusic:mobile_mode") === "pc_remote";
+  } catch {
+    return false;
+  }
+}
+
+function forwardPcRemote(command: string, payload?: unknown): boolean {
+  if (!isPcRemoteClient()) return false;
+  void import("./mobileMode").then((m) => m.useMobileMode.getState().sendPcCommand(command, payload));
+  return true;
+}
 
 export const usePlayer = create<PlayerState>()(
   persist(
@@ -258,6 +277,7 @@ export const usePlayer = create<PlayerState>()(
       index: 0,
       playing: false,
       buffering: false,
+      playbackStatus: "idle",
       position: 0,
       duration: 0,
       buffered: 0,
@@ -280,6 +300,7 @@ export const usePlayer = create<PlayerState>()(
       },
 
       playQueue(tracks, startIndex = 0, from) {
+        if (forwardPcRemote("play_queue", { tracks, startIndex, from })) return;
         if (!tracks.length) return;
         const start = clamp(startIndex, 0, tracks.length - 1);
         // Shuffled: the chosen song first, the rest in a random order after it.
@@ -302,17 +323,7 @@ export const usePlayer = create<PlayerState>()(
 
       playTrack(track) {
         // If in Mobile PC Remote Mode, delegate playTrack to the PC instance
-        if (typeof window !== "undefined") {
-          try {
-            const mode = localStorage.getItem("dynamusic:mobile_mode");
-            if (mode === "pc_remote" && !("__TAURI_INTERNALS__" in window)) {
-              void import("./mobileMode").then((m) => m.useMobileMode.getState().sendPcCommand("play_track", track));
-              return;
-            }
-          } catch {
-            /* ignore */
-          }
-        }
+        if (forwardPcRemote("play_track", track)) return;
 
         const { queue, index } = get();
         // Ahead of the current song only: an earlier copy is history, and
@@ -341,6 +352,7 @@ export const usePlayer = create<PlayerState>()(
       },
 
       jumpTo(i) {
+        if (forwardPcRemote("jump_to", i)) return;
         if (i < 0 || i >= get().queue.length) return;
         set({ index: i, playing: true, position: 0, error: null, awaitingAutoplay: false });
       },
@@ -349,6 +361,7 @@ export const usePlayer = create<PlayerState>()(
         const seenIn = new Set<string>();
         const list = (Array.isArray(tracks) ? tracks : [tracks]).filter((t) => !seenIn.has(t.id) && seenIn.add(t.id));
         if (!list.length) return 0;
+        if (forwardPcRemote("add_to_queue", { tracks: list, playNext })) return list.length;
         const { queue, index, awaitingAutoplay, shuffle, unshuffled } = get();
         if (!queue.length) {
           set({
@@ -402,6 +415,7 @@ export const usePlayer = create<PlayerState>()(
       },
 
       moveUpcoming(from, to) {
+        if (forwardPcRemote("move_upcoming", { from, to })) return;
         const s = get();
         const tail = autoplayTail(s);
         const firstSuggestion = s.queue.length - tail;
@@ -426,6 +440,7 @@ export const usePlayer = create<PlayerState>()(
       },
 
       removeAt(i) {
+        if (forwardPcRemote("remove_at", i)) return;
         const s = get();
         const { queue, index } = s;
         if (i < 0 || i >= queue.length) return;
@@ -446,6 +461,7 @@ export const usePlayer = create<PlayerState>()(
       },
 
       clearUpcoming() {
+        if (forwardPcRemote("clear_upcoming")) return;
         // Clears the listener's own upcoming songs; the AutoPlay tail stays.
         const s = get();
         const tail = autoplayTail(s);
@@ -497,6 +513,7 @@ export const usePlayer = create<PlayerState>()(
       },
 
       next(manual = false) {
+        if (forwardPcRemote("next", manual)) return;
         const s = get();
         if (!s.queue.length) {
           set({ playing: false });
@@ -528,6 +545,7 @@ export const usePlayer = create<PlayerState>()(
       },
 
       prev() {
+        if (forwardPcRemote("prev")) return;
         if (get().position > 3) {
           set({ position: 0, seekNonce: get().seekNonce + 1 });
           return;
@@ -542,6 +560,7 @@ export const usePlayer = create<PlayerState>()(
       },
 
       toggle() {
+        if (forwardPcRemote("toggle")) return;
         // Nothing to play or pause: flipping `playing` against an empty queue
         // left the play button reading "Pause" with no audio behind it.
         if (!get().queue.length) return;
@@ -552,6 +571,7 @@ export const usePlayer = create<PlayerState>()(
       },
 
       setPlaying(playing) {
+        if (playing && forwardPcRemote("play")) return;
         // Mirrors toggle(): a media-key "play" with an empty queue (e.g.
         // after removing every queued track) must not flip the store into a
         // playing state nothing can back.
@@ -560,6 +580,7 @@ export const usePlayer = create<PlayerState>()(
       },
 
       seek(sec) {
+        if (forwardPcRemote("seek", sec)) return;
         const { duration } = get();
         set({
           position: clamp(sec, 0, duration > 0 ? duration : sec),
@@ -576,6 +597,7 @@ export const usePlayer = create<PlayerState>()(
       },
 
       toggleShuffle() {
+        if (forwardPcRemote("toggle_shuffle")) return;
         const s = get();
         const tail = autoplayTail(s);
         if (!s.shuffle) {
@@ -591,6 +613,7 @@ export const usePlayer = create<PlayerState>()(
       },
 
       cycleRepeat() {
+        if (forwardPcRemote("cycle_repeat")) return;
         const order: RepeatMode[] = ["off", "all", "one"];
         set({ repeat: order[(order.indexOf(get().repeat) + 1) % order.length] });
       },
@@ -605,11 +628,25 @@ export const usePlayer = create<PlayerState>()(
       },
 
       _setBuffering(buffering) {
-        set({ buffering });
+        const cur = get();
+        const nextStatus: PlaybackStatus = buffering
+          ? cur.playbackStatus === "loading"
+            ? "loading"
+            : "buffering"
+          : cur.playing
+            ? "playing"
+            : cur.queue.length
+              ? "idle"
+              : "idle";
+        set({ buffering, playbackStatus: nextStatus });
+      },
+
+      _setPlaybackStatus(playbackStatus) {
+        set({ playbackStatus });
       },
 
       _setError(error) {
-        set({ error });
+        set(error ? { error, playbackStatus: "error" } : { error: null });
       },
     }),
     {

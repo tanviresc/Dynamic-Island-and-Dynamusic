@@ -12,6 +12,8 @@ export interface SiteConfig {
     generating: string[];
     /** Selectors for elements indicating user approval or clarification is needed */
     needsInput: string[];
+    /** Exact visible button labels (lowercase) indicating approval/input prompt */
+    needsInputTextMatchers?: string[];
     /** Optional selector for extracting chat title element; falls back to document.title */
     chatTitle?: string;
   };

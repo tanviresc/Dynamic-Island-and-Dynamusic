@@ -26,6 +26,7 @@ function getVaultBaseUrl(): string {
 const DB_NAME = "dynamusic-offline-vault";
 const STORE_NAME = "tracks";
 const DB_VERSION = 1;
+const MAX_MEMORY_BLOB_URLS = 8;
 
 interface StoredTrackAudio {
   id: string;
@@ -41,6 +42,26 @@ const memoryBlobUrls = new Map<string, string>();
 const savedIds = new Set<string>();
 const inFlightSaves = new Map<string, Promise<boolean>>();
 const vaultListeners = new Set<() => void>();
+
+function cacheBlobUrlLru(trackId: string, url: string): void {
+  if (memoryBlobUrls.has(trackId)) {
+    memoryBlobUrls.delete(trackId);
+  }
+  memoryBlobUrls.set(trackId, url);
+  while (memoryBlobUrls.size > MAX_MEMORY_BLOB_URLS) {
+    const oldest = memoryBlobUrls.keys().next().value;
+    if (!oldest) break;
+    const oldUrl = memoryBlobUrls.get(oldest);
+    memoryBlobUrls.delete(oldest);
+    if (oldUrl) {
+      try {
+        URL.revokeObjectURL(oldUrl);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+}
 
 function notifyListeners(): void {
   for (const fn of vaultListeners) {
@@ -117,7 +138,12 @@ if (typeof window !== "undefined") {
  */
 export async function getOfflineVaultUrl(trackId: string): Promise<string | null> {
   const existingUrl = memoryBlobUrls.get(trackId);
-  if (existingUrl) return existingUrl;
+  if (existingUrl) {
+    // Refresh LRU order on hit
+    memoryBlobUrls.delete(trackId);
+    memoryBlobUrls.set(trackId, existingUrl);
+    return existingUrl;
+  }
 
   const db = await openVaultDb();
   if (!db) return null;
@@ -132,7 +158,7 @@ export async function getOfflineVaultUrl(trackId: string): Promise<string | null
         if (row?.blob && row.blob.size > 1024) {
           savedIds.add(trackId);
           const url = URL.createObjectURL(row.blob);
-          memoryBlobUrls.set(trackId, url);
+          cacheBlobUrlLru(trackId, url);
           resolve(url);
         } else {
           resolve(null);

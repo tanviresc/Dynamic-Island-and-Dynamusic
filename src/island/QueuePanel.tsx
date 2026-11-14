@@ -2,7 +2,8 @@ import React, { useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { SourceIcon, SourceType } from "../shared/icons/SourceIcon";
 import { standardMotion, reducedMotion } from "./motion";
-import { IPCMusicState } from "../dynamusic/types";
+import { IPCMusicState } from "./types";
+import { TimelineScrubber } from "./TimelineScrubber";
 
 export interface QueueItem {
   id: string;
@@ -23,6 +24,7 @@ export interface QueuePanelProps {
   musicState?: IPCMusicState | null;
   onOpenDynamusic?: () => void;
   onMusicControl?: (action: "play_pause" | "next" | "previous") => void;
+  onMusicSeek?: (targetSeconds: number) => void;
 }
 
 export function formatRelativeTime(dateStr: string): string {
@@ -57,6 +59,7 @@ export const QueuePanel: React.FC<QueuePanelProps> = ({
   musicState,
   onOpenDynamusic,
   onMusicControl,
+  onMusicSeek,
 }) => {
   const motionPreset = isReducedMotion ? reducedMotion : standardMotion;
   const hasSong = Boolean(
@@ -77,27 +80,37 @@ export const QueuePanel: React.FC<QueuePanelProps> = ({
   return (
     <motion.div
       className="island-interactive"
-      layoutId="island-surface"
-      initial={{ width: 5, height: 5, borderRadius: 2.5, opacity: 0 }}
+      initial={{
+        scaleX: 0.45,
+        scaleY: 0.45,
+        y: -12,
+        opacity: 0,
+        clipPath: "inset(0% 20% 20% 20% round 24px)",
+      }}
       animate={{
-        width: 320,
-        height: "auto",
-        maxHeight: 340,
-        borderRadius: 18,
+        scaleX: 1,
+        scaleY: 1,
+        y: 0,
         opacity: 1,
+        clipPath: "inset(0% 0% 0% 0% round 18px)",
       }}
       exit={{
-        width: 5,
-        height: 5,
-        borderRadius: 2.5,
+        scaleX: 0.5,
+        scaleY: 0.5,
+        y: -10,
         opacity: 0,
-        transition: motionPreset.queueClose.layout,
+        transition: motionPreset.queueClose.layout as any,
       }}
-      transition={motionPreset.queueOpen.layout}
+      transition={motionPreset.queueOpen.layout as any}
       style={{
+        width: 320,
+        maxHeight: 360,
+        borderRadius: 18,
+        transformOrigin: "50% 0%",
+        willChange: "transform, opacity, clip-path",
         backgroundColor: "#000000",
         border: "1px solid rgba(255, 255, 255, 0.45)",
-        boxShadow: "0 0 20px 2px rgba(255, 255, 255, 0.22), 0 0 50px 10px rgba(255, 255, 255, 0.10), inset 0 1px 1.5px 0 rgba(255, 255, 255, 0.35)",
+        boxShadow: "0 0 22px 2px rgba(255, 255, 255, 0.22), inset 0 1px 1.5px 0 rgba(255, 255, 255, 0.35)",
         display: "flex",
         flexDirection: "column",
         overflow: "hidden",
@@ -109,13 +122,14 @@ export const QueuePanel: React.FC<QueuePanelProps> = ({
         <div
           style={{
             display: "flex",
-            alignItems: "center",
-            gap: 10,
+            flexDirection: "column",
+            gap: 6,
             padding: "8px 12px",
             borderBottom: "1px solid rgba(255, 255, 255, 0.1)",
             backgroundColor: "rgba(255, 255, 255, 0.04)",
           }}
         >
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <div
             onClick={onOpenDynamusic}
             style={{
@@ -222,6 +236,7 @@ export const QueuePanel: React.FC<QueuePanelProps> = ({
                 {musicState.isPlaying ? "⏸" : "▶"}
               </button>
               <button
+                type="button"
                 onClick={(e) => {
                   e.stopPropagation();
                   onMusicControl("next");
@@ -241,6 +256,16 @@ export const QueuePanel: React.FC<QueuePanelProps> = ({
                 ⏭
               </button>
             </div>
+          )}
+          </div>
+
+          {onMusicSeek && (
+            <TimelineScrubber
+              positionMs={musicState.positionMs}
+              durationMs={musicState.durationMs}
+              isPlaying={musicState.isPlaying}
+              onSeek={onMusicSeek}
+            />
           )}
         </div>
       )}

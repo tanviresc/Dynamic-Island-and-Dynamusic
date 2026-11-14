@@ -2,7 +2,9 @@ import { useState } from "react";
 import { Monitor, Smartphone, Play, Pause, SkipForward, SkipBack, Volume2, Shuffle, Repeat, Heart } from "lucide-react";
 import { useMobileMode } from "../stores/mobileMode";
 import { useLibrary } from "../stores/library";
+import { useUI } from "../stores/ui";
 import { fmtTime } from "../lib/format";
+import { useSwipeGesture } from "../lib/useSwipeGesture";
 
 export function PcRemoteBar() {
   const mode = useMobileMode((s) => s.mode);
@@ -11,6 +13,7 @@ export function PcRemoteBar() {
   const sendCommand = useMobileMode((s) => s.sendPcCommand);
   const toggleLike = useLibrary((s) => s.toggleLike);
   const isLiked = useLibrary((s) => (pcState?.track ? s.isLiked(pcState.track.id) : false));
+  const toggleNowPlaying = useUI((s) => s.toggleNowPlaying);
 
   const track = pcState?.track;
   const isPlaying = Boolean(pcState?.playing);
@@ -18,8 +21,26 @@ export function PcRemoteBar() {
   const duration = pcState?.duration ?? (track?.duration ?? 0);
   const pct = duration > 0 ? Math.min(100, (position / duration) * 100) : 0;
 
+  const swipe = useSwipeGesture({
+    onSwipeRight: () => sendCommand("next"),
+    onSwipeLeft: () => sendCommand("prev"),
+    disabled: !track,
+  });
+
   return (
-    <div className="fixed bottom-[68px] inset-x-2 z-40 bg-[#121214]/95 backdrop-blur-2xl border border-emerald-500/30 rounded-2xl p-2.5 flex flex-col gap-1.5 shadow-2xl select-none">
+    <div
+      {...swipe.handlers}
+      onClick={() => {
+        if (swipe.consumeDidSwipe()) return;
+        toggleNowPlaying();
+      }}
+      style={{
+        touchAction: "pan-y",
+        transform: `translate3d(${swipe.offsetX}px, 0, 0)`,
+        transition: swipe.dragging ? "none" : "transform 200ms cubic-bezier(0.22, 1, 0.36, 1)",
+      }}
+      className="fixed bottom-[68px] inset-x-2 z-40 bg-[#121214]/95 backdrop-blur-2xl border border-emerald-500/30 rounded-2xl p-2.5 flex flex-col gap-1.5 shadow-2xl select-none cursor-pointer will-change-transform"
+    >
       {/* Indicator Tag */}
       <div className="flex items-center justify-between text-[11px] text-emerald-400 font-medium px-1">
         <span className="flex items-center gap-1.5">
@@ -87,7 +108,10 @@ export function PcRemoteBar() {
         )}
 
         {/* Controls */}
-        <div className="flex items-center gap-2 shrink-0">
+        <div
+          className="flex items-center gap-2 shrink-0"
+          onClick={(e) => e.stopPropagation()}
+        >
           <button
             type="button"
             onClick={() => sendCommand("prev")}
@@ -115,6 +139,21 @@ export function PcRemoteBar() {
             <SkipForward className="w-4 h-4 fill-current" />
           </button>
         </div>
+      </div>
+
+      {/* PC Volume slider */}
+      <div className="flex items-center gap-2 px-1">
+        <Volume2 className="w-3.5 h-3.5 text-emerald-400/80 shrink-0" />
+        <input
+          type="range"
+          min={0}
+          max={1}
+          step={0.02}
+          value={typeof pcState?.volume === "number" ? pcState.volume : 0.8}
+          onChange={(e) => sendCommand("set_volume", Number(e.target.value))}
+          aria-label="PC Volume"
+          className="flex-1 h-1 accent-emerald-400 cursor-pointer"
+        />
       </div>
 
       {/* Progress Bar with seek */}

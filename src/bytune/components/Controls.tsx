@@ -1,6 +1,7 @@
-import { useState, type CSSProperties } from "react";
+import { useState, useSyncExternalStore, type CSSProperties } from "react";
 import { Volume1, Volume2 } from "lucide-react";
 import { fmtTime } from "../lib/format";
+import { getPlaybackClock, subscribePlaybackClock } from "../lib/playbackClock";
 import { usePlayer } from "../stores/player";
 
 /**
@@ -22,10 +23,14 @@ interface SeekBarProps {
 }
 
 export function SeekBar({ large = false, showRemaining = false, thin = false }: SeekBarProps) {
-  const position = usePlayer((s) => s.position);
-  const duration = usePlayer((s) => s.duration);
-  const buffered = usePlayer((s) => s.buffered);
+  const clock = useSyncExternalStore(subscribePlaybackClock, getPlaybackClock);
+  const storeDuration = usePlayer((s) => s.duration);
+  const storePosition = usePlayer((s) => s.position);
+  const storeBuffered = usePlayer((s) => s.buffered);
   const seek = usePlayer((s) => s.seek);
+  const position = clock.duration > 0 || clock.generation > 0 ? clock.position : storePosition;
+  const duration = clock.duration > 0 ? clock.duration : storeDuration;
+  const buffered = clock.buffered > 0 ? clock.buffered : storeBuffered;
   // While the thumb is held down the drag is purely visual — the audio keeps
   // playing untouched. Range inputs fire onChange continuously mid-drag, so
   // seeking there would make playback jump around under the cursor. The real

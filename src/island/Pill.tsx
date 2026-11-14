@@ -32,6 +32,8 @@ function getSourceGlow(source: SourceType, kind: string): string {
       return "rgba(76, 141, 246, 0.80)";
     case "gmail":
       return "rgba(234, 67, 53, 0.80)";
+    case "desktop":
+      return "rgba(94, 92, 230, 0.80)";
     default:
       return "rgba(255, 255, 255, 0.65)";
   }
@@ -67,31 +69,37 @@ export const Pill: React.FC<PillProps> = ({
       onMouseEnter={onHoverEnter}
       onMouseLeave={onHoverLeave}
       className="island-interactive"
-      layoutId="island-surface"
       initial={{
-        width: 0.5,
-        height: 0.5,
-        borderRadius: 0.25,
+        scaleX: 0.45,
+        scaleY: 0.65,
+        y: -8,
         opacity: 0,
+        clipPath: "inset(0% 18% 0% 18% round 24px)",
       }}
       animate={{
+        scaleX: 1,
+        scaleY: 1,
+        y: 0,
+        opacity: 1,
+        clipPath: `inset(0% 0% 0% 0% round ${geometry.borderRadius}px)`,
+      }}
+      exit={{
+        scaleX: 0.55,
+        scaleY: 0.72,
+        y: -6,
+        opacity: 0,
+        transition: motionPreset.disappear.layout as any,
+      }}
+      transition={motionPreset.appear.layout as any}
+      style={{
         width: geometry.width,
         height: geometry.height,
         borderRadius: geometry.borderRadius,
-        opacity: 1,
-      }}
-      exit={{
-        width: 0.5,
-        height: 0.5,
-        borderRadius: 0.25,
-        opacity: 0,
-        transition: motionPreset.disappear.layout,
-      }}
-      transition={motionPreset.appear.layout}
-      style={{
+        transformOrigin: "50% 0%",
+        willChange: "transform, opacity, clip-path",
         backgroundColor: "#000000",
         border: "1px solid rgba(255, 255, 255, 0.85)",
-        boxShadow: `0 0 10px 1.5px rgba(255, 255, 255, 0.45), 0 0 24px 4px ${glowColor}, 0 0 50px 10px ${glowColor}99, 0 0 90px 20px ${glowColor}40, inset 0 1px 1px 0 rgba(255, 255, 255, 0.60)`,
+        boxShadow: `0 0 14px 2px rgba(255, 255, 255, 0.35), 0 0 28px 6px ${glowColor}, inset 0 1px 1px 0 rgba(255, 255, 255, 0.55)`,
         cursor: "pointer",
         display: "flex",
         alignItems: "center",
@@ -102,9 +110,9 @@ export const Pill: React.FC<PillProps> = ({
       }}
     >
       <motion.div
-        initial={{ opacity: 0, filter: isReducedMotion ? undefined : "blur(6px)" }}
-        animate={{ opacity: 1, filter: "blur(0px)" }}
-        exit={{ opacity: 0, transition: motionPreset.disappear.content.opacity }}
+        initial={{ opacity: 0, scale: 0.96 }}
+        animate={{ opacity: 1, scale: 1 }}
+        exit={{ opacity: 0, transition: motionPreset.disappear.content.opacity as any }}
         transition={{
           duration: motionPreset.appear.content.opacity.duration,
           delay: motionPreset.appear.content.opacity.delay,

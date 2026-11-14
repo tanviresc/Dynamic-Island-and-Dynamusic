@@ -11,6 +11,7 @@ pub enum Source {
     Gemini,
     Antigravity,
     Gmail,
+    Desktop,
 }
 
 impl std::fmt::Display for Source {
@@ -21,6 +22,7 @@ impl std::fmt::Display for Source {
             Source::Gemini => write!(f, "gemini"),
             Source::Antigravity => write!(f, "antigravity"),
             Source::Gmail => write!(f, "gmail"),
+            Source::Desktop => write!(f, "desktop"),
         }
     }
 }
@@ -155,6 +157,7 @@ impl Event {
                 Source::Claude | Source::Chatgpt | Source::Gemini,
                 Surface::Web | Surface::Desktop,
             ) => {}
+            (Source::Desktop, Surface::Desktop) => {}
             (Source::Antigravity, Surface::Ide) => {}
             (Source::Gmail, Surface::Background) => {}
             _ => {
