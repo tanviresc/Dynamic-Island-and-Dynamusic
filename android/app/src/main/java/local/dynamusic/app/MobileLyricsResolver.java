@@ -11,6 +11,7 @@ import java.util.Set;
 import java.util.concurrent.CompletionService;
 import java.util.concurrent.ExecutorCompletionService;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
@@ -35,6 +36,7 @@ final class MobileLyricsResolver {
         "https://lyricsplus.binimum.org",
         "https://lyricsplus.prjktla.workers.dev"
     };
+    private static final ExecutorService LEAF_POOL = Executors.newCachedThreadPool();
 
     private MobileLyricsResolver() {}
 
@@ -53,9 +55,9 @@ final class MobileLyricsResolver {
         }
 
         List<Future<JSONObject>> tasks = new ArrayList<>();
-        CompletionService<JSONObject> ecs = new ExecutorCompletionService<>(pool);
+        CompletionService<JSONObject> ecs = new ExecutorCompletionService<>(LEAF_POOL);
 
-        tasks.add(ecs.submit(() -> fetchLyricsPlus(pool, title, artist, album, durationSec)));
+        tasks.add(ecs.submit(() -> fetchLyricsPlus(LEAF_POOL, title, artist, album, durationSec)));
         tasks.add(ecs.submit(() -> fetchLrclib(title, artist, album, durationSec)));
         if (videoId != null && VIDEO_ID.matcher(videoId).matches()) {
             tasks.add(ecs.submit(() -> fetchYtmLyrics(videoId)));
@@ -596,6 +598,7 @@ final class MobileLyricsResolver {
     private static String stripBrackets(String s) {
         if (s == null) return "";
         return s.replaceAll("(?i)\\s*[\\[(][^\\])]*[\\])]", " ")
+                .replaceAll("(?i)\\s+-\\s+(?:official\\s+(?:music\\s+)?(?:video|audio|lyric(?:s)?\\s+video|visuali[sz]er)|remaster(?:ed)?(?:\\s+\\d{4})?|lyrics?|radio\\s+edit|explicit|clean|live(?:\\s+at\\b.*)?)$", " ")
                 .replaceAll("\\s+", " ")
                 .trim();
     }

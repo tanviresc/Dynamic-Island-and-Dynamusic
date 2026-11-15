@@ -80,6 +80,52 @@ const DB_NAME = "dynamusic-offline-vault";
 const STORE_NAME = "tracks";
 const DB_VERSION = 1;
 const MAX_MEMORY_BLOB_URLS = 32;
+const NATIVE_VAULT_IDS_KEY = "dynamusic:native_offline_ids";
+
+interface NativeOfflineFilePlugin {
+  getOfflineFileUri?: (opts: { id: string }) => Promise<{ exists?: boolean; fileUri?: string; mime?: string }>;
+  saveOfflineFile?: (opts: {
+    id: string;
+    url?: string;
+    base64?: string;
+    mime?: string;
+  }) => Promise<{ fileUri?: string; mime?: string; size?: number }>;
+  deleteOfflineFile?: (opts: { id: string }) => Promise<void>;
+}
+
+function getNativeOfflinePlugin(): NativeOfflineFilePlugin | null {
+  if (!isCapacitorNative() || typeof window === "undefined") return null;
+  const cap = (window as unknown as { Capacitor?: { Plugins?: { MediaKeepalive?: NativeOfflineFilePlugin } } }).Capacitor;
+  return cap?.Plugins?.MediaKeepalive ?? null;
+}
+
+function loadNativeSavedIds(): void {
+  try {
+    const raw = localStorage.getItem(NATIVE_VAULT_IDS_KEY);
+    if (!raw) return;
+    const ids = JSON.parse(raw) as unknown;
+    if (Array.isArray(ids)) {
+      for (const id of ids) {
+        if (typeof id === "string" && id) savedIds.add(id);
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+function persistNativeSavedId(id: string, present: boolean): void {
+  try {
+    const raw = localStorage.getItem(NATIVE_VAULT_IDS_KEY);
+    const list: string[] = raw ? (JSON.parse(raw) as string[]) : [];
+    const set = new Set(Array.isArray(list) ? list : []);
+    if (present) set.add(id);
+    else set.delete(id);
+    localStorage.setItem(NATIVE_VAULT_IDS_KEY, JSON.stringify([...set]));
+  } catch {
+    /* ignore */
+  }
+}
 
 interface StoredTrackAudio {
   id: string;
@@ -199,6 +245,7 @@ function openVaultDb(): Promise<IDBDatabase | null> {
 
 // Kick off hydration immediately in browser environments
 if (typeof window !== "undefined") {
+  loadNativeSavedIds();
   void openVaultDb();
   if (isTauriDesktop()) {
     void fetch(`${getVaultBaseUrl()}/vault-list`, { signal: AbortSignal.timeout(4000) })
@@ -220,8 +267,22 @@ if (typeof window !== "undefined") {
  * (`blob:` from IndexedDB, or range-capable disk vault URL on desktop).
  */
 export async function getOfflineVaultUrl(trackId: string): Promise<string | null> {
+  const native = getNativeOfflinePlugin();
+  if (native?.getOfflineFileUri) {
+    try {
+      const info = await native.getOfflineFileUri({ id: trackId });
+      if (info?.exists && info.fileUri) {
+        savedIds.add(trackId);
+        persistNativeSavedId(trackId, true);
+        return info.fileUri;
+      }
+    } catch {
+      /* fall through to IndexedDB */
+    }
+  }
+
   const existingUrl = memoryBlobUrls.get(trackId);
-  if (existingUrl) {
+  if (existingUrl && !native) {
     // Refresh LRU order on hit
     memoryBlobUrls.delete(trackId);
     memoryBlobUrls.set(trackId, existingUrl);
@@ -230,31 +291,54 @@ export async function getOfflineVaultUrl(trackId: string): Promise<string | null
 
   const db = await openVaultDb();
   if (db) {
-    const idbUrl = await new Promise<string | null>((resolve) => {
+    const idbRow = await new Promise<StoredTrackAudio | null>((resolve) => {
       try {
         const tx = db.transaction(STORE_NAME, "readonly");
         const store = tx.objectStore(STORE_NAME);
         const req = store.get(trackId);
         req.onsuccess = () => {
           const row = req.result as StoredTrackAudio | undefined;
-          if (row?.blob && row.blob.size > 1024) {
-            savedIds.add(trackId);
-            const usableBlob = row.blob.type
-              ? row.blob
-              : new Blob([row.blob], { type: row.mime || "audio/mp4" });
-            const url = URL.createObjectURL(usableBlob);
-            cacheBlobUrlLru(trackId, url);
-            resolve(url);
-          } else {
-            resolve(null);
-          }
+          resolve(row?.blob && row.blob.size > 1024 ? row : null);
         };
         req.onerror = () => resolve(null);
       } catch {
         resolve(null);
       }
     });
-    if (idbUrl) return idbUrl;
+    if (idbRow) {
+      savedIds.add(trackId);
+      const usableBlob = idbRow.blob.type
+        ? idbRow.blob
+        : new Blob([idbRow.blob], { type: idbRow.mime || "audio/mp4" });
+      if (native?.saveOfflineFile) {
+        try {
+          const base64 = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => {
+              const res = String(reader.result ?? "");
+              const comma = res.indexOf(",");
+              resolve(comma >= 0 ? res.slice(comma + 1) : res);
+            };
+            reader.onerror = () => reject(reader.error);
+            reader.readAsDataURL(usableBlob);
+          });
+          const saved = await native.saveOfflineFile({
+            id: trackId,
+            base64,
+            mime: usableBlob.type || "audio/mp4",
+          });
+          if (saved?.fileUri) {
+            persistNativeSavedId(trackId, true);
+            return saved.fileUri;
+          }
+        } catch {
+          /* fall back to blob URL below */
+        }
+      }
+      const url = URL.createObjectURL(usableBlob);
+      cacheBlobUrlLru(trackId, url);
+      return url;
+    }
   }
 
   // On PC desktop, serve validated offline-vault files straight from disk over HTTP Range
@@ -302,6 +386,52 @@ export async function saveTrackToOfflineVault(
           clearTimeout(timer);
         }
         return false;
+      }
+
+      const native = getNativeOfflinePlugin();
+      if (native?.saveOfflineFile) {
+        try {
+          const existing = await native.getOfflineFileUri?.({ id: track.id });
+          if (existing?.exists && existing.fileUri) {
+            savedIds.add(track.id);
+            persistNativeSavedId(track.id, true);
+            notifyListeners();
+            return true;
+          }
+          const primaryUrl = resolveNetworkStreamUrl
+            ? await resolveNetworkStreamUrl(track.id)
+            : await window.bytune?.getStreamUrl(track.id, false, "high", track.title, track.artist).catch(() => null);
+          if (primaryUrl && (primaryUrl.startsWith("file://") || primaryUrl.startsWith("blob:"))) {
+            savedIds.add(track.id);
+            persistNativeSavedId(track.id, true);
+            notifyListeners();
+            return true;
+          }
+          if (primaryUrl && (primaryUrl.startsWith("http://") || primaryUrl.startsWith("https://"))) {
+            const saved = await native.saveOfflineFile({ id: track.id, url: primaryUrl }).catch(() => null);
+            if (saved?.fileUri) {
+              savedIds.add(track.id);
+              persistNativeSavedId(track.id, true);
+              notifyListeners();
+              return true;
+            }
+          }
+          const altUrl = await fallbackMobileStreamUrl(track.id, {
+            title: track.title,
+            artist: track.artist,
+          }).catch(() => null);
+          if (altUrl && altUrl !== primaryUrl) {
+            const saved = await native.saveOfflineFile({ id: track.id, url: altUrl }).catch(() => null);
+            if (saved?.fileUri) {
+              savedIds.add(track.id);
+              persistNativeSavedId(track.id, true);
+              notifyListeners();
+              return true;
+            }
+          }
+        } catch {
+          /* fall back to IndexedDB */
+        }
       }
 
       const db = await openVaultDb();
@@ -390,7 +520,10 @@ export async function removeTrackFromOfflineVault(trackId: string): Promise<void
     memoryBlobUrls.delete(trackId);
   }
   savedIds.delete(trackId);
+  persistNativeSavedId(trackId, false);
   notifyListeners();
+
+  void getNativeOfflinePlugin()?.deleteOfflineFile?.({ id: trackId }).catch(() => undefined);
 
   void fetch(`${getVaultBaseUrl()}/vault/${encodeURIComponent(trackId)}`, {
     method: "DELETE",

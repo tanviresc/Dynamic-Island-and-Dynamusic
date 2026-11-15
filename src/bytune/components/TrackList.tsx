@@ -75,6 +75,7 @@ function TrackRow({ track, index, isCurrent, isPlaying, onPlay, menuFor, showAlb
 
   return (
     <div
+      role="row"
       {...drag.props}
       {...swipe.handlers}
       onMouseEnter={(e) => {

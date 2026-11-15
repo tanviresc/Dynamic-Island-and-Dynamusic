@@ -13,18 +13,36 @@
  */
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
+import { RefreshCw, Search } from "lucide-react";
 import { getPlaybackPosition } from "../lib/audio";
 import { getPlaybackClock, subscribePlaybackClock } from "../lib/playbackClock";
 import { visibleLyricLines } from "../lib/lyricsLines";
+import { cleanTrackQuery } from "../lib/mobileStandaloneFallback";
 import { romanize } from "../lib/romanize";
 import { LYRICS_LOADING_LINES, pickLyricsLine } from "../lib/lyricsPhrases";
 import { usePlayer } from "../stores/player";
 import { useSettings } from "../stores/settings";
 import { getInterpolatedPcPosition, useMobileMode } from "../stores/mobileMode";
-import type { LyricsResult, SyncedLyricWord } from "../types";
+import type { LyricsResult, SyncedLyricWord, Track } from "../types";
 
 /** How long the lyrics take to glide to the next line. */
 const GLIDE_MS = 600;
+
+function computeActiveLyricIndex(
+  lines: Array<{ time: number }> | null,
+  position: number,
+  offset: number,
+): number {
+  if (!lines || lines.length === 0) return -1;
+  const lyricPos = position - offset;
+  let idx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].time <= lyricPos + 0.35) idx = i;
+    else break;
+  }
+  if (idx === -1 && position >= 0) return 0;
+  return idx;
+}
 
 interface LyricsViewProps {
   lyrics: LyricsResult | null;
@@ -40,6 +58,9 @@ interface LyricsViewProps {
   anchor?: number;
   /** The playing track's id — pins the loading copy to one line per track. */
   trackKey?: string;
+  track?: Track | null;
+  onRetry?: () => void;
+  onLyricsOverride?: (res: LyricsResult | null) => void;
 }
 
 type LyricsVariant = "compact" | "large" | "hero";
@@ -98,23 +119,23 @@ function resolveWordSpans(
   }));
 }
 
-/** Karaoke sweep across one line's words; re-renders at rAF rate. */
+/** Karaoke sweep across one line's words; re-renders at ~30fps independently of LyricsView. */
 function WordLine({
   words,
   spans,
   variant,
   glow,
   offset,
-  currentPos,
   isPlaying,
+  isPcRemote = false,
 }: {
   words: SyncedLyricWord[];
   spans: Array<{ start: number; end: number }>;
   variant: LyricsVariant;
   glow: boolean;
   offset: number;
-  currentPos: number;
   isPlaying: boolean;
+  isPcRemote?: boolean;
 }) {
   const [, force] = useState(0);
   useEffect(() => {
@@ -135,8 +156,12 @@ function WordLine({
     return () => window.cancelAnimationFrame(raf);
   }, [isPlaying]);
 
-  const liveClock = getPlaybackPosition();
-  const rawPos = liveClock > 0 ? liveClock : currentPos;
+  const rawPos = isPcRemote
+    ? getInterpolatedPcPosition(useMobileMode.getState().pcState)
+    : (() => {
+        const liveClock = getPlaybackPosition();
+        return liveClock > 0 ? liveClock : getPlaybackClock().position;
+      })();
   const pos = rawPos - offset;
   return (
     <span
@@ -205,6 +230,9 @@ export function LyricsView({
   anchor = 0.5,
   offset = 0,
   trackKey,
+  track = null,
+  onRetry,
+  onLyricsOverride,
 }: LyricsViewProps & { offset?: number }) {
   const variant: LyricsVariant = hero ? "hero" : large ? "large" : "compact";
   const mobileMode = useMobileMode((s) => s.mode);
@@ -212,18 +240,16 @@ export function LyricsView({
   const pcState = useMobileMode((s) => s.pcState);
   const isPcRemote = mobileMode === "pc_remote" && !!pcState?.track;
 
-  const clockPosition = useSyncExternalStore(subscribePlaybackClock, getPlaybackClock).position;
-  const [remotePos, setRemotePos] = useState(() => getInterpolatedPcPosition(pcState));
-  useEffect(() => {
-    setRemotePos(getInterpolatedPcPosition(pcState));
-    if (!isPcRemote || !pcState?.playing) return;
-    const id = window.setInterval(() => {
-      setRemotePos(getInterpolatedPcPosition(useMobileMode.getState().pcState));
-    }, 100);
-    return () => window.clearInterval(id);
-  }, [isPcRemote, pcState?.playing, pcState?.position, pcState?.serverTimestamp, pcState?.track?.id]);
+  const [manualOpen, setManualOpen] = useState(false);
+  const [manualTitle, setManualTitle] = useState(() =>
+    cleanTrackQuery(track?.title ?? "", track?.artist ?? "").title
+  );
+  const [manualArtist, setManualArtist] = useState(() =>
+    cleanTrackQuery(track?.title ?? "", track?.artist ?? "").artist
+  );
+  const [manualBusy, setManualBusy] = useState(false);
+  const [manualMiss, setManualMiss] = useState(false);
 
-  const position = isPcRemote ? remotePos : clockPosition;
   const localPlaying = usePlayer((s) => s.playing);
   const playing = isPcRemote ? Boolean(pcState?.playing) : localPlaying;
 
@@ -277,20 +303,34 @@ export function LyricsView({
 
   // Lyric times live on the matched recording's timeline; the playing upload
   // may prepend an intro (music videos). offset converts element position →
-  // lyric timeline.
-  const lyricPos = position - offset;
-
-  const activeIndex = useMemo(() => {
-    if (!lines || lines.length === 0) return -1;
-    let idx = -1;
-    for (let i = 0; i < lines.length; i++) {
-      if (lines[i].time <= lyricPos + 0.35) idx = i;
-      else break;
+  // Quantized scalar activeIndex subscription: LyricsView only re-renders when
+  // the sung line actually changes, not on every clock tick.
+  const localActiveIndex = useSyncExternalStore(subscribePlaybackClock, () =>
+    isPcRemote ? -1 : computeActiveLyricIndex(lines, getPlaybackClock().position, offset)
+  );
+  const [remoteActiveIndex, setRemoteActiveIndex] = useState(() =>
+    isPcRemote ? computeActiveLyricIndex(lines, getInterpolatedPcPosition(pcState), offset) : -1
+  );
+  useEffect(() => {
+    if (!isPcRemote) {
+      setRemoteActiveIndex(-1);
+      return;
     }
-    // If playback has started and we are in intro before the first line, highlight line 0
-    if (idx === -1 && position >= 0) return 0;
-    return idx;
-  }, [lines, lyricPos, position]);
+    const update = (): void => {
+      const next = computeActiveLyricIndex(
+        lines,
+        getInterpolatedPcPosition(useMobileMode.getState().pcState),
+        offset
+      );
+      setRemoteActiveIndex((prev) => (prev === next ? prev : next));
+    };
+    update();
+    if (!pcState?.playing) return;
+    const id = window.setInterval(update, 120);
+    return () => window.clearInterval(id);
+  }, [isPcRemote, lines, offset, pcState?.playing, pcState?.position, pcState?.serverTimestamp, pcState?.track?.id]);
+
+  const activeIndex = isPcRemote ? remoteActiveIndex : localActiveIndex;
 
   // Keep the active line on its anchor. Runs on lyrics load too — at mount
   // the layout isn't measured yet, so the first attempt needs a frame first.
@@ -376,14 +416,91 @@ export function LyricsView({
   }
 
   if (!lyrics || !staticText) {
+    const activeTrack = track ?? usePlayer.getState().currentTrack;
+    const handleManualSubmit = async (e: React.FormEvent): Promise<void> => {
+      e.preventDefault();
+      if (!activeTrack || manualBusy) return;
+      const qTitle = manualTitle.trim() || activeTrack.title;
+      const qArtist = manualArtist.trim() || activeTrack.artist;
+      setManualBusy(true);
+      setManualMiss(false);
+      try {
+        const { searchLyricsManually } = await import("./LyricsCenter");
+        const found = await searchLyricsManually(activeTrack, { title: qTitle, artist: qArtist });
+        if (found && (found.synced?.length || found.plain)) {
+          onLyricsOverride?.(found);
+        } else {
+          setManualMiss(true);
+        }
+      } finally {
+        setManualBusy(false);
+      }
+    };
+
     return (
-      <p
-        className={`text-center text-ink-faint ${
-          hero ? "py-16 text-lg" : large ? "py-16 text-base" : "py-10 text-sm"
-        }`}
-      >
-        No lyrics available for this track.
-      </p>
+      <div className={`flex flex-col items-center justify-center text-center px-4 ${hero ? "py-12" : large ? "py-12" : "py-8"}`}>
+        <p className={`text-ink-faint ${hero ? "text-lg" : large ? "text-base" : "text-sm"}`}>
+          No lyrics available for this track.
+        </p>
+        <div className="mt-4 flex flex-wrap items-center justify-center gap-2.5">
+          {onRetry && (
+            <button
+              type="button"
+              onClick={onRetry}
+              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-white/[0.1] hover:bg-white/[0.16] text-white text-[13px] font-medium transition-colors"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              Retry
+            </button>
+          )}
+          {activeTrack && (
+            <button
+              type="button"
+              onClick={() => {
+                const cleaned = cleanTrackQuery(activeTrack.title, activeTrack.artist);
+                if (!manualTitle) setManualTitle(cleaned.title);
+                if (!manualArtist) setManualArtist(cleaned.artist);
+                setManualOpen((v) => !v);
+                setManualMiss(false);
+              }}
+              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-white/[0.08] hover:bg-white/[0.14] text-white/85 text-[13px] font-medium transition-colors"
+            >
+              <Search className="w-3.5 h-3.5" />
+              Search manually
+            </button>
+          )}
+        </div>
+        {manualOpen && (
+          <form onSubmit={handleManualSubmit} className="mt-4 w-full max-w-xs flex flex-col gap-2 text-left">
+            <input
+              type="text"
+              value={manualTitle}
+              onChange={(e) => setManualTitle(e.target.value)}
+              placeholder="Track title"
+              className="w-full px-3 py-1.5 rounded-lg bg-white/[0.08] border border-white/15 text-white text-[13px] placeholder:text-white/40 focus:outline-none focus:border-white/35"
+            />
+            <input
+              type="text"
+              value={manualArtist}
+              onChange={(e) => setManualArtist(e.target.value)}
+              placeholder="Artist name"
+              className="w-full px-3 py-1.5 rounded-lg bg-white/[0.08] border border-white/15 text-white text-[13px] placeholder:text-white/40 focus:outline-none focus:border-white/35"
+            />
+            <button
+              type="submit"
+              disabled={manualBusy}
+              className="w-full py-1.5 rounded-lg bg-white text-black text-[13px] font-semibold hover:bg-white/90 disabled:opacity-50 transition-colors"
+            >
+              {manualBusy ? "Searching..." : "Find lyrics"}
+            </button>
+            {manualMiss && (
+              <p className="text-center text-[12px] text-white/55">
+                No match found — try shortening title or artist.
+              </p>
+            )}
+          </form>
+        )}
+      </div>
     );
   }
 
@@ -513,8 +630,8 @@ export function LyricsView({
                     variant={variant}
                     glow={glowLines}
                     offset={offset}
-                    currentPos={position}
                     isPlaying={playing}
+                    isPcRemote={isPcRemote}
                   />
                 ) : (
                   <span

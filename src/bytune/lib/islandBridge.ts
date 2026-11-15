@@ -352,23 +352,42 @@ export function initIslandBridge(): void {
     syncToIsland(force);
   });
 
-  // Bidirectional Desktop WebSocket client + heartbeat so sidecar never lacks state or misses commands
+  // Bidirectional Desktop WebSocket client + heartbeat + stale watchdog so sidecar never misses commands
   if ("__TAURI_INTERNALS__" in window) {
     let wsAttempt = 0;
     let wsRetryTimer: number | null = null;
+    let staleTimer: number | null = null;
     const connectDesktopWs = () => {
       if (wsRetryTimer !== null) {
         window.clearTimeout(wsRetryTimer);
         wsRetryTimer = null;
       }
+      if (staleTimer !== null) {
+        window.clearTimeout(staleTimer);
+        staleTimer = null;
+      }
       try {
         const ws = new WebSocket("ws://127.0.0.1:47822/ws/remote?role=desktop");
         desktopWs = ws;
+        const bumpStaleWatchdog = () => {
+          if (staleTimer !== null) window.clearTimeout(staleTimer);
+          staleTimer = window.setTimeout(() => {
+            if (desktopWs === ws) {
+              try {
+                ws.close();
+              } catch {
+                /* ignore */
+              }
+            }
+          }, 10_000);
+        };
         ws.onopen = () => {
           wsAttempt = 0;
+          bumpStaleWatchdog();
           syncToIsland(true);
         };
         ws.onmessage = (ev) => {
+          bumpStaleWatchdog();
           try {
             const msg = JSON.parse(String(ev.data)) as {
               type?: string;
@@ -393,6 +412,10 @@ export function initIslandBridge(): void {
           }
         };
         const scheduleReconnect = () => {
+          if (staleTimer !== null) {
+            window.clearTimeout(staleTimer);
+            staleTimer = null;
+          }
           if (desktopWs === ws) desktopWs = null;
           const delay = Math.min(6000, Math.round(400 * Math.pow(1.6, wsAttempt)));
           wsAttempt += 1;
@@ -413,6 +436,10 @@ export function initIslandBridge(): void {
       }
     };
     connectDesktopWs();
+    window.addEventListener("online", () => {
+      wsAttempt = 0;
+      if (!desktopWs || desktopWs.readyState !== WebSocket.OPEN) connectDesktopWs();
+    });
 
     let lastIdleBroadcast = 0;
     window.setInterval(() => {

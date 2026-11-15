@@ -167,9 +167,11 @@ export async function fallbackMobileStreamUrl(
     // Fall through to Piped mirrors if native resolver throws
   }
 
-  const attempts = PIPED_INSTANCES.map(async (host) => {
+  const cleanQ = cleanTrackTitle(opts?.title ?? "");
+  const cleanA = leadArtistName(opts?.artist ?? "");
+  const pipedAttempts = PIPED_INSTANCES.map(async (host) => {
     const res = await fetch(`${host}/streams/${encodeURIComponent(videoId)}`, {
-      signal: AbortSignal.timeout(7000),
+      signal: AbortSignal.timeout(5000),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = (await res.json()) as {
@@ -179,9 +181,30 @@ export async function fallbackMobileStreamUrl(
     if (!picked) throw new Error("no audioStreams");
     return picked;
   });
+  const invidiousAttempts = INVIDIOUS_INSTANCES.map(async (host) => {
+    const res = await fetch(`${host}/api/v1/videos/${encodeURIComponent(videoId)}`, {
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = (await res.json()) as {
+      adaptiveFormats?: { url?: string; bitrate?: number; type?: string }[];
+    };
+    const streams = (data.adaptiveFormats ?? [])
+      .filter((f) => typeof f.url === "string" && (f.type ?? "").toLowerCase().startsWith("audio/"))
+      .map((f) => ({
+        url: f.url,
+        bitrate: Number(f.bitrate ?? 0) || 0,
+        mimeType: f.type,
+      }));
+    const picked = pickBestPipedAudioUrl(streams, opts?.quality);
+    if (!picked) throw new Error("no adaptive audio");
+    return picked;
+  });
   try {
-    return await Promise.any(attempts);
+    return await Promise.any([...pipedAttempts, ...invidiousAttempts]);
   } catch {
+    void cleanQ;
+    void cleanA;
     return null;
   }
 }
@@ -615,15 +638,33 @@ function parseLrcText(lrc: string): SyncedLyricLine[] {
   return out;
 }
 
-function stripTitleExtras(title: string): string {
+export function cleanTrackTitle(title: string): string {
   return title
     .replace(/\s*[\[(][^\])]*[\])]/g, " ")
+    .replace(
+      /\s+-\s+(?:official\s+(?:music\s+)?(?:video|audio|lyric(?:s)?\s+video|visuali[sz]er)|remaster(?:ed)?(?:\s+\d{4})?|lyrics?|radio\s+edit|explicit|clean|live(?:\s+at\b.*)?)$/i,
+      " "
+    )
     .replace(/\s+/g, " ")
     .trim();
 }
 
+export function cleanTrackQuery(title: string, artist?: string): { title: string; artist: string } {
+  return {
+    title: cleanTrackTitle(title),
+    artist: leadArtistName(artist ?? ""),
+  };
+}
+
+function stripTitleExtras(title: string): string {
+  return cleanTrackTitle(title);
+}
+
 function leadArtistName(artist: string): string {
-  return artist.split(/,|&|\b(?:feat\.?|ft\.?|with)\b/i)[0].trim();
+  return artist
+    .replace(/\s*-\s*Topic$/i, "")
+    .split(/,|&|\/|\b(?:feat\.?|ft\.?|with)\b/i)[0]
+    .trim();
 }
 
 export async function fallbackMobileLyrics(track: {
@@ -680,6 +721,34 @@ export async function fallbackMobileLyrics(track: {
       }
     }
 
+    if (leadArtist) {
+      const structRes = await fetch(
+        `https://lrclib.net/api/search?track_name=${encodeURIComponent(cleanTitle)}&artist_name=${encodeURIComponent(leadArtist)}`,
+        { signal: AbortSignal.timeout(5000) }
+      );
+      if (structRes.ok) {
+        const rows = (await structRes.json()) as { syncedLyrics?: string; plainLyrics?: string; duration?: number }[];
+        if (Array.isArray(rows) && rows.length > 0) {
+          const dur = track.duration ?? 0;
+          const sorted = [...rows].sort((a, b) => {
+            const aSync = a.syncedLyrics ? 1 : 0;
+            const bSync = b.syncedLyrics ? 1 : 0;
+            if (aSync !== bSync) return bSync - aSync;
+            return dur > 0 ? Math.abs((a.duration ?? 0) - dur) - Math.abs((b.duration ?? 0) - dur) : 0;
+          });
+          for (const rec of sorted) {
+            const synced = rec.syncedLyrics ? parseLrcText(rec.syncedLyrics) : [];
+            if (synced.length >= 3) {
+              return { synced, plain: rec.plainLyrics?.trim() || null, source: "LRCLIB", wordSynced: false };
+            }
+            if (rec.plainLyrics?.trim()) {
+              return { synced: null, plain: rec.plainLyrics.trim(), source: "LRCLIB", wordSynced: false };
+            }
+          }
+        }
+      }
+    }
+
     const q = [cleanTitle, leadArtist].filter(Boolean).join(" ");
     const sRes = await fetch(`https://lrclib.net/api/search?q=${encodeURIComponent(q)}`, {
       signal: AbortSignal.timeout(5000),
@@ -702,6 +771,28 @@ export async function fallbackMobileLyrics(track: {
           if (rec.plainLyrics?.trim()) {
             return { synced: null, plain: rec.plainLyrics.trim(), source: "LRCLIB", wordSynced: false };
           }
+        }
+      }
+    }
+
+    // Secondary web fallback: LyricsPlus API (CORS-enabled JSON)
+    const lpUrl =
+      `https://lyricsplus.prjktla.workers.dev/v2/lyrics/get?title=${encodeURIComponent(cleanTitle)}` +
+      (leadArtist ? `&artist=${encodeURIComponent(leadArtist)}` : "");
+    const lpRes = await fetch(lpUrl, { signal: AbortSignal.timeout(5000) });
+    if (lpRes.ok) {
+      const lpData = (await lpRes.json()) as {
+        lyrics?: Array<{ time?: number; duration?: number; text?: string }>;
+      };
+      if (Array.isArray(lpData.lyrics) && lpData.lyrics.length > 0) {
+        const lines: SyncedLyricLine[] = lpData.lyrics
+          .map((l) => ({
+            time: (Number(l.time ?? 0) || 0) / 1000,
+            text: String(l.text ?? "").trim(),
+          }))
+          .filter((l) => l.text.length > 0);
+        if (lines.length >= 3) {
+          return { synced: lines, plain: lines.map((l) => l.text).join("\n"), source: "LyricsPlus", wordSynced: false };
         }
       }
     }

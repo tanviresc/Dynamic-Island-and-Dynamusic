@@ -17,6 +17,7 @@ import { MobileNavBar } from "./components/MobileNavBar";
 import { PcRemoteBar } from "./components/PcRemoteBar";
 import { useMobileMode } from "./stores/mobileMode";
 import { engineBoot } from "./lib/audio";
+import { handleAndroidBackButton } from "./lib/backNavigation";
 import { initAutoplay } from "./lib/autoplay";
 import { setAmbientFromArtwork } from "./lib/ambient";
 import { listenForDownloadProgress } from "./lib/downloads";
@@ -428,6 +429,37 @@ export default function App() {
     }
     return useSettings.persist.onFinishHydration(ready);
   }, [session.loaded]);
+
+  useEffect(() => {
+    const cap = (window as unknown as {
+      Capacitor?: {
+        isNativePlatform?: () => boolean;
+        Plugins?: {
+          MediaKeepalive?: {
+            addListener?: (event: string, cb: () => void) => Promise<{ remove: () => Promise<void> }> | { remove: () => void };
+          };
+        };
+      };
+    }).Capacitor;
+    if (!cap?.isNativePlatform?.()) return;
+    let handle: { remove: () => void | Promise<void> } | null = null;
+    let cancelled = false;
+    const maybePromise = cap.Plugins?.MediaKeepalive?.addListener?.("backPressed", () => {
+      handleAndroidBackButton();
+    });
+    if (maybePromise && typeof (maybePromise as Promise<unknown>).then === "function") {
+      void (maybePromise as Promise<{ remove: () => Promise<void> }>).then((h) => {
+        if (cancelled) void h?.remove?.();
+        else handle = h;
+      });
+    } else if (maybePromise) {
+      handle = maybePromise as { remove: () => void };
+    }
+    return () => {
+      cancelled = true;
+      void handle?.remove?.();
+    };
+  }, []);
 
   useKeyboardShortcuts();
   useAmbient();

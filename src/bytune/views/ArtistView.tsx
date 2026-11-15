@@ -242,7 +242,7 @@ export function ArtistView({ artistId }: { artistId: string }) {
   };
 
   return (
-    <div className="page-tint -mt-5" style={pageColors(pagePalette)}>
+    <div className="page-tint -mt-5 w-full max-w-full overflow-x-hidden" style={pageColors(pagePalette)}>
       {/* Hero — full-bleed photo, scrim dissolving into the page, name and
           stat chips over the lower edge, exactly the mobile artist header. */}
       <div className="relative -mx-3 md:-mx-10 overflow-hidden">
@@ -322,7 +322,7 @@ export function ArtistView({ artistId }: { artistId: string }) {
         </div>
       </div>
 
-      <div className="px-8 pb-12 space-y-7">
+      <div className="px-4 md:px-8 pb-12 space-y-7">
         {description && <AboutSection title="About the artist" text={description} />}
 
         {top.length > 0 && (

@@ -166,7 +166,7 @@ export function DownloadsView() {
   };
 
   return (
-    <div className="pb-14">
+    <div className="pb-14 w-full max-w-full overflow-x-hidden">
       <CollectionHero
         icon={Download}
         kind="Saved for offline"

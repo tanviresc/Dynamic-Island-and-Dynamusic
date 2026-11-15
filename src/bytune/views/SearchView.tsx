@@ -653,7 +653,7 @@ export function SearchView() {
 
   if (!trimmed) {
     return (
-      <div className="space-y-6 md:space-y-10">
+      <div className="space-y-6 md:space-y-10 w-full max-w-full overflow-x-hidden">
         {mobileSearchBar}
         <RecentlyOpened />
         <RecentSearches />
@@ -682,7 +682,7 @@ export function SearchView() {
   );
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 w-full max-w-full overflow-x-hidden">
       {mobileSearchBar}
       {/* pointer-events-none: rows scrolling under this strip keep their
           hover — only the pills themselves take the pointer. The frosted

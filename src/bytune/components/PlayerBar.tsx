@@ -202,6 +202,7 @@ export function PlayerBar() {
   const track = usePlayer(shownTrack);
   const playing = usePlayer((s) => s.playing);
   const buffering = usePlayer((s) => s.buffering);
+  const playbackStatus = usePlayer((s) => s.playbackStatus);
   const shuffle = usePlayer((s) => s.shuffle);
   const repeat = usePlayer((s) => s.repeat);
   const toggle = usePlayer((s) => s.toggle);
@@ -401,7 +402,7 @@ export function PlayerBar() {
               aria-label={playing ? "Pause" : "Play"}
               className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-white text-black transition-transform hover:scale-[1.06] active:scale-95"
             >
-              {buffering ? (
+              {buffering || playbackStatus === "loading" || playbackStatus === "buffering" ? (
                 <Loader2 className="w-4 h-4 animate-spin" />
               ) : playing ? (
                 <SpPause />

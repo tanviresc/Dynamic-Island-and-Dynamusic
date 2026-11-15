@@ -59,6 +59,15 @@ export function isTauriDesktop(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 
+export function isPcRemoteMode(): boolean {
+  if (typeof window === "undefined" || isTauriDesktop()) return false;
+  try {
+    return localStorage.getItem(MOBILE_MODE_KEY) === "pc_remote";
+  } catch {
+    return false;
+  }
+}
+
 export function isCapacitorNative(): boolean {
   if (typeof window === "undefined") return false;
   const cap = (window as unknown as { Capacitor?: { isNativePlatform?: () => boolean } }).Capacitor;
@@ -180,6 +189,16 @@ export const useMobileMode = create<MobileModeState>((set, get) => ({
     // Strict authority: mute & pause any local phone audio immediately on pc_remote switch
     if (mode === "pc_remote" && !isTauriDesktop()) {
       silenceLocalAudioElements();
+      if (isCapacitorNative()) {
+        try {
+          const cap = (window as unknown as {
+            Capacitor?: { Plugins?: { MediaKeepalive?: { nativeStop?: () => Promise<void> } } };
+          }).Capacitor;
+          void cap?.Plugins?.MediaKeepalive?.nativeStop?.();
+        } catch {
+          /* ignore */
+        }
+      }
       void import("./player").then((p) => {
         if (p.usePlayer.getState().playing) {
           p.usePlayer.setState({ playing: false });
@@ -431,6 +450,25 @@ if (typeof window !== "undefined") {
       attempt = 0;
       connectWs();
     });
+
+    if (isCapacitorNative()) {
+      try {
+        const cap = (window as unknown as {
+          Capacitor?: {
+            Plugins?: {
+              MediaKeepalive?: {
+                addListener?: (event: string, cb: () => void) => Promise<{ remove: () => Promise<void> }> | { remove: () => void };
+              };
+            };
+          };
+        }).Capacitor;
+        void cap?.Plugins?.MediaKeepalive?.addListener?.("appResume", () => {
+          useMobileMode.getState().reconnectNow();
+        });
+      } catch {
+        /* ignore */
+      }
+    }
 
     const onResize = () => {
       useMobileMode.getState().setIsMobileDevice(checkIsMobile());

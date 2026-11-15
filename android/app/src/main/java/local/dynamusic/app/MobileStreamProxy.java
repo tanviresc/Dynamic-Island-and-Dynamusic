@@ -152,8 +152,10 @@ final class MobileStreamProxy {
 
     private static final int LOCK_STRIPES = 64;
     private final ConcurrentHashMap<String, ResolvedStream> cache = new ConcurrentHashMap<>();
-    private final ExecutorService proxyPool = Executors.newFixedThreadPool(12);
-    private final ExecutorService resolverPool = Executors.newFixedThreadPool(8);
+    private final ExecutorService proxyPool = Executors.newCachedThreadPool();
+    // Separate orchestrator vs leaf pools so nested resolution tasks never deadlock
+    private final ExecutorService orchestratorPool = Executors.newCachedThreadPool();
+    private final ExecutorService resolverPool = Executors.newFixedThreadPool(16);
     private final AtomicInteger preferredClientIdx = new AtomicInteger(0);
     private final Object[] resolveLocks = new Object[LOCK_STRIPES];
 
@@ -241,15 +243,16 @@ final class MobileStreamProxy {
 
         // Race InnerTube against strictly-verified JioSaavn CDN when we can skip neither or only non-skipped sources
         List<Future<ResolvedStream>> tasks = new ArrayList<>();
-        CompletionService<ResolvedStream> ecs = new ExecutorCompletionService<>(resolverPool);
+        CompletionService<ResolvedStream> ecs = new ExecutorCompletionService<>(orchestratorPool);
         tasks.add(ecs.submit(() -> resolveViaInnerTube(videoId, maxKbps, proxyUrl, skipSource)));
         if (!"jiosaavn".equals(skipSource)) {
             tasks.add(ecs.submit(() -> resolveViaJioSaavn(videoId, title, artist, proxyUrl)));
         }
 
-        long deadlineNs = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        long deadlineNs = System.nanoTime() + TimeUnit.SECONDS.toNanos(6);
         for (int i = 0; i < tasks.size(); i++) {
-            long remMs = Math.max(200L, TimeUnit.NANOSECONDS.toMillis(deadlineNs - System.nanoTime()));
+            long remMs = TimeUnit.NANOSECONDS.toMillis(deadlineNs - System.nanoTime());
+            if (remMs <= 0) break;
             try {
                 Future<ResolvedStream> done = ecs.poll(remMs, TimeUnit.MILLISECONDS);
                 if (done == null) break;
@@ -266,12 +269,13 @@ final class MobileStreamProxy {
 
         // Emergency Piped + Invidious companion fallbacks in parallel
         List<Future<ResolvedStream>> mirrorTasks = new ArrayList<>(2);
-        CompletionService<ResolvedStream> mirrorEcs = new ExecutorCompletionService<>(resolverPool);
+        CompletionService<ResolvedStream> mirrorEcs = new ExecutorCompletionService<>(orchestratorPool);
         mirrorTasks.add(mirrorEcs.submit(() -> resolveViaPiped(videoId, maxKbps, proxyUrl)));
         mirrorTasks.add(mirrorEcs.submit(() -> resolveViaInvidious(videoId, maxKbps, proxyUrl)));
-        long mirrorDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(6);
+        long mirrorDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
         for (int i = 0; i < mirrorTasks.size(); i++) {
-            long remMs = Math.max(200L, TimeUnit.NANOSECONDS.toMillis(mirrorDeadline - System.nanoTime()));
+            long remMs = TimeUnit.NANOSECONDS.toMillis(mirrorDeadline - System.nanoTime());
+            if (remMs <= 0) break;
             try {
                 Future<ResolvedStream> done = mirrorEcs.poll(remMs, TimeUnit.MILLISECONDS);
                 if (done == null) break;
@@ -337,9 +341,13 @@ final class MobileStreamProxy {
         }
 
         IOException lastErr = null;
+        long deadlineNs = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(5500);
         for (int i = 0; i < futures.size(); i++) {
+            long remMs = TimeUnit.NANOSECONDS.toMillis(deadlineNs - System.nanoTime());
+            if (remMs <= 0) break;
             try {
-                Future<ResolvedStream> done = ecs.take();
+                Future<ResolvedStream> done = ecs.poll(remMs, TimeUnit.MILLISECONDS);
+                if (done == null) break;
                 ResolvedStream winner = done.get();
                 if (winner != null) {
                     cancelFutures(futures);
@@ -361,8 +369,8 @@ final class MobileStreamProxy {
         try {
             conn.setRequestMethod("POST");
             conn.setDoOutput(true);
-            conn.setConnectTimeout(5000);
-            conn.setReadTimeout(7000);
+            conn.setConnectTimeout(4500);
+            conn.setReadTimeout(5000);
             conn.setRequestProperty("Content-Type", "application/json");
             conn.setRequestProperty("User-Agent", client.userAgent);
             try (OutputStream out = conn.getOutputStream()) {
@@ -591,7 +599,8 @@ final class MobileStreamProxy {
 
     private static String cleanQueryTitle(String s) {
         if (s == null) return "";
-        return s.replaceAll("(?i)\\s*[\\[(](?:feat\\.?|ft\\.?|with|from|official|lyric|audio|video)[^\\])]*[\\])]", " ")
+        return s.replaceAll("(?i)\\s*[\\[(](?:feat\\.?|ft\\.?|with|from|official|lyric|lyrics|audio|video|4k|8k|hd|hq|uhd|remaster(?:ed)?|live|explicit|clean|deluxe|acoustic|visuali[sz]er)[^\\])]*[\\])]", " ")
+                .replaceAll("(?i)\\s+-\\s+(?:official\\s+(?:music\\s+)?(?:video|audio|lyric(?:s)?\\s+video|visuali[sz]er)|remaster(?:ed)?(?:\\s+\\d{4})?|lyrics?|live(?:\\s+at\\b.*)?)$", " ")
                 .replaceAll("\\s+", " ")
                 .trim();
     }

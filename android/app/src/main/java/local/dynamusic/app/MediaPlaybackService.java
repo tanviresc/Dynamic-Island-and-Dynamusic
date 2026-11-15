@@ -16,7 +16,9 @@ import android.graphics.Color;
 import android.media.AudioAttributes;
 import android.media.AudioFocusRequest;
 import android.media.AudioManager;
+import android.net.Uri;
 import android.net.wifi.WifiManager;
+import android.os.Binder;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -28,44 +30,91 @@ import android.support.v4.media.session.MediaSessionCompat;
 import android.support.v4.media.session.PlaybackStateCompat;
 import android.util.Base64;
 import android.util.LruCache;
+import androidx.annotation.NonNull;
 import androidx.core.app.NotificationCompat;
 import androidx.core.app.ServiceCompat;
 import androidx.core.content.ContextCompat;
 import androidx.media.app.NotificationCompat.MediaStyle;
+import androidx.media3.common.C;
+import androidx.media3.common.MediaItem;
+import androidx.media3.common.PlaybackException;
+import androidx.media3.common.Player;
+import androidx.media3.datasource.DefaultDataSource;
+import androidx.media3.datasource.DefaultHttpDataSource;
+import androidx.media3.exoplayer.ExoPlayer;
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
+/**
+ * Single authoritative Android media playback engine owning ExoPlayer,
+ * AudioFocus/WakeLocks, MediaSessionCompat hardware transport, and the
+ * colorful MediaStyle notification bar.
+ */
 public class MediaPlaybackService extends Service {
     public static final String CHANNEL_ID = "dynamusic_media_playback";
     public static final int NOTIFICATION_ID = 47822;
+
+    public static final String ACTION_LOAD = "local.dynamusic.app.ACTION_MEDIA_LOAD";
+    public static final String ACTION_PREBUFFER = "local.dynamusic.app.ACTION_MEDIA_PREBUFFER";
+    public static final String ACTION_PLAY = "local.dynamusic.app.ACTION_MEDIA_PLAY";
+    public static final String ACTION_PAUSE = "local.dynamusic.app.ACTION_MEDIA_PAUSE";
+    public static final String ACTION_SEEK = "local.dynamusic.app.ACTION_MEDIA_SEEK";
+    public static final String ACTION_VOLUME = "local.dynamusic.app.ACTION_MEDIA_VOLUME";
+    public static final String ACTION_SPEED = "local.dynamusic.app.ACTION_MEDIA_SPEED";
     public static final String ACTION_UPDATE = "local.dynamusic.app.ACTION_MEDIA_UPDATE";
     public static final String ACTION_STOP = "local.dynamusic.app.ACTION_MEDIA_STOP";
+
     public static final String ACTION_BTN_SHUFFLE = "local.dynamusic.app.ACTION_BTN_SHUFFLE";
     public static final String ACTION_BTN_PREV = "local.dynamusic.app.ACTION_BTN_PREV";
     public static final String ACTION_BTN_TOGGLE = "local.dynamusic.app.ACTION_BTN_TOGGLE";
     public static final String ACTION_BTN_NEXT = "local.dynamusic.app.ACTION_BTN_NEXT";
     public static final String ACTION_BTN_LIKE = "local.dynamusic.app.ACTION_BTN_LIKE";
+
     public static final String ACTION_MEDIA_CONTROL = "local.dynamusic.app.ACTION_MEDIA_CONTROL";
+    public static final String ACTION_PLAYER_EVENT = "local.dynamusic.app.ACTION_PLAYER_EVENT";
+
     public static final String EXTRA_CONTROL_ACTION = "control_action";
     public static final String EXTRA_SEEK_TIME = "seek_time";
+    public static final String EXTRA_TRACK_ID = "track_id";
+    public static final String EXTRA_STREAM_URL = "stream_url";
     public static final String EXTRA_TITLE = "title";
     public static final String EXTRA_ARTIST = "artist";
     public static final String EXTRA_ALBUM = "album";
     public static final String EXTRA_THUMB = "thumb";
     public static final String EXTRA_PLAYING = "playing";
+    public static final String EXTRA_AUTOPLAY = "autoplay";
     public static final String EXTRA_SHUFFLE = "shuffle";
     public static final String EXTRA_LIKED = "liked";
     public static final String EXTRA_DURATION = "duration";
     public static final String EXTRA_POSITION = "position";
+    public static final String EXTRA_VOLUME = "volume";
+    public static final String EXTRA_SPEED = "speed";
+    public static final String EXTRA_EVENT_TYPE = "event_type";
+    public static final String EXTRA_BUFFERING = "buffering";
+    public static final String EXTRA_STATUS = "status";
+    public static final String EXTRA_ERROR = "error";
 
     private static final String CUSTOM_SHUFFLE = "dynamusic_shuffle";
     private static final String CUSTOM_LIKE = "dynamusic_like";
     private static final int DEFAULT_ACCENT_COLOR = 0xFF4A1F5E;
     private static final String DESKTOP_UA =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+
+    public interface ServiceEventSink {
+        void onServicePlayerEvent(String type, String trackId, boolean playing, boolean buffering,
+                                  String status, double positionSec, double durationSec, String errorMsg);
+        void onServiceControlAction(String action, double seekSec, String trackId);
+    }
+
+    public final class LocalBinder extends Binder {
+        MediaPlaybackService getService() {
+            return MediaPlaybackService.this;
+        }
+    }
 
     private static final class ArtEntry {
         final Bitmap bitmap;
@@ -77,6 +126,7 @@ public class MediaPlaybackService extends Service {
         }
     }
 
+    private final IBinder binder = new LocalBinder();
     private PowerManager.WakeLock wakeLock;
     private WifiManager.WifiLock wifiLock;
     private AudioManager audioManager;
@@ -85,26 +135,70 @@ public class MediaPlaybackService extends Service {
     private boolean hasAudioFocus = false;
     private boolean noisyReceiverRegistered = false;
     private boolean pausedForTransientFocus = false;
+    private boolean duckedForTransientFocus = false;
+
+    private ExoPlayer activePlayer;
+    private ExoPlayer standbyPlayer;
+    private String standbyTrackId = "";
+    private String standbyUrl = "";
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final ExecutorService artExecutor = Executors.newSingleThreadExecutor();
-    private final LruCache<String, ArtEntry> artCache = new LruCache<>(16);
+    private final LruCache<String, ArtEntry> artCache = new LruCache<>(24);
 
+    private volatile ServiceEventSink eventSink;
+
+    private String curTrackId = "";
+    private String curStreamUrl = "";
     private String curTitle = "Dynamusic";
     private String curArtist = "";
     private String curAlbum = "Dynamusic";
     private String curThumb = "";
     private boolean curPlaying = false;
+    private boolean curBuffering = false;
+    private String curStatus = "idle";
     private boolean curShuffle = false;
     private boolean curLiked = false;
     private double curDurationSec = 0;
     private double curPositionSec = 0;
+    private float curVolume = 1.0f;
+    private float curSpeed = 1.0f;
     private volatile String pendingArtUrl = "";
+    private boolean foregroundStarted = false;
+
+    private final Runnable progressTicker = new Runnable() {
+        @Override
+        public void run() {
+            if (activePlayer != null) {
+                int st = activePlayer.getPlaybackState();
+                boolean wantPlay = activePlayer.getPlayWhenReady() && (st == Player.STATE_READY || st == Player.STATE_BUFFERING);
+                if (st == Player.STATE_READY || st == Player.STATE_BUFFERING) {
+                    long posMs = Math.max(0L, activePlayer.getCurrentPosition());
+                    long durMs = activePlayer.getDuration();
+                    curPositionSec = posMs / 1000.0;
+                    if (durMs != C.TIME_UNSET && durMs > 0) {
+                        curDurationSec = durMs / 1000.0;
+                    }
+                    emitPlayerEvent("position", curErrorNull());
+                }
+                if (wantPlay) {
+                    mainHandler.postDelayed(this, 250L);
+                    return;
+                }
+            }
+            mainHandler.removeCallbacks(this);
+        }
+    };
+
+    private static String curErrorNull() {
+        return null;
+    }
 
     private final BroadcastReceiver noisyReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
             if (AudioManager.ACTION_AUDIO_BECOMING_NOISY.equals(intent != null ? intent.getAction() : null)) {
+                pauseNative();
                 dispatchMediaControl("pause");
             }
         }
@@ -113,19 +207,111 @@ public class MediaPlaybackService extends Service {
     private final AudioManager.OnAudioFocusChangeListener focusListener = focusChange -> {
         if (focusChange == AudioManager.AUDIOFOCUS_LOSS) {
             pausedForTransientFocus = false;
+            duckedForTransientFocus = false;
             hasAudioFocus = false;
+            pauseNative();
             dispatchMediaControl("pause");
-        } else if (focusChange == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT
-                || focusChange == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK) {
-            pausedForTransientFocus = true;
-            dispatchMediaControl("pause");
+        } else if (focusChange == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) {
+            boolean wasPlaying = activePlayer != null && activePlayer.getPlayWhenReady();
+            pausedForTransientFocus = wasPlaying;
+            if (wasPlaying) {
+                pauseNative();
+                dispatchMediaControl("pause");
+            }
+        } else if (focusChange == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK) {
+            duckedForTransientFocus = true;
+            applyEffectiveVolume();
         } else if (focusChange == AudioManager.AUDIOFOCUS_GAIN) {
+            hasAudioFocus = true;
+            if (duckedForTransientFocus) {
+                duckedForTransientFocus = false;
+                applyEffectiveVolume();
+            }
             if (pausedForTransientFocus) {
                 pausedForTransientFocus = false;
+                playNative();
                 dispatchMediaControl("play");
             }
         }
     };
+
+    private final Player.Listener playerListener = new Player.Listener() {
+        @Override
+        public void onPlaybackStateChanged(int playbackState) {
+            syncStateFromPlayer(playbackState);
+            if (playbackState == Player.STATE_ENDED) {
+                if (activePlayer != null) {
+                    long durMs = activePlayer.getDuration();
+                    long posMs = activePlayer.getCurrentPosition();
+                    if (durMs != C.TIME_UNSET && durMs > 0) {
+                        curDurationSec = durMs / 1000.0;
+                    }
+                    curPositionSec = Math.max(curPositionSec, Math.max(0L, posMs) / 1000.0);
+                }
+                curPlaying = false;
+                curBuffering = false;
+                curStatus = "paused";
+                releaseWakeAndWifiLocks();
+                unregisterNoisyReceiver();
+                mainHandler.removeCallbacks(progressTicker);
+                postUpdatedNotification();
+                emitPlayerEvent("ended", null);
+            }
+        }
+
+        @Override
+        public void onIsPlayingChanged(boolean isPlaying) {
+            syncStateFromPlayer(activePlayer != null ? activePlayer.getPlaybackState() : Player.STATE_IDLE);
+        }
+
+        @Override
+        public void onPlayWhenReadyChanged(boolean playWhenReady, int reason) {
+            syncStateFromPlayer(activePlayer != null ? activePlayer.getPlaybackState() : Player.STATE_IDLE);
+        }
+
+        @Override
+        public void onPlayerError(@NonNull PlaybackException error) {
+            if (activePlayer != null) {
+                long posMs = activePlayer.getCurrentPosition();
+                long durMs = activePlayer.getDuration();
+                if (posMs > 0) curPositionSec = posMs / 1000.0;
+                if (durMs != C.TIME_UNSET && durMs > 0) curDurationSec = durMs / 1000.0;
+            }
+            curPlaying = false;
+            curBuffering = false;
+            curStatus = "error";
+            releaseWakeAndWifiLocks();
+            unregisterNoisyReceiver();
+            mainHandler.removeCallbacks(progressTicker);
+            postUpdatedNotification();
+            String msg = error.getMessage() != null ? error.getMessage() : "ExoPlayer playback error";
+            emitPlayerEvent("error", msg);
+        }
+    };
+
+    void setEventSink(ServiceEventSink sink) {
+        this.eventSink = sink;
+    }
+
+    private ExoPlayer createConfiguredPlayer() {
+        DefaultHttpDataSource.Factory httpFactory = new DefaultHttpDataSource.Factory()
+                .setUserAgent(DESKTOP_UA)
+                .setAllowCrossProtocolRedirects(true)
+                .setConnectTimeoutMs(8000)
+                .setReadTimeoutMs(12000);
+        DefaultDataSource.Factory dataSourceFactory = new DefaultDataSource.Factory(this, httpFactory);
+        ExoPlayer player = new ExoPlayer.Builder(this)
+                .setMediaSourceFactory(new DefaultMediaSourceFactory(dataSourceFactory))
+                .build();
+        androidx.media3.common.AudioAttributes attrs = new androidx.media3.common.AudioAttributes.Builder()
+                .setUsage(C.USAGE_MEDIA)
+                .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
+                .build();
+        // We manage AudioFocus ourselves so AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK and
+        // MediaStyle lock-screen focus transitions stay completely deterministic.
+        player.setAudioAttributes(attrs, false);
+        return player;
+    }
 
     @Override
     @SuppressWarnings("deprecation")
@@ -151,15 +337,22 @@ public class MediaPlaybackService extends Service {
         }
         audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
 
+        activePlayer = createConfiguredPlayer();
+        activePlayer.addListener(playerListener);
+
         mediaSession = new MediaSessionCompat(this, "DynamusicSession");
         mediaSession.setCallback(new MediaSessionCompat.Callback() {
             @Override
             public void onPlay() {
+                if (hasLoadedTrack()) {
+                    playNative();
+                }
                 dispatchMediaControl("play");
             }
 
             @Override
             public void onPause() {
+                pauseNative();
                 dispatchMediaControl("pause");
             }
 
@@ -180,27 +373,25 @@ public class MediaPlaybackService extends Service {
 
             @Override
             public void onSeekTo(long pos) {
-                Intent i = new Intent(ACTION_MEDIA_CONTROL);
-                i.setPackage(getPackageName());
-                i.putExtra(EXTRA_CONTROL_ACTION, "seekTo");
-                i.putExtra(EXTRA_SEEK_TIME, pos / 1000.0);
-                sendBroadcast(i);
+                double targetSec = Math.max(0.0, pos / 1000.0);
+                seekNative(targetSec);
+                dispatchMediaControlSeek(targetSec);
             }
 
             @Override
             public void onCustomAction(String action, Bundle extras) {
                 if (CUSTOM_SHUFFLE.equals(action)) {
-                    curShuffle = !curShuffle;
                     dispatchMediaControl("shuffle");
-                    postUpdatedNotification();
                 } else if (CUSTOM_LIKE.equals(action)) {
-                    curLiked = !curLiked;
                     dispatchMediaControl("like");
-                    postUpdatedNotification();
                 }
             }
         });
         mediaSession.setActive(true);
+    }
+
+    private boolean hasLoadedTrack() {
+        return activePlayer != null && activePlayer.getMediaItemCount() > 0 && !curStreamUrl.isEmpty();
     }
 
     @Override
@@ -212,9 +403,7 @@ public class MediaPlaybackService extends Service {
             return START_NOT_STICKY;
         }
         if (ACTION_BTN_SHUFFLE.equals(action)) {
-            curShuffle = !curShuffle;
             dispatchMediaControl("shuffle");
-            postUpdatedNotification();
             return START_STICKY;
         }
         if (ACTION_BTN_PREV.equals(action)) {
@@ -222,15 +411,15 @@ public class MediaPlaybackService extends Service {
             return START_STICKY;
         }
         if (ACTION_BTN_TOGGLE.equals(action)) {
-            curPlaying = !curPlaying;
-            dispatchMediaControl(curPlaying ? "play" : "pause");
             if (curPlaying) {
-                acquireLocksAndFocus();
+                pauseNative();
+                dispatchMediaControl("pause");
             } else {
-                releaseWakeAndWifiLocks();
-                unregisterNoisyReceiver();
+                if (hasLoadedTrack()) {
+                    playNative();
+                }
+                dispatchMediaControl("play");
             }
-            postUpdatedNotification();
             return START_STICKY;
         }
         if (ACTION_BTN_NEXT.equals(action)) {
@@ -238,62 +427,341 @@ public class MediaPlaybackService extends Service {
             return START_STICKY;
         }
         if (ACTION_BTN_LIKE.equals(action)) {
-            curLiked = !curLiked;
             dispatchMediaControl("like");
-            postUpdatedNotification();
             return START_STICKY;
         }
 
-        if (intent != null && intent.hasExtra(EXTRA_TITLE)) {
+        if (ACTION_LOAD.equals(action) && intent != null) {
+            applyMetadataExtras(intent);
+            String streamUrl = intent.getStringExtra(EXTRA_STREAM_URL);
+            boolean autoplay = intent.getBooleanExtra(EXTRA_AUTOPLAY, true);
+            double startPos = intent.getDoubleExtra(EXTRA_POSITION, 0.0);
+            loadTrackNative(
+                    curTrackId,
+                    streamUrl != null ? streamUrl : "",
+                    autoplay,
+                    startPos);
+            ensureForeground();
+            return START_STICKY;
+        }
+
+        if (ACTION_PREBUFFER.equals(action) && intent != null) {
+            String nextId = intent.getStringExtra(EXTRA_TRACK_ID);
+            String nextUrl = intent.getStringExtra(EXTRA_STREAM_URL);
+            prebufferTrackNative(nextId != null ? nextId : "", nextUrl != null ? nextUrl : "");
+            return START_STICKY;
+        }
+
+        if (ACTION_PLAY.equals(action)) {
+            playNative();
+            ensureForeground();
+            return START_STICKY;
+        }
+
+        if (ACTION_PAUSE.equals(action)) {
+            pauseNative();
+            ensureForeground();
+            return START_STICKY;
+        }
+
+        if (ACTION_SEEK.equals(action) && intent != null) {
+            seekNative(intent.getDoubleExtra(EXTRA_SEEK_TIME, 0.0));
+            return START_STICKY;
+        }
+
+        if (ACTION_VOLUME.equals(action) && intent != null) {
+            setVolumeNative((float) intent.getDoubleExtra(EXTRA_VOLUME, curVolume));
+            return START_STICKY;
+        }
+
+        if (ACTION_SPEED.equals(action) && intent != null) {
+            setSpeedNative((float) intent.getDoubleExtra(EXTRA_SPEED, curSpeed));
+            return START_STICKY;
+        }
+
+        // Metadata / shuffle / liked sync without disrupting ExoPlayer audio pipeline
+        if (intent != null) {
+            applyMetadataExtras(intent);
+        }
+
+        if (!curThumb.isEmpty()) {
+            ArtEntry art = artCache.get(curThumb);
+            if (art == null && !curThumb.equals(pendingArtUrl)) {
+                fetchArtworkAsync(curThumb);
+            }
+        }
+        ensureForeground();
+        postUpdatedNotification();
+        return START_STICKY;
+    }
+
+    private void applyMetadataExtras(Intent intent) {
+        if (intent.hasExtra(EXTRA_TRACK_ID)) {
+            String id = intent.getStringExtra(EXTRA_TRACK_ID);
+            if (id != null) curTrackId = id;
+        }
+        if (intent.hasExtra(EXTRA_TITLE)) {
             String t = intent.getStringExtra(EXTRA_TITLE);
             curTitle = (t != null && !t.isEmpty()) ? t : "Dynamusic";
         }
-        if (intent != null && intent.hasExtra(EXTRA_ARTIST)) {
+        if (intent.hasExtra(EXTRA_ARTIST)) {
             String a = intent.getStringExtra(EXTRA_ARTIST);
             curArtist = a != null ? a : "";
         }
-        if (intent != null && intent.hasExtra(EXTRA_ALBUM)) {
+        if (intent.hasExtra(EXTRA_ALBUM)) {
             String alb = intent.getStringExtra(EXTRA_ALBUM);
             curAlbum = (alb != null && !alb.isEmpty()) ? alb : "Dynamusic";
         }
-        if (intent != null && intent.hasExtra(EXTRA_THUMB)) {
+        if (intent.hasExtra(EXTRA_THUMB)) {
             String th = intent.getStringExtra(EXTRA_THUMB);
             curThumb = th != null ? th : "";
         }
-        if (intent != null && intent.hasExtra(EXTRA_PLAYING)) {
-            curPlaying = intent.getBooleanExtra(EXTRA_PLAYING, true);
-        } else if (intent == null) {
-            curPlaying = true;
-        }
-        if (intent != null && intent.hasExtra(EXTRA_SHUFFLE)) {
+        if (intent.hasExtra(EXTRA_SHUFFLE)) {
             curShuffle = intent.getBooleanExtra(EXTRA_SHUFFLE, false);
         }
-        if (intent != null && intent.hasExtra(EXTRA_LIKED)) {
+        if (intent.hasExtra(EXTRA_LIKED)) {
             curLiked = intent.getBooleanExtra(EXTRA_LIKED, false);
         }
-        if (intent != null && intent.hasExtra(EXTRA_DURATION)) {
-            curDurationSec = intent.getDoubleExtra(EXTRA_DURATION, 0);
+        if (intent.hasExtra(EXTRA_DURATION)) {
+            double d = intent.getDoubleExtra(EXTRA_DURATION, 0);
+            if (d > 0) curDurationSec = d;
         }
-        if (intent != null && intent.hasExtra(EXTRA_POSITION)) {
-            curPositionSec = intent.getDoubleExtra(EXTRA_POSITION, 0);
+        if (intent.hasExtra(EXTRA_VOLUME)) {
+            setVolumeNative((float) intent.getDoubleExtra(EXTRA_VOLUME, curVolume));
+        }
+        if (intent.hasExtra(EXTRA_SPEED)) {
+            setSpeedNative((float) intent.getDoubleExtra(EXTRA_SPEED, curSpeed));
+        }
+        if (!curThumb.isEmpty() && artCache.get(curThumb) == null && !curThumb.equals(pendingArtUrl)) {
+            fetchArtworkAsync(curThumb);
+        }
+    }
+
+    void loadTrackNative(String trackId, String streamUrl, boolean autoplay, double startPosSec) {
+        if (trackId != null) curTrackId = trackId;
+        curStreamUrl = streamUrl != null ? streamUrl : "";
+        curPositionSec = Math.max(0.0, startPosSec);
+
+        if (activePlayer == null) {
+            activePlayer = createConfiguredPlayer();
+            activePlayer.addListener(playerListener);
         }
 
-        if (curPlaying) {
+        // Stop any active playback immediately before switching streams so old audio can never bleed
+        mainHandler.removeCallbacks(progressTicker);
+
+        if (curStreamUrl.isEmpty()) {
+            activePlayer.stop();
+            activePlayer.clearMediaItems();
+            curPlaying = false;
+            curBuffering = false;
+            curStatus = "idle";
+            releaseWakeAndWifiLocks();
+            unregisterNoisyReceiver();
+            postUpdatedNotification();
+            emitPlayerEvent("state", null);
+            return;
+        }
+
+        if (standbyPlayer != null && curStreamUrl.equals(standbyUrl) && !standbyUrl.isEmpty()) {
+            // Instant promotion of pre-buffered standby deck
+            activePlayer.removeListener(playerListener);
+            activePlayer.stop();
+            activePlayer.release();
+
+            activePlayer = standbyPlayer;
+            standbyPlayer = null;
+            standbyTrackId = "";
+            standbyUrl = "";
+
+            activePlayer.addListener(playerListener);
+            if (startPosSec > 0.05) {
+                activePlayer.seekTo(Math.round(startPosSec * 1000.0));
+            }
+            applyEffectiveVolume();
+            activePlayer.setPlaybackSpeed(curSpeed);
+            if (autoplay) {
+                acquireLocksAndFocus();
+            }
+            curPlaying = autoplay;
+            curBuffering = activePlayer.getPlaybackState() == Player.STATE_BUFFERING;
+            curStatus = curBuffering ? "loading" : (autoplay ? "playing" : "paused");
+            activePlayer.setPlayWhenReady(autoplay);
+            if (autoplay) {
+                mainHandler.post(progressTicker);
+            }
+            postUpdatedNotification();
+            emitPlayerEvent("state", null);
+            return;
+        }
+
+        releaseStandbyPlayer();
+        activePlayer.stop();
+        activePlayer.clearMediaItems();
+
+        MediaItem item = MediaItem.fromUri(Uri.parse(curStreamUrl));
+        activePlayer.setMediaItem(item);
+        if (startPosSec > 0.05) {
+            activePlayer.seekTo(Math.round(startPosSec * 1000.0));
+        }
+        applyEffectiveVolume();
+        activePlayer.setPlaybackSpeed(curSpeed);
+        if (autoplay) {
             acquireLocksAndFocus();
         } else {
             releaseWakeAndWifiLocks();
             unregisterNoisyReceiver();
         }
+        curPlaying = autoplay;
+        curBuffering = true;
+        curStatus = "loading";
+        activePlayer.setPlayWhenReady(autoplay);
+        activePlayer.prepare();
+        if (autoplay) {
+            mainHandler.post(progressTicker);
+        }
+        postUpdatedNotification();
+        emitPlayerEvent("state", null);
+    }
 
+    void prebufferTrackNative(String trackId, String streamUrl) {
+        if (streamUrl == null || streamUrl.isEmpty() || streamUrl.equals(standbyUrl)) return;
+        releaseStandbyPlayer();
+        standbyTrackId = trackId != null ? trackId : "";
+        standbyUrl = streamUrl;
+        standbyPlayer = createConfiguredPlayer();
+        standbyPlayer.setPlayWhenReady(false);
+        standbyPlayer.setMediaItem(MediaItem.fromUri(Uri.parse(streamUrl)));
+        standbyPlayer.prepare();
+    }
+
+    private void releaseStandbyPlayer() {
+        if (standbyPlayer != null) {
+            try {
+                standbyPlayer.stop();
+                standbyPlayer.release();
+            } catch (Exception ignored) {}
+            standbyPlayer = null;
+        }
+        standbyTrackId = "";
+        standbyUrl = "";
+    }
+
+    void playNative() {
+        if (activePlayer == null) return;
+        pausedForTransientFocus = false;
+        acquireLocksAndFocus();
+        if (activePlayer.getPlaybackState() == Player.STATE_ENDED) {
+            activePlayer.seekTo(0);
+        }
+        applyEffectiveVolume();
+        activePlayer.setPlayWhenReady(true);
+        mainHandler.post(progressTicker);
+        syncStateFromPlayer(activePlayer.getPlaybackState());
+    }
+
+    void pauseNative() {
+        pausedForTransientFocus = false;
+        if (activePlayer != null) {
+            activePlayer.setPlayWhenReady(false);
+        }
+        mainHandler.removeCallbacks(progressTicker);
+        releaseWakeAndWifiLocks();
+        unregisterNoisyReceiver();
+        syncStateFromPlayer(activePlayer != null ? activePlayer.getPlaybackState() : Player.STATE_IDLE);
+    }
+
+    void seekNative(double seconds) {
+        double clamped = Math.max(0.0, seconds);
+        if (curDurationSec > 0) clamped = Math.min(curDurationSec, clamped);
+        curPositionSec = clamped;
+        if (activePlayer != null && activePlayer.getMediaItemCount() > 0) {
+            activePlayer.seekTo(Math.round(clamped * 1000.0));
+        }
+        postUpdatedNotification();
+        emitPlayerEvent("position", null);
+    }
+
+    void setVolumeNative(float vol) {
+        curVolume = Math.max(0.0f, Math.min(1.0f, vol));
+        applyEffectiveVolume();
+    }
+
+    void setSpeedNative(float speed) {
+        curSpeed = Math.max(0.5f, Math.min(2.0f, speed));
+        if (activePlayer != null) {
+            activePlayer.setPlaybackSpeed(curSpeed);
+        }
+    }
+
+    void stopPlaybackNative() {
+        mainHandler.removeCallbacks(progressTicker);
+        releaseStandbyPlayer();
+        if (activePlayer != null) {
+            activePlayer.stop();
+            activePlayer.clearMediaItems();
+        }
+        curStreamUrl = "";
+        curPlaying = false;
+        curBuffering = false;
+        curStatus = "idle";
+        releaseLocksAndFocus();
+        emitPlayerEvent("state", null);
+    }
+
+    private void applyEffectiveVolume() {
+        if (activePlayer != null) {
+            activePlayer.setVolume(duckedForTransientFocus ? curVolume * 0.25f : curVolume);
+        }
+    }
+
+    private void syncStateFromPlayer(int playbackState) {
+        if (activePlayer == null) return;
+        boolean playWhenReady = activePlayer.getPlayWhenReady();
+        boolean hasItem = activePlayer.getMediaItemCount() > 0;
+        long durMs = activePlayer.getDuration();
+        if (durMs != C.TIME_UNSET && durMs > 0) {
+            curDurationSec = durMs / 1000.0;
+        }
+        long posMs = activePlayer.getCurrentPosition();
+        if (posMs >= 0) {
+            curPositionSec = posMs / 1000.0;
+        }
+
+        boolean buffering = hasItem && playbackState == Player.STATE_BUFFERING;
+        boolean playing = hasItem && playWhenReady && (playbackState == Player.STATE_READY || playbackState == Player.STATE_BUFFERING);
+
+        curBuffering = buffering;
+        curPlaying = playing;
+        if (!hasItem || playbackState == Player.STATE_IDLE) {
+            if (!"error".equals(curStatus)) curStatus = "idle";
+        } else if (buffering) {
+            curStatus = playWhenReady ? "loading" : "paused";
+        } else if (playbackState == Player.STATE_READY) {
+            curStatus = playWhenReady ? "playing" : "paused";
+        } else if (playbackState == Player.STATE_ENDED) {
+            curStatus = "paused";
+        }
+
+        if (playing) {
+            acquireLocksAndFocus();
+            mainHandler.removeCallbacks(progressTicker);
+            mainHandler.post(progressTicker);
+        } else {
+            mainHandler.removeCallbacks(progressTicker);
+            releaseWakeAndWifiLocks();
+            unregisterNoisyReceiver();
+        }
+
+        postUpdatedNotification();
+        emitPlayerEvent("state", null);
+    }
+
+    private void ensureForeground() {
         if (mediaSession != null && !mediaSession.isActive()) {
             mediaSession.setActive(true);
         }
-
         ArtEntry art = !curThumb.isEmpty() ? artCache.get(curThumb) : null;
-        if (art == null && !curThumb.isEmpty() && !curThumb.equals(pendingArtUrl)) {
-            fetchArtworkAsync(curThumb);
-        }
-
         Notification notification = buildNotification(art);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             ServiceCompat.startForeground(
@@ -304,20 +772,22 @@ public class MediaPlaybackService extends Service {
         } else {
             startForeground(NOTIFICATION_ID, notification);
         }
-        return START_STICKY;
+        foregroundStarted = true;
     }
 
     private void handleStopFromUser() {
+        stopPlaybackNative();
         dispatchMediaControl("stop");
-        releaseLocksAndFocus();
         if (mediaSession != null) {
             mediaSession.setActive(false);
         }
+        foregroundStarted = false;
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE);
         stopSelf();
     }
 
     private void postUpdatedNotification() {
+        if (!foregroundStarted) return;
         ArtEntry art = !curThumb.isEmpty() ? artCache.get(curThumb) : null;
         Notification notification = buildNotification(art);
         NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
@@ -328,6 +798,14 @@ public class MediaPlaybackService extends Service {
 
     @Override
     public void onDestroy() {
+        mainHandler.removeCallbacks(progressTicker);
+        releaseStandbyPlayer();
+        if (activePlayer != null) {
+            activePlayer.removeListener(playerListener);
+            activePlayer.stop();
+            activePlayer.release();
+            activePlayer = null;
+        }
         releaseLocksAndFocus();
         if (mediaSession != null) {
             mediaSession.setActive(false);
@@ -340,13 +818,60 @@ public class MediaPlaybackService extends Service {
 
     @Override
     public IBinder onBind(Intent intent) {
-        return null;
+        return binder;
     }
 
     private void dispatchMediaControl(String action) {
-        Intent i = new Intent(ACTION_MEDIA_CONTROL);
+        ServiceEventSink sink = this.eventSink;
+        if (sink != null) {
+            sink.onServiceControlAction(action, -1.0, curTrackId);
+        } else {
+            Intent i = new Intent(ACTION_MEDIA_CONTROL);
+            i.setPackage(getPackageName());
+            i.putExtra(EXTRA_CONTROL_ACTION, action);
+            i.putExtra(EXTRA_TRACK_ID, curTrackId);
+            sendBroadcast(i);
+        }
+    }
+
+    private void dispatchMediaControlSeek(double seekSec) {
+        ServiceEventSink sink = this.eventSink;
+        if (sink != null) {
+            sink.onServiceControlAction("seekTo", seekSec, curTrackId);
+        } else {
+            Intent i = new Intent(ACTION_MEDIA_CONTROL);
+            i.setPackage(getPackageName());
+            i.putExtra(EXTRA_CONTROL_ACTION, "seekTo");
+            i.putExtra(EXTRA_SEEK_TIME, seekSec);
+            i.putExtra(EXTRA_TRACK_ID, curTrackId);
+            sendBroadcast(i);
+        }
+    }
+
+    private void emitPlayerEvent(String type, String errorMsg) {
+        ServiceEventSink sink = this.eventSink;
+        if (sink != null) {
+            sink.onServicePlayerEvent(
+                    type,
+                    curTrackId,
+                    curPlaying,
+                    curBuffering,
+                    curStatus,
+                    curPositionSec,
+                    curDurationSec,
+                    errorMsg);
+            return;
+        }
+        Intent i = new Intent(ACTION_PLAYER_EVENT);
         i.setPackage(getPackageName());
-        i.putExtra(EXTRA_CONTROL_ACTION, action);
+        i.putExtra(EXTRA_EVENT_TYPE, type);
+        i.putExtra(EXTRA_TRACK_ID, curTrackId);
+        i.putExtra(EXTRA_PLAYING, curPlaying);
+        i.putExtra(EXTRA_BUFFERING, curBuffering);
+        i.putExtra(EXTRA_STATUS, curStatus);
+        i.putExtra(EXTRA_POSITION, curPositionSec);
+        i.putExtra(EXTRA_DURATION, curDurationSec);
+        if (errorMsg != null) i.putExtra(EXTRA_ERROR, errorMsg);
         sendBroadcast(i);
     }
 
@@ -438,6 +963,7 @@ public class MediaPlaybackService extends Service {
         } catch (Exception ignored) {}
         hasAudioFocus = false;
         pausedForTransientFocus = false;
+        duckedForTransientFocus = false;
     }
 
     private void ensureChannel() {
@@ -486,11 +1012,13 @@ public class MediaPlaybackService extends Service {
                 | PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS
                 | PlaybackStateCompat.ACTION_STOP
                 | PlaybackStateCompat.ACTION_SEEK_TO;
-        int state = curPlaying ? PlaybackStateCompat.STATE_PLAYING : PlaybackStateCompat.STATE_PAUSED;
+        int state = curBuffering && curPlaying
+                ? PlaybackStateCompat.STATE_BUFFERING
+                : (curPlaying ? PlaybackStateCompat.STATE_PLAYING : PlaybackStateCompat.STATE_PAUSED);
         long posMs = Math.max(0L, Math.round(curPositionSec * 1000.0));
         PlaybackStateCompat.Builder pb = new PlaybackStateCompat.Builder()
                 .setActions(actions)
-                .setState(state, posMs, curPlaying ? 1.0f : 0.0f)
+                .setState(state, posMs, (curPlaying && !curBuffering) ? curSpeed : 0.0f)
                 .addCustomAction(new PlaybackStateCompat.CustomAction.Builder(
                         CUSTOM_SHUFFLE,
                         curShuffle ? "Shuffle On" : "Shuffle",
@@ -658,7 +1186,6 @@ public class MediaPlaybackService extends Service {
                 }
             }
             Color.colorToHSV(bestColor, hsv);
-            // Boost saturation and clamp value so white text & controls stay crisp and vibrant
             hsv[1] = Math.min(0.88f, Math.max(0.45f, hsv[1] * 1.15f));
             hsv[2] = Math.min(0.44f, Math.max(0.24f, hsv[2] * 0.72f));
             return Color.HSVToColor(hsv);

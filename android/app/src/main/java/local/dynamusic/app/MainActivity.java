@@ -5,11 +5,13 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
+import androidx.activity.OnBackPressedCallback;
 import com.getcapacitor.BridgeActivity;
 import org.json.JSONObject;
 
 public class MainActivity extends BridgeActivity {
     private static volatile String pendingOAuthUrl = null;
+    private OnBackPressedCallback backCallback;
 
     public static String consumePendingOAuthUrl() {
         String url = pendingOAuthUrl;
@@ -22,6 +24,28 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(MediaKeepalivePlugin.class);
         super.onCreate(savedInstanceState);
         captureOAuthIntent(getIntent());
+
+        backCallback = new OnBackPressedCallback(true) {
+            @Override
+            public void handleOnBackPressed() {
+                if (MediaKeepalivePlugin.dispatchBackPressed()) {
+                    return;
+                }
+                setEnabled(false);
+                try {
+                    getOnBackPressedDispatcher().onBackPressed();
+                } finally {
+                    setEnabled(true);
+                }
+            }
+        };
+        getOnBackPressedDispatcher().addCallback(this, backCallback);
+    }
+
+    @Override
+    public void onResume() {
+        super.onResume();
+        MediaKeepalivePlugin.dispatchAppResume();
     }
 
     @Override

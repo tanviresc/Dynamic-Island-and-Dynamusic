@@ -85,7 +85,7 @@ export function LikedView() {
   };
 
   return (
-    <div className="pb-16">
+    <div className="pb-16 w-full max-w-full overflow-x-hidden">
       <CollectionHero
         icon={Heart}
         kind="Liked by you · Stored offline in app"

@@ -178,7 +178,7 @@ export function HomeView() {
   // shows that card's artwork instead.
 
   return (
-    <div className="relative">
+    <div className="relative w-full max-w-full overflow-x-hidden">
       {/* No greeting: Home opens straight on your music. The heading stays for screen readers. */}
       <h1 className="sr-only">Home</h1>
       <div className="relative space-y-10">

@@ -100,7 +100,7 @@ export function AlbumView({ albumId }: { albumId: string }) {
   };
 
   return (
-    <div className="page-tint -mt-5" style={pageColors(pagePalette)}>
+    <div className="page-tint -mt-5 w-full max-w-full overflow-x-hidden" style={pageColors(pagePalette)}>
       {/* Hero — the cover full-bleed, credit + metadata over its lower edge. */}
       <div className="relative -mx-3 md:-mx-10 overflow-hidden">
         <div className="absolute inset-0">
@@ -200,7 +200,7 @@ export function AlbumView({ albumId }: { albumId: string }) {
         </div>
       </div>
 
-      <div className="px-8 pb-12 pt-2 space-y-7">
+      <div className="px-4 md:px-8 pb-12 pt-2 space-y-7">
         {album.description && (
           <section>
             <h2 className="section-title text-[17px] mb-2">About the album</h2>

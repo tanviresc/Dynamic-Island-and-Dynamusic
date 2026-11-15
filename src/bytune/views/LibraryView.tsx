@@ -188,7 +188,7 @@ export function LibraryView() {
   ].sort((a, b) => Number(isPinned(pinnedSingles, b.key)) - Number(isPinned(pinnedSingles, a.key)));
 
   return (
-    <div className="pb-16">
+    <div className="pb-16 w-full max-w-full overflow-x-hidden">
       <CollectionHero
         icon={Library}
         kind="Everything you keep"

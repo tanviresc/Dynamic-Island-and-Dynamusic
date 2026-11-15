@@ -21,7 +21,7 @@ import type {
 import type { LocalTrack } from "../../electron/local-library";
 import type { UpdateState } from "../../electron/updater";
 import { getOfflineVaultUrl } from "./offlineAudioVault";
-import { getBackendBaseUrl, getBackendHost } from "../stores/mobileMode";
+import { getBackendBaseUrl, getBackendHost, isPcRemoteMode, useMobileMode } from "../stores/mobileMode";
 import {
   fallbackMobileAlbum,
   fallbackMobileArtist,
@@ -131,11 +131,7 @@ async function rpcInvoke<T = any>(channel: string, ...args: unknown[]): Promise<
     throw new Error(`PC host not configured for ${channel}`);
   }
   const isRemoteHost = getBackendHost() !== "127.0.0.1";
-  const isMediaFallbackChannel =
-    channel === "music:search" ||
-    channel === "music:searchPage" ||
-    channel === "music:suggestions" ||
-    channel === "music:stream";
+  const isMediaChannel = channel.startsWith("music:");
   const isFastFallbackChannel =
     isRemoteHost &&
     (channel === "data:read" ||
@@ -143,14 +139,20 @@ async function rpcInvoke<T = any>(channel: string, ...args: unknown[]): Promise<
       channel === "auth:getSession" ||
       channel === "sync:status" ||
       channel === "updates:state" ||
-      isMediaFallbackChannel);
+      isMediaChannel);
+
+  // When running standalone in "phone" mode with PC offline, fail fast into native mobile fallback
+  // instead of blocking every screen/track fetch on dead LAN timeouts.
+  if (isFastFallbackChannel && !isPcRemoteMode() && !useMobileMode.getState().desktopOnline) {
+    throw new Error(`PC host offline for ${channel}`);
+  }
 
   let lastError: unknown = null;
   const attempts = isFastFallbackChannel ? 1 : 2;
 
   for (let attempt = 0; attempt < attempts; attempt++) {
     const ctl = new AbortController();
-    const timeoutMs = isMediaFallbackChannel && isRemoteHost ? 4000 : isFastFallbackChannel ? 1500 : 12_000;
+    const timeoutMs = isMediaChannel && isRemoteHost ? 3500 : isFastFallbackChannel ? 1500 : 12_000;
     const timer = setTimeout(() => ctl.abort(), timeoutMs);
     try {
       const res = await fetch(`${backendUrl()}/rpc`, {

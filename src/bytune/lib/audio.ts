@@ -48,7 +48,7 @@ import { useJournal } from "../stores/journal";
 import type { Track } from "../types";
 import { requireBridge } from "./bridge";
 import { emitPlayEvent } from "./playEvents";
-import { resetPlaybackClock, setPlaybackBuffered, setPlaybackClock } from "./playbackClock";
+import { getPlaybackClock, resetPlaybackClock, setPlaybackBuffered, setPlaybackClock } from "./playbackClock";
 import { analyseTrack, peekAnalysis, type TrackAnalysis } from "./analysis";
 import { upgradeArtwork } from "./artwork";
 import { shortTitle } from "./format";
@@ -155,8 +155,65 @@ function el(): HTMLAudioElement {
   return elements![mainIdx];
 }
 
+interface NativeAudioBridge {
+  nativeLoad?: (opts: {
+    trackId: string;
+    url: string;
+    title: string;
+    artist: string;
+    album: string;
+    thumb: string;
+    shuffle: boolean;
+    liked: boolean;
+    autoplay: boolean;
+    duration: number;
+    position: number;
+    volume: number;
+    speed: number;
+  }) => Promise<void>;
+  nativePrebuffer?: (opts: { trackId: string; url: string }) => Promise<void>;
+  nativePlay?: () => Promise<void>;
+  nativePause?: () => Promise<void>;
+  nativeSeek?: (opts: { position: number }) => Promise<void>;
+  nativeSetVolume?: (opts: { volume: number }) => Promise<void>;
+  nativeSetSpeed?: (opts: { speed: number }) => Promise<void>;
+  nativeStop?: () => Promise<void>;
+  sync?: (opts: NativeKeepaliveSyncOpts) => Promise<void>;
+  addListener?: (
+    event: string,
+    cb: (data: any) => void
+  ) => Promise<{ remove?: () => void }> | { remove?: () => void };
+}
+
+function getNativeAudioBridge(): NativeAudioBridge | null {
+  if (!isCapacitorNative() || typeof window === "undefined") return null;
+  const cap = (window as unknown as { Capacitor?: { Plugins?: { MediaKeepalive?: NativeAudioBridge } } }).Capacitor;
+  return cap?.Plugins?.MediaKeepalive ?? null;
+}
+
+function isNativeAudioActive(): boolean {
+  const b = getNativeAudioBridge();
+  return Boolean(b && typeof b.nativeLoad === "function");
+}
+
+function stopWebDecksCompletely(): void {
+  if (!elements) return;
+  for (const d of elements) {
+    try {
+      d.pause();
+      if (d.hasAttribute("src")) {
+        d.removeAttribute("src");
+        d.load();
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
 /** Live element clock for consumers needing sub-`timeupdate` resolution (lyrics sweep). */
 export function getPlaybackPosition(): number {
+  if (isNativeAudioActive()) return getPlaybackClock().position;
   return elements ? el().currentTime : 0;
 }
 function standbyEl(): HTMLAudioElement {
@@ -356,9 +413,13 @@ function prefetchLoudness(track: Track | null): void {
       const cur = usePlayer.getState().queue[usePlayer.getState().index];
       if (!cur || cur.id === track.id || upNext(usePlayer.getState())?.id !== track.id) return;
       if (prebuffered?.id === track.id && prebuffered.url === url) return;
-      const stand = standbyEl();
-      stand.src = url;
-      stand.load();
+      if (isNativeAudioActive()) {
+        void getNativeAudioBridge()?.nativePrebuffer?.({ trackId: track.id, url }).catch(() => undefined);
+      } else {
+        const stand = standbyEl();
+        stand.src = url;
+        stand.load();
+      }
       prebuffered = { id: track.id, url };
     } finally {
       if (prebufferingId === track.id) prebufferingId = null;
@@ -530,7 +591,12 @@ function applyElementVolumes(mainGain: number, standbyGain: number): void {
   const standbyId = fade?.toId ?? null;
   const clamp01 = (x: number): number => Math.min(1, Math.max(0, x));
   const mainLevel = levelOf(mainId);
-  elements[mainIdx].volume = clamp01(v * mainGain * mainLevel);
+  const nativeVol = clamp01(v * mainGain * mainLevel);
+  if (isNativeAudioActive()) {
+    void getNativeAudioBridge()?.nativeSetVolume?.({ volume: nativeVol }).catch(() => undefined);
+    return;
+  }
+  elements[mainIdx].volume = nativeVol;
   // The leveling level, not the volume slider or the sleep fade: headroom tied
   // to those cancelled them out whenever a boost needed room.
   applyHeadroom(clamp01(mainLevel));
@@ -540,6 +606,10 @@ function applyElementVolumes(mainGain: number, standbyGain: number): void {
 function applySpeed(): void {
   if (!elements) return;
   const rate = playbackSettings().playbackSpeed || 1;
+  if (isNativeAudioActive()) {
+    void getNativeAudioBridge()?.nativeSetSpeed?.({ speed: rate }).catch(() => undefined);
+    return;
+  }
   for (const e of elements) {
     try {
       const a = e as HTMLAudioElement & { preservesPitch?: boolean };
@@ -654,11 +724,17 @@ function eqResponsePeakDb(ctx: BaseAudioContext, gains: number[]): number {
   return Number.isFinite(peak) ? peak : 0;
 }
 
+let lastHeadroomTarget = -1;
+
 /** Re-aim the headroom pre-gain for the steady level of the playing deck. */
 function applyHeadroom(level: number): void {
   if (!eqCtx || !eqPreGain) return;
-  const db = useSettings.getState().eqAutoHeadroom ? headroomDb(eqPeakDb, level) : 0;
-  eqPreGain.gain.setTargetAtTime(Math.pow(10, -db / 20), eqCtx.currentTime, 0.05);
+  const { eqEnabled, eqAutoHeadroom } = useSettings.getState();
+  const db = eqEnabled && eqAutoHeadroom ? headroomDb(eqPeakDb, level) : 0;
+  const target = Math.pow(10, -db / 20);
+  if (Math.abs(target - lastHeadroomTarget) < 0.001) return;
+  lastHeadroomTarget = target;
+  eqPreGain.gain.setTargetAtTime(target, eqCtx.currentTime, 0.05);
 }
 
 /**
@@ -1431,15 +1507,108 @@ export function initAudioEngine(): void {
     }
   };
 
+  if (isNativeAudioActive()) {
+    stopWebDecksCompletely();
+    void getNativeAudioBridge()?.addListener?.("playerEvent", (ev: {
+      type?: string;
+      trackId?: string;
+      playing?: boolean;
+      buffering?: boolean;
+      status?: string;
+      position?: number;
+      duration?: number;
+      error?: string;
+    }) => {
+      if (!ev || isPcRemoteAudioBlocked()) return;
+      const state = usePlayer.getState();
+      const cur = state.queue[state.index] ?? null;
+      if (!cur || (ev.trackId && loadedId !== ev.trackId && cur.id !== ev.trackId)) return;
+
+      const dur = typeof ev.duration === "number" && ev.duration > 0 ? ev.duration : (cur.duration || state.duration || 0);
+      const pos = typeof ev.position === "number" && ev.position >= 0 ? ev.position : 0;
+
+      if (ev.type === "position") {
+        setPlaybackClock(pos, dur > 0 ? dur : undefined);
+        accumulate(cur.id, pos);
+        maybePrebufferNext(pos, dur);
+        const now = performance.now();
+        if (now - lastStoreSyncAt >= STORE_POSITION_SYNC_MS && Math.abs(pos - lastSyncedPos) >= 1) {
+          lastSyncedPos = pos;
+          lastStoreSyncAt = now;
+          state._setTime(pos, dur > 0 ? dur : undefined);
+        }
+        return;
+      }
+
+      if (ev.type === "ended") {
+        if (loadedId !== cur.id) return;
+        if (dur > 10 && pos > 0 && pos < dur - ENDING_EPSILON_SEC) {
+          pendingSeek = pos;
+          handleFailure(cur, new Error("premature_stream_end"));
+          return;
+        }
+        if (sleepStopsHere()) return;
+        if (state.repeat === "one" || (state.repeat === "all" && state.queue.length === 1)) {
+          void getNativeAudioBridge()?.nativeSeek?.({ position: 0 });
+          void getNativeAudioBridge()?.nativePlay?.();
+          return;
+        }
+        state.next(false);
+        return;
+      }
+
+      if (ev.type === "error") {
+        if (loadedId !== cur.id) return;
+        if (pos > 1) pendingSeek = pos;
+        handleFailure(cur, new Error(ev.error || "ExoPlayer error"));
+        return;
+      }
+
+      // Authoritative playback state sync ("state" event)
+      if (dur > 0 && Math.abs(dur - (state.duration || 0)) > 0.4) {
+        state._setTime(pos, dur);
+      }
+      if (ev.status === "playing") {
+        clearStallWatchdog();
+        consecutiveFailures = 0;
+        localMissingToasted = false;
+        usePlayer.setState({
+          playing: true,
+          buffering: false,
+          playbackStatus: "playing",
+          error: null,
+        });
+        if (historyForId !== cur.id) {
+          historyForId = cur.id;
+          useLibrary.getState().pushHistory(cur);
+          accum = { id: cur.id, playedMs: 0, pendingMs: 0, lastPos: pos };
+          emitPlayEvent("start", cur, pos, 0, 0);
+        }
+      } else if (ev.status === "loading" || ev.buffering) {
+        usePlayer.setState({
+          buffering: true,
+          playbackStatus: state.playing ? "loading" : "paused",
+        });
+      } else if (ev.status === "paused") {
+        usePlayer.setState({
+          buffering: false,
+          playbackStatus: "paused",
+        });
+      }
+    });
+  }
+
   usePlayer.subscribe((state, prev) => {
     if (!elements) return;
     if (isPcRemoteAudioBlocked()) {
-      el().pause();
-      standbyEl().pause();
+      stopWebDecksCompletely();
+      if (isNativeAudioActive()) {
+        void getNativeAudioBridge()?.nativeStop?.().catch(() => undefined);
+      }
       // Directly reset local playing flag without calling setPlaying(false), which would
       // forward a PAUSE command to the desktop PC over remote control!
       if (state.playing) {
-        usePlayer.setState({ playing: false });
+        usePlayer.setState({ playing: false, playbackStatus: "idle" });
       }
       return;
     }
@@ -1500,7 +1669,23 @@ export function initAudioEngine(): void {
     }
 
     if (state.playing !== prev.playing) {
-      if (state.playing) {
+      if (isNativeAudioActive()) {
+        if (state.playing) {
+          if (loadedId === cur?.id) {
+            void getNativeAudioBridge()?.nativePlay?.().catch(() => undefined);
+          } else if (cur) {
+            void loadTrack(cur, true);
+          }
+        } else {
+          flushAccum("pause");
+          if (loadedId) {
+            const p = getPlaybackPosition();
+            state._setTime(p, state.duration > 0 ? state.duration : undefined);
+          }
+          void getNativeAudioBridge()?.nativePause?.().catch(() => undefined);
+          if (state.position === 0 && state.duration === 0) disarmSilenceTail();
+        }
+      } else if (state.playing) {
         // Resuming mid-crossfade: shift the frozen fade timeline by the
         // paused span and bring the standby element back, so the blend
         // continues from where it froze instead of jumping to its end.
@@ -1557,16 +1742,23 @@ export function initAudioEngine(): void {
 
     if (state.seekNonce !== prev.seekNonce) {
       disarmSilenceTail();
-      setPlaybackClock(state.position, Number.isFinite(el().duration) ? el().duration : state.duration);
-      lastSyncedPos = state.position;
-      lastStoreSyncAt = performance.now();
-      try {
-        el().currentTime = state.position;
-      } catch {
-        /* ignore */
+      if (isNativeAudioActive()) {
+        setPlaybackClock(state.position, state.duration > 0 ? state.duration : undefined);
+        lastSyncedPos = state.position;
+        lastStoreSyncAt = performance.now();
+        void getNativeAudioBridge()?.nativeSeek?.({ position: state.position }).catch(() => undefined);
+      } else {
+        setPlaybackClock(state.position, Number.isFinite(el().duration) ? el().duration : state.duration);
+        lastSyncedPos = state.position;
+        lastStoreSyncAt = performance.now();
+        try {
+          el().currentTime = state.position;
+        } catch {
+          /* ignore */
+        }
+        const edges = silenceEdges(cur?.id);
+        if (edges && edges.tail > 0.05 && state.playing) armSilenceTail(edges.tail);
       }
-      const edges = silenceEdges(cur?.id);
-      if (edges && edges.tail > 0.05 && state.playing) armSilenceTail(edges.tail);
     }
   });
 
@@ -1683,9 +1875,11 @@ async function loadTrack(track: Track | null, autoplay: boolean): Promise<void> 
   if (!track) {
     loadedId = null;
     historyForId = null;
-    el().pause();
-    el().removeAttribute("src");
-    el().load();
+    stopPpRamp();
+    stopWebDecksCompletely();
+    if (isNativeAudioActive()) {
+      void getNativeAudioBridge()?.nativeStop?.().catch(() => undefined);
+    }
     resetPlaybackClock(0);
     lastSyncedPos = -1;
     usePlayer.setState({ position: 0, duration: 0, buffered: 0, buffering: false, playbackStatus: "idle", error: null });
@@ -1702,11 +1896,25 @@ async function loadTrack(track: Track | null, autoplay: boolean): Promise<void> 
     window.clearTimeout(retryTimer);
     retryTimer = null;
   }
-  // Ensure standby deck never overlaps while loading a fresh track
-  try {
-    standbyEl().pause();
-  } catch {
-    /* ignore */
+  // Stop previous playback immediately before async URL resolution so the old track
+  // never keeps playing alongside or out of sync with the newly selected song.
+  if (isNativeAudioActive()) {
+    stopWebDecksCompletely();
+    void getNativeAudioBridge()?.nativePause?.().catch(() => undefined);
+  } else if (prebuffered?.id !== track.id) {
+    stopPpRamp();
+    try {
+      el().pause();
+      standbyEl().pause();
+    } catch {
+      /* ignore */
+    }
+  } else {
+    try {
+      standbyEl().pause();
+    } catch {
+      /* ignore */
+    }
   }
   pendingSeek = usePlayer.getState().position;
   resetPlaybackClock(track.duration || 0);
@@ -1732,7 +1940,73 @@ function syncPinnedOfflineTracks(): void {
 async function loadUrl(track: Track, autoplay: boolean, forceRotate: boolean): Promise<void> {
   if (!elements) return;
   const seq = ++loadSeq;
+  const nativeBridge = getNativeAudioBridge();
+  const useNative = Boolean(nativeBridge && typeof nativeBridge.nativeLoad === "function");
+
+  const isPcRemoteNow = (): boolean => {
+    if (typeof window === "undefined" || "__TAURI_INTERNALS__" in window) return false;
+    try {
+      return localStorage.getItem("dynamusic:mobile_mode") === "pc_remote";
+    } catch {
+      return false;
+    }
+  };
+
   try {
+    if (useNative && nativeBridge) {
+      stopWebDecksCompletely();
+      let resolvedUrl: string | null = null;
+      if (!forceRotate && !fade && !armed && prebuffered?.id === track.id && prebuffered.url) {
+        resolvedUrl = prebuffered.url;
+        prebuffered = null;
+      } else if (track.localPath || track.id.startsWith("local:")) {
+        resolvedUrl = await requireBridge().localTrackUrl(track.id);
+      } else {
+        resolvedUrl = await requireBridge().getStreamUrl(
+          track.id,
+          forceRotate,
+          useSettings.getState().streamingQuality,
+          track.title,
+          track.artist
+        );
+      }
+      const latest = usePlayer.getState();
+      const cur = latest.queue[latest.index];
+      if (cur?.id !== track.id || seq !== loadSeq) return;
+      if (isPcRemoteNow()) {
+        void nativeBridge.nativeStop?.().catch(() => undefined);
+        return;
+      }
+      if (!resolvedUrl) throw new Error(LOCAL_MISSING);
+      if (resolvedUrl.startsWith("http://") || resolvedUrl.startsWith("https://")) {
+        void fetchLoudness(resolvedUrl, track);
+      }
+      const trim = silenceEdges(track.id);
+      const startPos = pendingSeek > 0 ? pendingSeek : trim && trim.head > 0.05 ? trim.head : 0;
+      pendingSeek = 0;
+      loadedId = track.id;
+      syncPinnedOfflineTracks();
+      const wantPlay = autoplay || latest.playing;
+      const clampedVol = Math.min(1, Math.max(0, userVolume() * useSleepTimer.getState().level * levelOf(track.id)));
+      const speed = playbackSettings().playbackSpeed || 1;
+      await nativeBridge.nativeLoad!({
+        trackId: track.id,
+        url: resolvedUrl,
+        title: track.title,
+        artist: track.artist,
+        album: track.album || "Dynamusic",
+        thumb: track.thumb ? upgradeArtwork(track.thumb) : "",
+        shuffle: Boolean(latest.shuffle),
+        liked: useLibrary.getState().isLiked(track.id),
+        autoplay: wantPlay,
+        duration: track.duration || 0,
+        position: startPos,
+        volume: clampedVol,
+        speed,
+      });
+      return;
+    }
+
     // Fast-path: if the upcoming track was already pre-buffered on the standby deck,
     // promote it directly without re-resolving or tearing down the buffered element.
     if (!forceRotate && !fade && !armed && prebuffered?.id === track.id && standbyEl().src) {
@@ -1760,7 +2034,9 @@ async function loadUrl(track: Track, autoplay: boolean, forceRotate: boolean): P
       }
       applySpeed();
       updateMediaSession(track);
-      if (autoplay || usePlayer.getState().playing) {
+      const latest = usePlayer.getState();
+      if (latest.queue[latest.index]?.id !== track.id || seq !== loadSeq || isPcRemoteNow()) return;
+      if (autoplay || latest.playing) {
         await a.play();
       } else {
         usePlayer.setState({ buffering: false, playbackStatus: "idle" });
@@ -1772,7 +2048,8 @@ async function loadUrl(track: Track, autoplay: boolean, forceRotate: boolean): P
     if (track.localPath || track.id.startsWith("local:")) {
       const a = el();
       const src = await requireBridge().localTrackUrl(track.id);
-      if (seq !== loadSeq) return;
+      const latest = usePlayer.getState();
+      if (seq !== loadSeq || latest.queue[latest.index]?.id !== track.id || isPcRemoteNow()) return;
       if (!src) throw new Error(LOCAL_MISSING);
       levelLocal(track);
       refreshVolumes();
@@ -1795,7 +2072,7 @@ async function loadUrl(track: Track, autoplay: boolean, forceRotate: boolean): P
     }
     const url = await requireBridge().getStreamUrl(track.id, forceRotate, useSettings.getState().streamingQuality, track.title, track.artist);
     const cur = usePlayer.getState().queue[usePlayer.getState().index];
-    if (cur?.id !== track.id || seq !== loadSeq) return;
+    if (cur?.id !== track.id || seq !== loadSeq || isPcRemoteNow()) return;
     void fetchLoudness(url, track);
     const a = el();
     a.src = url;
@@ -1837,7 +2114,7 @@ function handleFailure(track: Track, err?: unknown): void {
     usePlayer.getState()._setPlaybackStatus("idle");
     return;
   }
-  const deckAt = el().currentTime;
+  const deckAt = getPlaybackPosition();
   const at = deckAt > 1 ? deckAt : usePlayer.getState().position;
   const offlineNow = typeof navigator !== "undefined" && navigator.onLine === false;
   const offlineError = err instanceof Error && err.message === "OFFLINE_UNAVAILABLE";
@@ -1895,28 +2172,16 @@ function handleFailure(track: Track, err?: unknown): void {
   const localGoneMsg = unreadable
     ? `Couldn't play "${shortTitle(track.title)}": Dynamusic can't play this file's format.`
     : `Couldn't play "${track.title}" — its local file can't be reached on this device. Re-add the folder in Local Music to relink your songs.`;
-  if (state.playing && consecutiveFailures <= MAX_SKIPS) {
-    console.warn(`[bytune] playback failed for ${track.id}`, err);
-    if (isLocal) {
-      // One explainer per failing streak — a whole playlist of unlinked
-      // locals must not stack five identical toasts.
-      if (!localMissingToasted) {
-        localMissingToasted = true;
-        useUI.getState().toast(localGoneMsg, "warning", 7000);
-      }
-    } else {
-      useUI.getState().toast(`Couldn't play "${shortTitle(track.title)}" — skipping`, "error");
-    }
-    state.next(false);
+  console.warn(`[bytune] playback failed for ${track.id} after ${MAX_RETRY_ATTEMPTS} retries`, err);
+  usePlayer.setState({ playing: false, buffering: false, playbackStatus: "error", error: "Playback failed" });
+  if (isLocal) {
+    localMissingToasted = false;
+    useUI.getState().toast(localGoneMsg, "warning", 7000);
   } else {
-    usePlayer.setState({ playing: false, error: "Playback failed" });
-    if (isLocal) {
-      localMissingToasted = false;
-      useUI.getState().toast(localGoneMsg, "warning", 7000);
-    } else {
-      useUI.getState().toast(`Couldn't play "${shortTitle(track.title)}"`, "error");
-    }
+    useUI.getState().toast(`Couldn't play "${shortTitle(track.title)}" — tap Play to retry`, "error", 5000);
   }
+  return;
+  void MAX_SKIPS;
 }
 
 /* ------------------------- MediaSession ------------------------- */
@@ -1925,6 +2190,7 @@ let lastPositionState = 0;
 
 interface NativeKeepaliveSyncOpts {
   playing: boolean;
+  trackId?: string;
   title: string;
   artist: string;
   album: string;
@@ -1936,23 +2202,20 @@ interface NativeKeepaliveSyncOpts {
 }
 
 function syncNativeMediaKeepalive(track: Track | null, playing: boolean): void {
-  if (typeof window === "undefined") return;
-  const cap = (window as unknown as {
-    Capacitor?: {
-      Plugins?: {
-        MediaKeepalive?: { sync?: (opts: NativeKeepaliveSyncOpts) => Promise<void> };
-      };
-    };
-  }).Capacitor;
-  const plugin = cap?.Plugins?.MediaKeepalive;
+  const plugin = getNativeAudioBridge();
   if (plugin?.sync) {
-    const a = el();
     const state = usePlayer.getState();
-    const rawDur = a && Number.isFinite(a.duration) && a.duration > 0 ? a.duration : (track?.duration ?? 0);
-    const rawPos = a && Number.isFinite(a.currentTime) ? a.currentTime : (state.position ?? 0);
+    const rawDur =
+      !isNativeAudioActive() && elements && Number.isFinite(el().duration) && el().duration > 0
+        ? el().duration
+        : (state.duration > 0 ? state.duration : (track?.duration ?? 0));
+    const rawPos = isNativeAudioActive()
+      ? getPlaybackClock().position
+      : (elements && Number.isFinite(el().currentTime) ? el().currentTime : (state.position ?? 0));
     void plugin
       .sync({
         playing,
+        trackId: track?.id ?? "",
         title: track?.title ?? "",
         artist: track?.artist ?? "",
         album: track?.album || "Dynamusic",
@@ -1972,6 +2235,9 @@ function updateMediaSession(track: Track | null): void {
     track ? { title: track.title, artist: track.artist, album: track.album || "Dynamusic", thumb: track.thumb } : null
   );
   syncNativeMediaKeepalive(track, playing);
+  // On Android APK, MediaPlaybackService owns MediaSessionCompat natively.
+  // Writing navigator.mediaSession inside WebView causes Android's duplicate "(Paused)" pill.
+  if (isNativeAudioActive()) return;
   if (typeof navigator === "undefined" || !("mediaSession" in navigator)) return;
   try {
     navigator.mediaSession.playbackState = playing ? "playing" : "paused";
@@ -1999,6 +2265,7 @@ function updateMediaSession(track: Track | null): void {
 }
 
 function syncPositionState(): void {
+  if (isNativeAudioActive()) return;
   if (typeof navigator === "undefined" || !("mediaSession" in navigator)) return;
   const a = el();
   if (!a || !Number.isFinite(a.duration) || a.duration <= 0) return;
@@ -2018,24 +2285,6 @@ function syncPositionState(): void {
 }
 
 function setupMediaSession(): void {
-  if (typeof navigator === "undefined" || !("mediaSession" in navigator)) return;
-  const ms = navigator.mediaSession;
-  const actions = new Map<string, MediaSessionActionHandler>();
-  const set = (name: MediaSessionAction, fn: MediaSessionActionHandler): void => {
-    actions.set(name, fn);
-    try {
-      ms.setActionHandler(name, fn);
-    } catch {
-      /* unsupported action */
-    }
-  };
-  // Physical media play/pause buttons (headset middle buttons, BT AVRCP, the
-  // Windows media flyout) all arrive here as absolute play/pause actions —
-  // there is no native double-press event, so repeated presses are recognized
-  // as next-track at this layer (see media-key-tap.ts). The pressed command
-  // is replayed rather than a toggle: the player's state may have moved
-  // during the recognition window, and a stale absolute command is a no-op
-  // against it while a toggle would fight it.
   const tap = createMediaKeyTap(
     {
       schedule: (fn, ms) => {
@@ -2048,41 +2297,12 @@ function setupMediaSession(): void {
       multi: () => usePlayer.getState().next(true),
     },
   );
-  set("play", () => tap.press("play"));
-  set("pause", () => tap.press("pause"));
-  // A pending single press belongs to the pre-skip context; applying it after
-  // the user already moved (or seeked) elsewhere would stop what they chose.
-  set("previoustrack", () => {
-    tap.cancelPending();
-    usePlayer.getState().prev();
-  });
-  set("nexttrack", () => {
-    tap.cancelPending();
-    usePlayer.getState().next(true);
-  });
-  set("seekbackward", () => {
-    tap.cancelPending();
-    const s = usePlayer.getState();
-    s.seek(Math.max(0, s.position - 10));
-  });
-  set("seekforward", () => {
-    tap.cancelPending();
-    const s = usePlayer.getState();
-    s.seek(s.position + 10);
-  });
-  set("seekto", (details) => {
-    tap.cancelPending();
-    if (details.seekTime != null) usePlayer.getState().seek(details.seekTime);
-  });
-  // Windows: the flyout and media keys talk to Dynamusic's own session
-  // (electron/media-controls.ts) and land on these same handlers.
-  window.bytune?.onMediaAction((a) =>
-    actions.get(a.action)?.({ action: a.action, seekTime: a.seekTime } as MediaSessionActionDetails)
-  );
+
   let prevPlaying = usePlayer.getState().playing;
   let prevTrackId = shownTrack(usePlayer.getState())?.id ?? null;
   let prevShuffle = usePlayer.getState().shuffle;
   let prevLiked = prevTrackId ? useLibrary.getState().isLiked(prevTrackId) : false;
+
   usePlayer.subscribe((state) => {
     const cur = shownTrack(state);
     const curId = cur?.id ?? null;
@@ -2097,10 +2317,12 @@ function setupMediaSession(): void {
       prevTrackId = curId;
       prevShuffle = state.shuffle;
       prevLiked = curLiked;
-      try {
-        ms.playbackState = state.playing ? "playing" : "paused";
-      } catch {
-        /* ignore */
+      if (!isNativeAudioActive() && typeof navigator !== "undefined" && "mediaSession" in navigator) {
+        try {
+          navigator.mediaSession.playbackState = state.playing ? "playing" : "paused";
+        } catch {
+          /* ignore */
+        }
       }
       syncNativeMediaKeepalive(cur, state.playing);
     }
@@ -2115,25 +2337,11 @@ function setupMediaSession(): void {
       syncNativeMediaKeepalive(cur, state.playing);
     }
   });
-  window.setInterval(() => {
-    if (usePlayer.getState().playing) syncPositionState();
-  }, 1000);
 
   if (typeof window !== "undefined") {
-    const cap = (window as unknown as {
-      Capacitor?: {
-        Plugins?: {
-          MediaKeepalive?: {
-            addListener?: (
-              event: string,
-              cb: (data: { action?: string; seekTime?: number }) => void
-            ) => Promise<{ remove?: () => void }> | { remove?: () => void };
-          };
-        };
-      };
-    }).Capacitor;
+    const plugin = getNativeAudioBridge();
     try {
-      void cap?.Plugins?.MediaKeepalive?.addListener?.("mediaControl", (data) => {
+      void plugin?.addListener?.("mediaControl", (data: { action?: string; seekTime?: number; trackId?: string }) => {
         const act = data?.action;
         const p = usePlayer.getState();
         if (act === "pause") {
@@ -2164,6 +2372,55 @@ function setupMediaSession(): void {
       /* ignore */
     }
   }
+
+  // On Android APK, MediaPlaybackService owns MediaSessionCompat and notification controls
+  // exclusively — do not register WebView navigator.mediaSession handlers (avoids Chromium's duplicate notification).
+  if (isNativeAudioActive() || typeof navigator === "undefined" || !("mediaSession" in navigator)) {
+    return;
+  }
+
+  const ms = navigator.mediaSession;
+  const actions = new Map<string, MediaSessionActionHandler>();
+  const set = (name: MediaSessionAction, fn: MediaSessionActionHandler): void => {
+    actions.set(name, fn);
+    try {
+      ms.setActionHandler(name, fn);
+    } catch {
+      /* unsupported action */
+    }
+  };
+  set("play", () => tap.press("play"));
+  set("pause", () => tap.press("pause"));
+  set("previoustrack", () => {
+    tap.cancelPending();
+    usePlayer.getState().prev();
+  });
+  set("nexttrack", () => {
+    tap.cancelPending();
+    usePlayer.getState().next(true);
+  });
+  set("seekbackward", () => {
+    tap.cancelPending();
+    const s = usePlayer.getState();
+    s.seek(Math.max(0, s.position - 10));
+  });
+  set("seekforward", () => {
+    tap.cancelPending();
+    const s = usePlayer.getState();
+    s.seek(s.position + 10);
+  });
+  set("seekto", (details) => {
+    tap.cancelPending();
+    if (details.seekTime != null) usePlayer.getState().seek(details.seekTime);
+  });
+  // Windows: the flyout and media keys talk to Dynamusic's own session
+  // (electron/media-controls.ts) and land on these same handlers.
+  window.bytune?.onMediaAction((a) =>
+    actions.get(a.action)?.({ action: a.action, seekTime: a.seekTime } as MediaSessionActionDetails)
+  );
+  window.setInterval(() => {
+    if (usePlayer.getState().playing) syncPositionState();
+  }, 1000);
 }
 
 /**

@@ -26,11 +26,11 @@
  */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
 import { flushSync } from "react-dom";
-import { ChevronDown, Heart, Monitor, Music2, Pause, Play, Shuffle, SkipBack, SkipForward, Smartphone } from "lucide-react";
+import { ChevronDown, Heart, Loader2, Monitor, Music2, Pause, Play, Shuffle, SkipBack, SkipForward, Smartphone } from "lucide-react";
 import { PlayerBar } from "./PlayerBar";
 import { QueuePanel } from "./RightRail";
 import { LyricsView } from "./SyncedLyrics";
-import { requestLyrics } from "./LyricsCenter";
+import { invalidateLyricsCache, requestLyrics } from "./LyricsCenter";
 import { usePlayer, shownTrack } from "../stores/player";
 import { useLibrary } from "../stores/library";
 import { useSettings } from "../stores/settings";
@@ -224,16 +224,22 @@ function FsModeSwitch({
  */
 function FsLyrics({
   artRef,
+  track,
   trackId,
   lyrics,
   loading,
   offset,
+  onRetry,
+  onLyricsOverride,
 }: {
   artRef: RefObject<HTMLDivElement | null>;
+  track: import("../types").Track | null;
   trackId: string;
   lyrics: LyricsResult | null;
   loading: boolean;
   offset: number;
+  onRetry?: () => void;
+  onLyricsOverride?: (r: LyricsResult | null) => void;
 }) {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const [anchor, setAnchor] = useState(0.5);
@@ -270,13 +276,25 @@ function FsLyrics({
       {/* Same LyricsView the centre pane uses, hero scale — keyed per track
           so the scroll position resets with the song, exactly like
           LyricsCenter. */}
-      <LyricsView key={trackId} trackKey={trackId} lyrics={lyrics} loading={loading} hero anchor={anchor} offset={offset} />
+      <LyricsView
+        key={trackId}
+        trackKey={trackId}
+        track={track}
+        lyrics={lyrics}
+        loading={loading}
+        hero
+        anchor={anchor}
+        offset={offset}
+        onRetry={onRetry}
+        onLyricsOverride={onLyricsOverride}
+      />
     </div>
   );
 }
 
 function MobileFullscreenControls({
   playing,
+  loading,
   shuffle,
   mobileMode,
   onToggleShuffle,
@@ -286,6 +304,7 @@ function MobileFullscreenControls({
   onToggleMode,
 }: {
   playing: boolean;
+  loading?: boolean;
   shuffle: boolean;
   mobileMode: MobileMode;
   onToggleShuffle: () => void;
@@ -329,7 +348,13 @@ function MobileFullscreenControls({
         title={playing ? "Pause" : "Play"}
         className="w-14 h-14 rounded-full bg-white text-black flex items-center justify-center shadow-lg transition-transform active:scale-95"
       >
-        {playing ? <Pause className="w-6 h-6 fill-current" /> : <Play className="w-6 h-6 fill-current ml-0.5" />}
+        {loading ? (
+          <Loader2 className="w-6 h-6 animate-spin" />
+        ) : playing ? (
+          <Pause className="w-6 h-6 fill-current" />
+        ) : (
+          <Play className="w-6 h-6 fill-current ml-0.5" />
+        )}
       </button>
 
       <button
@@ -439,11 +464,16 @@ export function NowPlaying() {
   const localTrack = usePlayer((s) => s.queue[s.index] ?? null);
   const localShown = usePlayer(shownTrack);
   const localPlaying = usePlayer((s) => s.playing);
+  const localBuffering = usePlayer((s) => s.buffering);
+  const localPlaybackStatus = usePlayer((s) => s.playbackStatus);
   const localShuffle = usePlayer((s) => s.shuffle);
 
   const track = isPcRemote ? pcState.track : localTrack;
   const shown = isPcRemote ? pcState.track : localShown;
   const playing = isPcRemote ? pcState.playing : localPlaying;
+  const loading = isPcRemote
+    ? false
+    : localBuffering || localPlaybackStatus === "loading" || localPlaybackStatus === "buffering";
   const shuffle = isPcRemote ? Boolean(pcState?.shuffle) : localShuffle;
 
   const artSwipe = useSwipeGesture({
@@ -485,6 +515,7 @@ export function NowPlaying() {
   // by prefetchLyrics the moment a track starts). No second lyrics pipeline.
   const [lyrics, setLyrics] = useState<LyricsResult | null>(null);
   const [lyricsLoading, setLyricsLoading] = useState(false);
+  const [lyricsReloadNonce, setLyricsReloadNonce] = useState(0);
   useEffect(() => {
     if (!open || !track) {
       setLyrics(null);
@@ -493,7 +524,7 @@ export function NowPlaying() {
     let cancelled = false;
     setLyrics(null);
     setLyricsLoading(true);
-    void requestLyrics(track).then((r) => {
+    void requestLyrics(track, lyricsReloadNonce > 0 ? { force: true } : undefined).then((r) => {
       if (cancelled) return;
       setLyrics(r ?? null);
       setLyricsLoading(false);
@@ -501,7 +532,7 @@ export function NowPlaying() {
     return () => {
       cancelled = true;
     };
-  }, [track?.id, open]);
+  }, [track?.id, open, lyricsReloadNonce]);
 
   // This song's nudge plus this device's lyrics timing; nothing automatic.
   const lyricsOffset = useLyricsOffset(track?.id);
@@ -744,7 +775,19 @@ export function NowPlaying() {
               </div>
               <div className="flex-1 min-h-0 flex flex-col">
                 {mode === "lyrics" ? (
-                  <FsLyrics artRef={artRef} trackId={track.id} lyrics={lyrics} loading={lyricsLoading} offset={lyricsOffset} />
+                  <FsLyrics
+                    artRef={artRef}
+                    track={track}
+                    trackId={track.id}
+                    lyrics={lyrics}
+                    loading={lyricsLoading}
+                    offset={lyricsOffset}
+                    onRetry={() => {
+                      invalidateLyricsCache(track.id);
+                      setLyricsReloadNonce((n) => n + 1);
+                    }}
+                    onLyricsOverride={(r) => setLyrics(r)}
+                  />
                 ) : (
                   /* The exact queue sheet from the right rail — same data,
                      tabs and actions; its close returns to the lyrics view. */
@@ -758,6 +801,7 @@ export function NowPlaying() {
         {isMobileDevice ? (
           <MobileFullscreenControls
             playing={playing}
+            loading={loading}
             shuffle={shuffle}
             mobileMode={mobileMode}
             onToggleShuffle={() => usePlayer.getState().toggleShuffle()}

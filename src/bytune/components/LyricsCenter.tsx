@@ -13,42 +13,74 @@ import { usePlayer } from "../stores/player";
 import { useUI } from "../stores/ui";
 import { useArtworkPalette } from "../lib/palette";
 import { useLyricsOffset } from "../lib/lyricsOffset";
+import { getCachedLyrics, saveCachedLyrics } from "../lib/lyricsCache";
 import { LyricsTiming } from "./LyricsTiming";
 import type { LyricsResult, Track } from "../types";
 
 /* Lyrics are fetched the moment a track starts (see prefetchLyrics) so the
    view opens with words already on screen instead of a spinner over silence.
-   The same cache serves the fullscreen player's lyrics panel. */
+   Persistent IndexedDB/localStorage caching makes repeat & offline loads instant. */
 const lyricsCache = new Map<string, Promise<LyricsResult | null>>();
 
-export function requestLyrics(track: Track): Promise<LyricsResult | null> {
-  let p = lyricsCache.get(track.id);
+export function invalidateLyricsCache(trackId: string): void {
+  lyricsCache.delete(trackId);
+}
+
+export function requestLyrics(
+  track: Track,
+  opts?: { force?: boolean; customTitle?: string; customArtist?: string }
+): Promise<LyricsResult | null> {
+  const bypassMem = Boolean(opts?.force || opts?.customTitle || opts?.customArtist);
+  let p = !bypassMem ? lyricsCache.get(track.id) : undefined;
   if (!p) {
-    p = window.bytune
-      ? window.bytune
-          .getLyrics({
-            id: track.id,
-            title: track.title,
-            artist: track.artist,
-            album: track.album,
-            duration: track.duration || undefined,
-          })
-          .then((res) => {
-            if (!res) lyricsCache.delete(track.id);
-            return res;
-          })
-          .catch(() => {
-            lyricsCache.delete(track.id);
-            return null;
-          })
-      : Promise.resolve(null);
-    lyricsCache.set(track.id, p);
-    if (lyricsCache.size > 24) {
-      const oldest = lyricsCache.keys().next().value;
-      if (oldest) lyricsCache.delete(oldest);
+    p = (async (): Promise<LyricsResult | null> => {
+      if (!bypassMem) {
+        const stored = await getCachedLyrics(track);
+        if (stored) return stored;
+      }
+      if (!window.bytune) return null;
+      const res = await window.bytune.getLyrics({
+        id: track.id,
+        title: opts?.customTitle?.trim() || track.title,
+        artist: opts?.customArtist?.trim() || track.artist,
+        album: track.album,
+        duration: track.duration || undefined,
+      });
+      if (res && (res.synced?.length || res.plain)) {
+        void saveCachedLyrics(track, res);
+        return res;
+      }
+      if (!bypassMem) lyricsCache.delete(track.id);
+      return res ?? null;
+    })().catch(() => {
+      if (!bypassMem) lyricsCache.delete(track.id);
+      return null;
+    });
+    if (!bypassMem) {
+      lyricsCache.set(track.id, p);
+      if (lyricsCache.size > 24) {
+        const oldest = lyricsCache.keys().next().value;
+        if (oldest) lyricsCache.delete(oldest);
+      }
     }
   }
   return p;
+}
+
+export async function searchLyricsManually(
+  track: Track,
+  query: { title: string; artist: string }
+): Promise<LyricsResult | null> {
+  invalidateLyricsCache(track.id);
+  const res = await requestLyrics(track, {
+    force: true,
+    customTitle: query.title,
+    customArtist: query.artist,
+  });
+  if (res && (res.synced?.length || res.plain)) {
+    lyricsCache.set(track.id, Promise.resolve(res));
+  }
+  return res;
 }
 
 /** Fire-and-forget: warm the lyrics cache when a track starts playing. */
@@ -62,6 +94,7 @@ export function LyricsCenter() {
 
   const [lyrics, setLyrics] = useState<LyricsResult | null>(null);
   const [loading, setLoading] = useState(false);
+  const [reloadNonce, setReloadNonce] = useState(0);
 
   useEffect(() => {
     if (!track?.id) {
@@ -70,7 +103,7 @@ export function LyricsCenter() {
     }
     let cancelled = false;
     setLoading(true);
-    void requestLyrics(track).then((r) => {
+    void requestLyrics(track, reloadNonce > 0 ? { force: true } : undefined).then((r) => {
       if (!cancelled) {
         setLyrics(r ?? null);
         setLoading(false);
@@ -79,7 +112,7 @@ export function LyricsCenter() {
     return () => {
       cancelled = true;
     };
-  }, [track?.id]);
+  }, [track?.id, reloadNonce]);
 
   // The listener's own timing: this song's nudge and this device's setting.
   const offset = useLyricsOffset(track?.id);
@@ -115,7 +148,20 @@ export function LyricsCenter() {
           /* Keyed by track: a new song remounts the view, so the scroll
              position resets to the top instead of staying where the previous
              song's lyrics ended. */
-          <LyricsView key={track.id} trackKey={track.id} lyrics={lyrics} loading={loading} large offset={offset} />
+          <LyricsView
+            key={track.id}
+            trackKey={track.id}
+            track={track}
+            lyrics={lyrics}
+            loading={loading}
+            large
+            offset={offset}
+            onRetry={() => {
+              invalidateLyricsCache(track.id);
+              setReloadNonce((n) => n + 1);
+            }}
+            onLyricsOverride={(r) => setLyrics(r)}
+          />
         ) : (
           <div className="flex-1 grid place-items-center">
             <p className="text-[15px] text-ink-hi/60">Play something to sing along.</p>
