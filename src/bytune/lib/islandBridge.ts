@@ -203,6 +203,26 @@ export function initIslandBridge(): void {
   let lastTrackId = "";
   let lastPlaying: boolean | null = null;
   let lastSyncMs = 0;
+  let cachedTauriInvoke: ((cmd: string, args?: Record<string, unknown>) => Promise<unknown>) | null = null;
+  let cachedQueueInputs: {
+    queue: unknown;
+    index: number;
+    priorityQueue: unknown;
+    contextQueue: unknown;
+    contextIndex: number;
+    currentFromPriority: boolean;
+    slimQueue: ReturnType<typeof slimTrack>[];
+    upcomingCtx: ReturnType<typeof slimTrack>[];
+    priorityQ: ReturnType<typeof slimTrack>[];
+    qStart: number;
+  } | null = null;
+
+  const getTauriInvoke = async () => {
+    if (cachedTauriInvoke) return cachedTauriInvoke;
+    const mod = await import("@tauri-apps/api/core");
+    cachedTauriInvoke = mod.invoke;
+    return cachedTauriInvoke;
+  };
 
   const syncToIsland = (force = false) => {
     const s = usePlayer.getState();
@@ -227,12 +247,32 @@ export function initIslandBridge(): void {
 
     // Also forward authoritative dual-queue state + serverTimestamp to sidecar for mobile WS sync
     if ("__TAURI_INTERNALS__" in window) {
-      const qStart = Math.max(0, s.index - 2);
-      const qEnd = Math.min(s.queue.length, s.index + 40);
-      const slimQueue = s.queue.slice(qStart, qEnd).map(slimTrack);
-      const ctxStart = s.currentFromPriority ? s.contextIndex : s.contextIndex + 1;
-      const upcomingCtx = s.contextQueue.slice(ctxStart, ctxStart + 40).map(slimTrack);
-      const priorityQ = s.priorityQueue.slice(0, 40).map(slimTrack);
+      if (
+        !cachedQueueInputs ||
+        cachedQueueInputs.queue !== s.queue ||
+        cachedQueueInputs.index !== s.index ||
+        cachedQueueInputs.priorityQueue !== s.priorityQueue ||
+        cachedQueueInputs.contextQueue !== s.contextQueue ||
+        cachedQueueInputs.contextIndex !== s.contextIndex ||
+        cachedQueueInputs.currentFromPriority !== s.currentFromPriority
+      ) {
+        const qStart = Math.max(0, s.index - 2);
+        const qEnd = Math.min(s.queue.length, s.index + 40);
+        const ctxStart = s.currentFromPriority ? s.contextIndex : s.contextIndex + 1;
+        cachedQueueInputs = {
+          queue: s.queue,
+          index: s.index,
+          priorityQueue: s.priorityQueue,
+          contextQueue: s.contextQueue,
+          contextIndex: s.contextIndex,
+          currentFromPriority: s.currentFromPriority,
+          slimQueue: s.queue.slice(qStart, qEnd).map(slimTrack),
+          upcomingCtx: s.contextQueue.slice(ctxStart, ctxStart + 40).map(slimTrack),
+          priorityQ: s.priorityQueue.slice(0, 40).map(slimTrack),
+          qStart,
+        };
+      }
+      const { slimQueue, upcomingCtx, priorityQ, qStart } = cachedQueueInputs;
       const syncState = {
         track: track ? { ...slimTrack(track), duration: liveDur } : null,
         trackId: track?.id ?? null,
@@ -274,8 +314,8 @@ export function initIslandBridge(): void {
 
     if (!("__TAURI_INTERNALS__" in window)) return;
 
-    void import("@tauri-apps/api/core")
-      .then(({ invoke }) =>
+    void getTauriInvoke()
+      .then((invoke) =>
         invoke("update_music_state", {
           state: track
             ? {

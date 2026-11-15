@@ -312,7 +312,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     // A range past the start must come from the file this URL served before:
     // its byte offsets mean nothing in another file. Refusing makes the deck
     // error, and the player reloads at its position on a fresh URL.
-    const identity = `${stream.itag ?? "?"}:${stream.clen ?? "?"}`;
+    const identity = stream.identity ?? `${stream.itag ?? "?"}:${stream.clen ?? "?"}:${stream.mime ?? ""}`;
     const before = served.get(key);
     if (range && !/^bytes=0-/.test(range) && before && before !== identity) {
       void upstream.body.cancel().catch(() => undefined);
@@ -346,6 +346,21 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       "Content-Type": contentType,
     };
 
+    if (reqStart > 0) {
+      const crHeader = upstream.headers.get("content-range");
+      const crMatch = crHeader ? /^bytes\s+(\d+)-/i.exec(crHeader.trim()) : null;
+      const upstreamStart = crMatch ? Number(crMatch[1]) : null;
+      if (upstream.status === 200 || (upstreamStart !== null && upstreamStart !== reqStart)) {
+        try {
+          await upstream.body?.cancel();
+        } catch {
+          /* ignore */
+        }
+        res.writeHead(409, { "Access-Control-Allow-Origin": "*" });
+        res.end();
+        return;
+      }
+    }
     const status = range || upstream.status === 206 || reqStart > 0 ? 206 : 200;
     if (status === 206 && totalLength !== undefined && finalTargetEnd !== undefined) {
       outHeaders["Content-Range"] = `bytes ${reqStart}-${finalTargetEnd}/${totalLength}`;
@@ -474,10 +489,10 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         midStreamRefreshes++;
         console.warn(`[bytune] proxy mid-stream chunk ${chunkResp?.status ?? "err"} at ${nextStart} for ${trackId}, re-resolving`);
         try {
-          const prevIdentity = `${stream.itag ?? "?"}:${stream.clen ?? "?"}`;
+          const prevIdentity = stream.identity ?? `${stream.itag ?? "?"}:${stream.clen ?? "?"}:${stream.mime ?? ""}`;
           const refreshed = await resolveStream(trackId, true, maxKbps, false, title, artist);
-          const newIdentity = `${refreshed.itag ?? "?"}:${refreshed.clen ?? "?"}`;
-          if (before && newIdentity !== prevIdentity) {
+          const newIdentity = refreshed.identity ?? `${refreshed.itag ?? "?"}:${refreshed.clen ?? "?"}:${refreshed.mime ?? ""}`;
+          if (newIdentity !== prevIdentity) {
             console.warn(`[bytune] proxy mid-stream rendition changed (${prevIdentity} -> ${newIdentity}), aborting cleanly for player recover`);
             streamAbortedIncomplete = true;
             break;

@@ -25,6 +25,7 @@ export function MeshBackdrop({
   // cover image — the default instead hangs the artwork's own blurred mesh
   // behind the blobs.
   const legacy = useSettings((s) => s.legacyMeshGradient);
+  const reduceBlur = useSettings((s) => s.reduceDynamicBlur);
   // The page palette uses `background` / `wash` / `accent`. The mesh wants a
   // primary and secondary — the accent and the wash, with the page bg as the
   // floor. Falls back to neutral greys if there's no artwork yet.
@@ -36,18 +37,18 @@ export function MeshBackdrop({
     <div
       className={`absolute inset-0 overflow-hidden pointer-events-none ${className}`}
       aria-hidden
-      style={{ background: `rgb(${c})` }}
+      style={{ background: `rgb(${c})`, contain: "strict" }}
     >
       {/* Blurred, over-scaled cover — the artwork's own colour, softened.
           The fade-in lives on a wrapper: the keyframes run opacity 0→1, and
           animating the <img> directly would override its resting opacity-40
           for the duration, then snap dark when the animation ends. */}
-      {artwork && !legacy && (
+      {artwork && !legacy && !reduceBlur && (
         <div className="absolute inset-0 animate-mesh-in">
           <img
             src={upgradeArtwork(artwork)}
             alt=""
-            className="absolute inset-0 w-full h-full object-cover scale-[1.6] blur-[90px] opacity-40"
+            className="absolute inset-0 w-full h-full object-cover scale-[1.5] blur-[48px] opacity-40"
           />
         </div>
       )}

@@ -15,7 +15,7 @@ import { Innertube } from "youtubei.js";
 import { app } from "electron";
 import * as path from "path";
 import { localTrackById } from "./local-library";
-import { pickAudio, streamTtlMs } from "./audio-format";
+import { pickAudio, streamIdentity, streamTtlMs } from "./audio-format";
 import { embeddedLrc, fetchLyrics } from "./lyrics";
 import { largestThumbUrl, upgradeThumb } from "./artwork";
 import { getPoToken, invalidatePoToken } from "./po-token";
@@ -1317,6 +1317,8 @@ export interface ResolvedStream {
   /** the picked file (see PickedAudio) */
   itag?: number;
   clen?: number;
+  /** Stable rendition/source identifier so proxies & vault downloads never splice mismatched audio. */
+  identity?: string;
 }
 
 /**
@@ -1354,10 +1356,14 @@ export function resolveStream(
   const pin = resolveCache.get(key)?.value;
   const run = (async (): Promise<ResolvedStream> => {
     const cacheAndReturn = (value: ResolvedStream, ttlMs: number): ResolvedStream => {
+      const normalized: ResolvedStream = {
+        ...value,
+        identity: value.identity ?? streamIdentity(value),
+      };
       const ts = Date.now();
-      resolveCache.set(key, { value, ts, expiresAt: ts + ttlMs });
+      resolveCache.set(key, { value: normalized, ts, expiresAt: ts + ttlMs });
       evictOldest(resolveCache, RESOLVE_CACHE_MAX);
-      return value;
+      return normalized;
     };
 
     const tryInnerTube = async (): Promise<ResolvedStream> => {
@@ -1407,14 +1413,24 @@ export function resolveStream(
       return { url, mime: "audio/mp4", lufs: null };
     };
 
+    // Prefer InnerTube first so tracks play their exact YouTube audio rendition
+    // (matching duration, lyrics, and YouTube's authoritative LUFS) without
+    // racing against third-party CDNs or flipping sources mid-playback.
     try {
-      // Race InnerTube against strictly-verified fallback CDN:
-      // When title & artist match, fallback CDN returns verified 320kbps streams in ~200ms.
-      // If candidate is a mismatched track (e.g. Hindi song for Kendrick Lamar), isMatchingTrack rejects it and InnerTube answers with verified YouTube audio.
-      const winner = await Promise.any([tryInnerTube(), tryFallback()]);
-      return cacheAndReturn(winner, streamTtlMs(winner.url, Date.now()));
+      const ytStream = await tryInnerTube();
+      return cacheAndReturn(ytStream, streamTtlMs(ytStream.url, Date.now()));
     } catch {
-      /* continue to parallel Piped mirrors */
+      /* fall through to verified fallback CDN */
+    }
+
+    // Never switch a mid-stream pinned YouTube rendition onto a third-party file.
+    if (!pin?.itag) {
+      try {
+        const fbStream = await tryFallback();
+        return cacheAndReturn(fbStream, streamTtlMs(fbStream.url, Date.now()));
+      } catch {
+        /* continue to parallel Piped mirrors */
+      }
     }
 
     // High-speed Piped YouTube mirrors for the exact videoId as emergency fallback

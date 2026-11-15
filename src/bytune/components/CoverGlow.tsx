@@ -41,7 +41,11 @@ function GlowLayer({ url, out }: { url: string; out: boolean }) {
   return (
     <div
       className={`cover-glow-art${out ? " cover-glow-out" : ""}`}
-      style={{ backgroundImage: `url(${JSON.stringify(url)})`, filter: `blur(90px) saturate(1.6) brightness(${brightness})` }}
+      style={{
+        backgroundImage: `url(${JSON.stringify(url)})`,
+        filter: `blur(48px) saturate(1.55) brightness(${brightness})`,
+        willChange: "opacity",
+      }}
     />
   );
 }

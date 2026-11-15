@@ -200,10 +200,24 @@ function openVaultDb(): Promise<IDBDatabase | null> {
 // Kick off hydration immediately in browser environments
 if (typeof window !== "undefined") {
   void openVaultDb();
+  if (isTauriDesktop()) {
+    void fetch(`${getVaultBaseUrl()}/vault-list`, { signal: AbortSignal.timeout(4000) })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: { ids?: string[] } | null) => {
+        if (Array.isArray(d?.ids)) {
+          for (const id of d.ids) {
+            if (typeof id === "string") savedIds.add(id);
+          }
+          notifyListeners();
+        }
+      })
+      .catch(() => undefined);
+  }
 }
 
 /**
- * Retrieve a playable `blob:` URL from the internal IndexedDB vault if the track is stored inside the app.
+ * Retrieve a playable URL from the offline vault if the track is stored locally
+ * (`blob:` from IndexedDB, or range-capable disk vault URL on desktop).
  */
 export async function getOfflineVaultUrl(trackId: string): Promise<string | null> {
   const existingUrl = memoryBlobUrls.get(trackId);
@@ -215,32 +229,41 @@ export async function getOfflineVaultUrl(trackId: string): Promise<string | null
   }
 
   const db = await openVaultDb();
-  if (!db) return null;
+  if (db) {
+    const idbUrl = await new Promise<string | null>((resolve) => {
+      try {
+        const tx = db.transaction(STORE_NAME, "readonly");
+        const store = tx.objectStore(STORE_NAME);
+        const req = store.get(trackId);
+        req.onsuccess = () => {
+          const row = req.result as StoredTrackAudio | undefined;
+          if (row?.blob && row.blob.size > 1024) {
+            savedIds.add(trackId);
+            const usableBlob = row.blob.type
+              ? row.blob
+              : new Blob([row.blob], { type: row.mime || "audio/mp4" });
+            const url = URL.createObjectURL(usableBlob);
+            cacheBlobUrlLru(trackId, url);
+            resolve(url);
+          } else {
+            resolve(null);
+          }
+        };
+        req.onerror = () => resolve(null);
+      } catch {
+        resolve(null);
+      }
+    });
+    if (idbUrl) return idbUrl;
+  }
 
-  return new Promise<string | null>((resolve) => {
-    try {
-      const tx = db.transaction(STORE_NAME, "readonly");
-      const store = tx.objectStore(STORE_NAME);
-      const req = store.get(trackId);
-      req.onsuccess = () => {
-        const row = req.result as StoredTrackAudio | undefined;
-        if (row?.blob && row.blob.size > 1024) {
-          savedIds.add(trackId);
-          const usableBlob = row.blob.type
-            ? row.blob
-            : new Blob([row.blob], { type: row.mime || "audio/mp4" });
-          const url = URL.createObjectURL(usableBlob);
-          cacheBlobUrlLru(trackId, url);
-          resolve(url);
-        } else {
-          resolve(null);
-        }
-      };
-      req.onerror = () => resolve(null);
-    } catch {
-      resolve(null);
-    }
-  });
+  // On PC desktop, serve validated offline-vault files straight from disk over HTTP Range
+  // instead of pulling gigabytes into WebView2 IndexedDB / JS heap blobs.
+  if (isTauriDesktop() && savedIds.has(trackId)) {
+    return `${getVaultBaseUrl()}/vault/${encodeURIComponent(trackId)}`;
+  }
+
+  return null;
 }
 
 /**
@@ -258,6 +281,29 @@ export async function saveTrackToOfflineVault(
 
   const task = (async (): Promise<boolean> => {
     try {
+      // On PC desktop, store directly in Node's disk offline-vault (`POST /vault/:id`)
+      // rather than downloading huge binary Blobs into WebView2 JS heap & IndexedDB.
+      if (isTauriDesktop()) {
+        const ctl = new AbortController();
+        const timer = setTimeout(() => ctl.abort(), 90_000);
+        try {
+          const res = await fetch(`${getVaultBaseUrl()}/vault/${encodeURIComponent(track.id)}`, {
+            method: "POST",
+            signal: ctl.signal,
+          });
+          if (res.ok) {
+            savedIds.add(track.id);
+            notifyListeners();
+            return true;
+          }
+        } catch {
+          /* ignore */
+        } finally {
+          clearTimeout(timer);
+        }
+        return false;
+      }
+
       const db = await openVaultDb();
       if (!db) return false;
 
@@ -378,9 +424,11 @@ export async function syncLikedSongsToOfflineVault(tracks: Track[]): Promise<voi
       if (typeof navigator !== "undefined" && navigator.onLine === false) break;
       const track = queue[cursor++];
       if (track) await saveTrackToOfflineVault(track);
+      if (cursor < queue.length) {
+        await new Promise((r) => setTimeout(r, isTauriDesktop() ? 400 : 150));
+      }
     }
   };
-  const concurrency = isCapacitorNative() ? 1 : Math.min(3, queue.length);
-  await Promise.all(Array.from({ length: concurrency }, () => worker()));
+  await worker();
 }
 

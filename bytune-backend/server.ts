@@ -12,6 +12,7 @@ import * as path from "path";
 import type { Duplex } from "stream";
 import { app, emitProtocolUrl, invokeIpcChannel, onWebContentsSend } from "./electron-shim";
 import * as locallib from "../src/electron/local-library";
+import { parseContentRangeStart, streamIdentity } from "../src/electron/audio-format";
 import { getYT, resolveStream } from "../src/electron/music-service";
 import { handleStreamProxyRequest, setStreamProxyPort } from "../src/electron/stream-proxy";
 
@@ -93,8 +94,9 @@ async function ensureTrackInServerVault(trackId: string): Promise<{ binPath: str
       const ua =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
       let stream = await resolveStream(trackId, false);
-      let mime = "audio/mp4";
-      let totalLength: number | null = null;
+      const initialIdentity = stream.identity ?? streamIdentity(stream);
+      let mime = stream.mime || "audio/mp4";
+      let totalLength: number | null = stream.clen ?? null;
       let offset = 0;
       let retries = 0;
       const parts: Buffer[] = [];
@@ -110,7 +112,12 @@ async function ensureTrackInServerVault(trackId: string): Promise<{ binPath: str
         if (!resp || (!resp.ok && resp.status !== 206)) {
           if (retries < 2) {
             retries += 1;
-            stream = await resolveStream(trackId, true);
+            const refreshed = await resolveStream(trackId, true);
+            const refreshedIdentity = refreshed.identity ?? streamIdentity(refreshed);
+            if (offset > 0 && refreshedIdentity !== initialIdentity) {
+              return null;
+            }
+            stream = refreshed;
             continue;
           }
           return null;
@@ -119,14 +126,26 @@ async function ensureTrackInServerVault(trackId: string): Promise<{ binPath: str
         const ct = resp.headers.get("content-type");
         if (ct) mime = ct;
 
+        const cr: string | null = resp.headers.get("content-range");
+        const crStart = parseContentRangeStart(cr);
+        if (offset > 0 && resp.status === 206 && crStart !== null && crStart !== offset) {
+          return null;
+        }
+
         if (totalLength === null) {
-          const cr: string | null = resp.headers.get("content-range");
           const m: RegExpExecArray | null = cr ? /\/(\d+)$/.exec(cr) : null;
           if (m) totalLength = Number(m[1]);
         }
 
         const slice = Buffer.from(await resp.arrayBuffer());
         if (slice.byteLength === 0) break;
+        if (offset > 0 && resp.status === 200) {
+          // Upstream ignored Range and returned the full file from byte 0 — replace parts cleanly.
+          parts.length = 0;
+          parts.push(slice);
+          offset = slice.byteLength;
+          break;
+        }
         parts.push(slice);
         offset += slice.byteLength;
         if (resp.status === 200 || (totalLength === null && slice.byteLength < CHUNK_BYTES)) {
@@ -136,8 +155,16 @@ async function ensureTrackInServerVault(trackId: string): Promise<{ binPath: str
 
       const buf = Buffer.concat(parts);
       if (buf.byteLength < 4096) return null;
-      fs.writeFileSync(bin, buf);
-      fs.writeFileSync(meta, JSON.stringify({ id: trackId, mime, size: buf.byteLength, savedAt: Date.now() }));
+      if (totalLength !== null && buf.byteLength !== totalLength) return null;
+      const binTmp = `${bin}.${Date.now()}.tmp`;
+      const metaTmp = `${meta}.${Date.now()}.tmp`;
+      await fs.promises.writeFile(binTmp, buf);
+      await fs.promises.rename(binTmp, bin);
+      await fs.promises.writeFile(
+        metaTmp,
+        JSON.stringify({ id: trackId, mime, size: buf.byteLength, savedAt: Date.now() })
+      );
+      await fs.promises.rename(metaTmp, meta);
       broadcastSse("vault:saved", { id: trackId });
       return { binPath: bin, mime };
     } catch {
@@ -492,12 +519,38 @@ const server = http.createServer(async (req, res) => {
       }
       try {
         const size = fs.statSync(saved.binPath).size;
-        res.writeHead(200, {
+        const range = req.headers.range;
+        let start = 0;
+        let end = size - 1;
+        let status = 200;
+        const headers: Record<string, string> = {
           "Content-Type": saved.mime,
-          "Content-Length": String(size),
+          "Accept-Ranges": "bytes",
           "Cache-Control": "public, max-age=31536000",
-        });
-        fs.createReadStream(saved.binPath).pipe(res);
+        };
+        const match = range ? /^bytes=(\d*)-(\d*)$/.exec(range.trim()) : null;
+        if (match && (match[1] !== "" || match[2] !== "")) {
+          if (match[1] === "") {
+            const suffix = Math.min(parseInt(match[2], 10), size);
+            start = size - suffix;
+            end = size - 1;
+          } else {
+            start = parseInt(match[1], 10);
+            end = match[2] === "" ? size - 1 : Math.min(parseInt(match[2], 10), size - 1);
+          }
+          if (Number.isNaN(start) || start > end || start >= size) {
+            res.writeHead(416, { "Content-Range": `bytes */${size}` });
+            res.end();
+            return;
+          }
+          status = 206;
+          headers["Content-Range"] = `bytes ${start}-${end}/${size}`;
+        }
+        headers["Content-Length"] = String(end - start + 1);
+        res.writeHead(status, headers);
+        const rs = fs.createReadStream(saved.binPath, { start, end });
+        req.on("close", () => rs.destroy());
+        rs.pipe(res);
       } catch {
         res.writeHead(404);
         res.end("missing vault file");

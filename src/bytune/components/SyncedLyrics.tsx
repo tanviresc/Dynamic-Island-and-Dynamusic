@@ -119,11 +119,16 @@ function WordLine({
   const [, force] = useState(0);
   useEffect(() => {
     // The sweep only moves while audio is playing; parked at pause, the line
-    // holds its last state instead of burning frames re-rendering.
+    // holds its last state instead of burning frames re-rendering. Cap to ~30fps
+    // to keep WebView2 CPU/GPU paint smooth during word sweeps.
     if (!isPlaying) return;
     let raf = 0;
-    const tick = (): void => {
-      force((n) => (n + 1) % 1000000);
+    let lastTick = 0;
+    const tick = (now: number): void => {
+      if (now - lastTick >= 32) {
+        lastTick = now;
+        force((n) => (n + 1) % 1000000);
+      }
       raf = window.requestAnimationFrame(tick);
     };
     raf = window.requestAnimationFrame(tick);
@@ -155,7 +160,6 @@ function WordLine({
               WebkitBackgroundClip: "text",
               backgroundClip: "text",
               WebkitTextFillColor: "transparent",
-              filter: p > 0.05 ? "drop-shadow(0 0 14px rgba(255,255,255,0.5))" : undefined,
             }}
           >
             {i > 0 ? " " : ""}

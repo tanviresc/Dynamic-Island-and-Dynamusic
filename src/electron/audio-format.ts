@@ -66,6 +66,38 @@ export interface PickedAudio {
   clen?: number;
 }
 
+/**
+ * Stable file identity for a resolved stream so range requests, mid-stream
+ * refreshes, and offline-vault downloads never splice bytes from different
+ * codecs, bitrates, or third-party CDNs together.
+ */
+export function streamIdentity(
+  stream: Pick<PickedAudio, "url" | "mime" | "itag" | "clen">
+): string {
+  const mime = String(stream.mime || "audio/mp4").split(";")[0].trim().toLowerCase();
+  if (stream.itag && stream.clen) {
+    return `yt:${stream.itag}:${stream.clen}:${mime}`;
+  }
+  let urlTag = "";
+  try {
+    const u = new URL(stream.url);
+    urlTag = `${u.origin}${u.pathname}`;
+  } catch {
+    urlTag = String(stream.url || "").slice(0, 120);
+  }
+  return `url:${urlTag}:${stream.itag ?? "?"}:${stream.clen ?? "?"}:${mime}`;
+}
+
+/**
+ * Parse the byte start offset from an HTTP Content-Range header
+ * (e.g. `bytes 1024-2047/4096` -> `1024`), or null if absent/invalid.
+ */
+export function parseContentRangeStart(header: string | null | undefined): number | null {
+  if (!header) return null;
+  const m = /^bytes\s+(\d+)-/i.exec(header.trim());
+  return m ? Number(m[1]) : null;
+}
+
 export async function pickAudio(
   info: any,
   yt: any,

@@ -486,6 +486,7 @@ main {
    the grain with it), so nothing ever ends on a hard horizontal edge. */
 .cover-glow {
   overflow: hidden;
+  contain: layout style paint;
   -webkit-mask-image: linear-gradient(to bottom, black 0%, rgb(0 0 0 / 0.78) 30%, rgb(0 0 0 / 0.36) 62%, transparent 100%);
   mask-image: linear-gradient(to bottom, black 0%, rgb(0 0 0 / 0.78) 30%, rgb(0 0 0 / 0.36) 62%, transparent 100%);
 }

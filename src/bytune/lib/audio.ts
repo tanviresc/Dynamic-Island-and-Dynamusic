@@ -288,9 +288,9 @@ function setLoudness(trackId: string, lufs: number): void {
  */
 async function fetchLoudness(proxyUrl: string, track: Track): Promise<void> {
   const trackId = track.id;
-  if (proxyUrl.startsWith("blob:")) {
-    if (!isCapacitorNative()) {
-      needsMeasuring.add(trackId);
+  if (proxyUrl.startsWith("blob:") || proxyUrl.includes("/vault/") || !proxyUrl.includes("?")) {
+    const s = playbackSettings();
+    if (!isCapacitorNative() && (s.smartFade || s.skipSilence)) {
       analyse(track);
     }
     return;
@@ -301,9 +301,11 @@ async function fetchLoudness(proxyUrl: string, track: Track): Promise<void> {
     const data = (await res.json()) as { lufs?: unknown };
     const lufs = typeof data?.lufs === "number" && Number.isFinite(data.lufs) ? data.lufs : null;
     if (lufs === null) {
-      // A Piped stream: YouTube reported nothing, so measure it (desktop only).
-      if (!isCapacitorNative()) {
-        needsMeasuring.add(trackId);
+      // Only decode full PCM when Automix/Skip-silence needs beat/edge maps;
+      // normal streams without reported LUFS safely use FALLBACK_LUFS without
+      // downloading and decoding the entire file a second time on the CPU.
+      const s = playbackSettings();
+      if (!isCapacitorNative() && (s.smartFade || s.skipSilence)) {
         analyse(track);
       }
       return;
@@ -540,9 +542,10 @@ function applySpeed(): void {
   const rate = playbackSettings().playbackSpeed || 1;
   for (const e of elements) {
     try {
-      e.playbackRate = rate;
-      // Chromium honours pitch preservation separately; keep speech/music natural.
-      (e as HTMLAudioElement & { preservesPitch?: boolean }).preservesPitch = true;
+      const a = e as HTMLAudioElement & { preservesPitch?: boolean };
+      if (a.playbackRate !== rate) a.playbackRate = rate;
+      // Chromium honours pitch preservation separately; only touch when speed != 1.
+      if (a.preservesPitch !== true) a.preservesPitch = true;
     } catch {
       /* ignore */
     }
@@ -673,7 +676,7 @@ function applyEq(): void {
   const { eqEnabled, eqGains } = useSettings.getState();
   if (!eqCtx) {
     if (!eqEnabled) return;
-    const ctx = new AudioContext();
+    const ctx = new AudioContext({ latencyHint: "playback" });
     eqCtx = ctx;
     // A limiter instead of a fixed preamp: a preamp pulled the whole signal
     // down by the largest boost, so every boost made playback quieter. Auto
