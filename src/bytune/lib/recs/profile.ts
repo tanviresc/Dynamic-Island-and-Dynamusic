@@ -344,8 +344,9 @@ export function computeTasteProfile(input: ComputeInput): TasteProfile {
   }
 
   // ---- identity resolution: real tracks first, then the persisted
-  // artist-meta cache (search results from earlier runs) -------------------
+  // artist-meta cache (search results from earlier runs), then track covers ---
   const idByKey = new Map<string, { artistId?: string; thumb?: string }>();
+  const fallbackThumbByKey = new Map<string, string>();
   // Followed artists carry their exact page id and photo.
   for (const a of followed) {
     const key = lower(a.name);
@@ -358,12 +359,25 @@ export function computeTasteProfile(input: ComputeInput): TasteProfile {
     if (!cur.artistId && t.artistId) cur.artistId = t.artistId;
     if (!cur.thumb && t.artistImage) cur.thumb = t.artistImage;
     idByKey.set(key, cur);
+    if (!fallbackThumbByKey.has(key) && t.thumb) {
+      fallbackThumbByKey.set(key, t.thumb);
+    }
   }
   for (const name of [...aggs.values()].map((a) => a.name)) {
     const key = lower(name);
-    if (idByKey.has(key)) continue;
-    const meta = peekArtistMeta(name);
-    if (meta) idByKey.set(key, { artistId: meta.id, thumb: meta.thumb ?? undefined });
+    const cur = idByKey.get(key) ?? {};
+    if (!cur.artistId || !cur.thumb) {
+      const meta = peekArtistMeta(name);
+      if (meta) {
+        if (!cur.artistId && meta.id) cur.artistId = meta.id;
+        if (!cur.thumb && meta.thumb) cur.thumb = meta.thumb;
+      }
+    }
+    if (!cur.thumb) {
+      const trackThumb = fallbackThumbByKey.get(key);
+      if (trackThumb) cur.thumb = trackThumb;
+    }
+    if (cur.artistId || cur.thumb) idByKey.set(key, cur);
   }
 
   // ---- side signals --------------------------------------------------------

@@ -33,7 +33,14 @@ export function requestLyrics(track: Track): Promise<LyricsResult | null> {
             album: track.album,
             duration: track.duration || undefined,
           })
-          .catch(() => null)
+          .then((res) => {
+            if (!res) lyricsCache.delete(track.id);
+            return res;
+          })
+          .catch(() => {
+            lyricsCache.delete(track.id);
+            return null;
+          })
       : Promise.resolve(null);
     lyricsCache.set(track.id, p);
     if (lyricsCache.size > 24) {

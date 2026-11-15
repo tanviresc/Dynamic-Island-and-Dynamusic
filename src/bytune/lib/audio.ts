@@ -1920,22 +1920,44 @@ function handleFailure(track: Track, err?: unknown): void {
 
 let lastPositionState = 0;
 
+interface NativeKeepaliveSyncOpts {
+  playing: boolean;
+  title: string;
+  artist: string;
+  album: string;
+  thumb: string;
+  shuffle: boolean;
+  liked: boolean;
+  duration: number;
+  position: number;
+}
+
 function syncNativeMediaKeepalive(track: Track | null, playing: boolean): void {
   if (typeof window === "undefined") return;
   const cap = (window as unknown as {
     Capacitor?: {
       Plugins?: {
-        MediaKeepalive?: { sync?: (opts: { playing: boolean; title: string; artist: string }) => Promise<void> };
+        MediaKeepalive?: { sync?: (opts: NativeKeepaliveSyncOpts) => Promise<void> };
       };
     };
   }).Capacitor;
   const plugin = cap?.Plugins?.MediaKeepalive;
   if (plugin?.sync) {
+    const a = el();
+    const state = usePlayer.getState();
+    const rawDur = a && Number.isFinite(a.duration) && a.duration > 0 ? a.duration : (track?.duration ?? 0);
+    const rawPos = a && Number.isFinite(a.currentTime) ? a.currentTime : (state.position ?? 0);
     void plugin
       .sync({
         playing,
         title: track?.title ?? "",
         artist: track?.artist ?? "",
+        album: track?.album || "Dynamusic",
+        thumb: track?.thumb ? upgradeArtwork(track.thumb) : "",
+        shuffle: Boolean(state.shuffle),
+        liked: track ? useLibrary.getState().isLiked(track.id) : false,
+        duration: rawDur > 0 ? rawDur : 0,
+        position: rawPos >= 0 ? rawPos : 0,
       })
       .catch(() => undefined);
   }
@@ -2056,17 +2078,37 @@ function setupMediaSession(): void {
   );
   let prevPlaying = usePlayer.getState().playing;
   let prevTrackId = shownTrack(usePlayer.getState())?.id ?? null;
+  let prevShuffle = usePlayer.getState().shuffle;
+  let prevLiked = prevTrackId ? useLibrary.getState().isLiked(prevTrackId) : false;
   usePlayer.subscribe((state) => {
     const cur = shownTrack(state);
     const curId = cur?.id ?? null;
-    if (state.playing !== prevPlaying || curId !== prevTrackId) {
+    const curLiked = curId ? useLibrary.getState().isLiked(curId) : false;
+    if (
+      state.playing !== prevPlaying ||
+      curId !== prevTrackId ||
+      state.shuffle !== prevShuffle ||
+      curLiked !== prevLiked
+    ) {
       prevPlaying = state.playing;
       prevTrackId = curId;
+      prevShuffle = state.shuffle;
+      prevLiked = curLiked;
       try {
         ms.playbackState = state.playing ? "playing" : "paused";
       } catch {
         /* ignore */
       }
+      syncNativeMediaKeepalive(cur, state.playing);
+    }
+  });
+  useLibrary.subscribe((lib) => {
+    const state = usePlayer.getState();
+    const cur = shownTrack(state);
+    const curId = cur?.id ?? null;
+    const curLiked = curId ? lib.liked.some((t) => t.id === curId) : false;
+    if (curLiked !== prevLiked) {
+      prevLiked = curLiked;
       syncNativeMediaKeepalive(cur, state.playing);
     }
   });
@@ -2081,7 +2123,7 @@ function setupMediaSession(): void {
           MediaKeepalive?: {
             addListener?: (
               event: string,
-              cb: (data: { action?: string }) => void
+              cb: (data: { action?: string; seekTime?: number }) => void
             ) => Promise<{ remove?: () => void }> | { remove?: () => void };
           };
         };
@@ -2089,10 +2131,30 @@ function setupMediaSession(): void {
     }).Capacitor;
     try {
       void cap?.Plugins?.MediaKeepalive?.addListener?.("mediaControl", (data) => {
-        if (data?.action === "pause") {
-          if (usePlayer.getState().playing) usePlayer.getState().setPlaying(false);
-        } else if (data?.action === "play") {
-          if (!usePlayer.getState().playing) usePlayer.getState().setPlaying(true);
+        const act = data?.action;
+        const p = usePlayer.getState();
+        if (act === "pause") {
+          if (p.playing) p.setPlaying(false);
+        } else if (act === "play") {
+          if (!p.playing) p.setPlaying(true);
+        } else if (act === "toggle") {
+          p.setPlaying(!p.playing);
+        } else if (act === "next") {
+          tap.cancelPending();
+          p.next(true);
+        } else if (act === "prev") {
+          tap.cancelPending();
+          p.prev();
+        } else if (act === "shuffle") {
+          p.toggleShuffle();
+        } else if (act === "like") {
+          const cur = shownTrack(p);
+          if (cur) useLibrary.getState().toggleLike(cur);
+        } else if (act === "stop") {
+          if (p.playing) p.setPlaying(false);
+        } else if (act === "seekTo" && typeof data?.seekTime === "number") {
+          tap.cancelPending();
+          p.seek(data.seekTime);
         }
       });
     } catch {

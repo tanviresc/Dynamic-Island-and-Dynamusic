@@ -23,7 +23,19 @@ import type { UpdateState } from "../../electron/updater";
 import { getOfflineVaultUrl } from "./offlineAudioVault";
 import { getBackendBaseUrl, getBackendHost } from "../stores/mobileMode";
 import {
+  fallbackMobileAlbum,
+  fallbackMobileArtist,
+  fallbackMobileCharts,
+  fallbackMobileHome,
+  fallbackMobileLyrics,
+  fallbackMobileMoodCovers,
+  fallbackMobileMoodPage,
+  fallbackMobileMoods,
+  fallbackMobilePlaylist,
+  fallbackMobilePlaylistPage,
+  fallbackMobileRadio,
   fallbackMobileSearch,
+  fallbackMobileSearchMore,
   fallbackMobileSearchPage,
   fallbackMobileStreamUrl,
   fallbackMobileSuggestions,
@@ -397,30 +409,35 @@ export function initBytuneBridge(): void {
 
     // Music
     search: (query: string, light = false) =>
-      rpcInvoke("music:search", query, light).catch(() => fallbackMobileSearch(query)),
+      rpcInvoke("music:search", query, light).catch(() => fallbackMobileSearch(query, light ? "songs" : "all")),
     searchPage: (query: string, filter: string) =>
       rpcInvoke("music:searchPage", query, filter).catch(() => fallbackMobileSearchPage(query, filter)),
-    searchMore: (token: string, filter: string) => rpcInvoke("music:searchMore", token, filter),
+    searchMore: (token: string, filter: string) =>
+      rpcInvoke("music:searchMore", token, filter).catch(() => fallbackMobileSearchMore(token, filter)),
     suggestions: (query: string): Promise<{ items: SearchSuggestion[] }> =>
       rpcInvoke<{ items: SearchSuggestion[] }>("music:suggestions", query).catch(() =>
         fallbackMobileSuggestions(query)
       ),
-    getAlbum: (id: string) => rpcInvoke("music:album", id),
-    getArtist: (id: string) => rpcInvoke("music:artist", id),
-    getPlaylist: (id: string) => rpcInvoke("music:playlist", id),
-    getPlaylistPage: (id: string) => rpcInvoke("music:playlistPage", id),
-    getHome: () => rpcInvoke("music:home"),
+    getAlbum: (id: string) => rpcInvoke("music:album", id).catch(() => fallbackMobileAlbum(id)),
+    getArtist: (id: string) => rpcInvoke("music:artist", id).catch(() => fallbackMobileArtist(id)),
+    getPlaylist: (id: string) => rpcInvoke("music:playlist", id).catch(() => fallbackMobilePlaylist(id)),
+    getPlaylistPage: (id: string) => rpcInvoke("music:playlistPage", id).catch(() => fallbackMobilePlaylistPage(id)),
+    getHome: () => rpcInvoke("music:home").catch(() => fallbackMobileHome()),
     getRadio: (id: string, token?: string): Promise<RadioPage> =>
-      rpcInvoke("music:radio", id, token),
-    getCharts: () => rpcInvoke("music:charts"),
-    getMoods: () => rpcInvoke("music:moods"),
+      rpcInvoke<RadioPage>("music:radio", id, token).catch(() => fallbackMobileRadio(id, token)),
+    getCharts: () => rpcInvoke("music:charts").catch(() => fallbackMobileCharts()),
+    getMoods: () => rpcInvoke("music:moods").catch(() => fallbackMobileMoods()),
     getMoodCovers: (browseId: string, params: string): Promise<string[]> =>
-      rpcInvoke("music:moodCovers", browseId, params),
+      rpcInvoke<string[]>("music:moodCovers", browseId, params).catch(() =>
+        fallbackMobileMoodCovers(browseId, params)
+      ),
     getMoodPage: (browseId: string, params: string): Promise<MoodPage> =>
-      rpcInvoke("music:moodPage", browseId, params),
+      rpcInvoke<MoodPage>("music:moodPage", browseId, params).catch(() =>
+        fallbackMobileMoodPage(browseId, params)
+      ),
     marketInfo: () => rpcInvoke("market:current"),
     getLyrics: (track: { id: string; title: string; artist: string; album?: string; duration?: number }) =>
-      rpcInvoke("music:lyrics", track),
+      rpcInvoke("music:lyrics", track).catch(() => fallbackMobileLyrics(track)),
     enrichDurations: (ids: string[]) => rpcInvoke("music:enrich", ids),
     playbackEvent: (event: { type: string; track?: unknown; positionSec: number; playedSec: number; deltaMs: number }) =>
       rpcSend("playback:event", event),

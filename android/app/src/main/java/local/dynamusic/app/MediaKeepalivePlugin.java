@@ -32,6 +32,11 @@ public class MediaKeepalivePlugin extends Plugin {
     @Override
     public void load() {
         super.load();
+        resolverExecutor.execute(() -> {
+            try {
+                streamProxy.ensureStarted();
+            } catch (Exception ignored) {}
+        });
         mediaControlReceiver = new BroadcastReceiver() {
             @Override
             public void onReceive(Context context, Intent intent) {
@@ -40,6 +45,12 @@ public class MediaKeepalivePlugin extends Plugin {
                 if (action == null || action.isEmpty()) return;
                 JSObject data = new JSObject();
                 data.put("action", action);
+                if (intent.hasExtra(MediaPlaybackService.EXTRA_SEEK_TIME)) {
+                    double seekTime = intent.getDoubleExtra(MediaPlaybackService.EXTRA_SEEK_TIME, -1.0);
+                    if (seekTime >= 0) {
+                        data.put("seekTime", seekTime);
+                    }
+                }
                 notifyListeners("mediaControl", data);
             }
         };
@@ -65,6 +76,12 @@ public class MediaKeepalivePlugin extends Plugin {
         boolean playing = call.getBoolean("playing", false);
         String title = call.getString("title", "Dynamusic");
         String artist = call.getString("artist", "");
+        String album = call.getString("album", "Dynamusic");
+        String thumb = call.getString("thumb", "");
+        boolean shuffle = Boolean.TRUE.equals(call.getBoolean("shuffle", false));
+        boolean liked = Boolean.TRUE.equals(call.getBoolean("liked", false));
+        Double duration = call.getDouble("duration", 0.0);
+        Double position = call.getDouble("position", 0.0);
         Context ctx = getContext();
 
         try {
@@ -78,7 +95,13 @@ public class MediaKeepalivePlugin extends Plugin {
             intent.setAction(MediaPlaybackService.ACTION_UPDATE);
             intent.putExtra(MediaPlaybackService.EXTRA_TITLE, title);
             intent.putExtra(MediaPlaybackService.EXTRA_ARTIST, artist);
+            intent.putExtra(MediaPlaybackService.EXTRA_ALBUM, album != null ? album : "Dynamusic");
+            intent.putExtra(MediaPlaybackService.EXTRA_THUMB, thumb != null ? thumb : "");
             intent.putExtra(MediaPlaybackService.EXTRA_PLAYING, playing);
+            intent.putExtra(MediaPlaybackService.EXTRA_SHUFFLE, shuffle);
+            intent.putExtra(MediaPlaybackService.EXTRA_LIKED, liked);
+            intent.putExtra(MediaPlaybackService.EXTRA_DURATION, duration != null ? duration : 0.0);
+            intent.putExtra(MediaPlaybackService.EXTRA_POSITION, position != null ? position : 0.0);
 
             if (playing) {
                 ContextCompat.startForegroundService(ctx, intent);
@@ -206,6 +229,58 @@ public class MediaKeepalivePlugin extends Plugin {
                 call.resolve(out);
             } catch (Exception e) {
                 call.reject(e.getMessage() != null ? e.getMessage() : "Stream resolution failed", e);
+            }
+        });
+    }
+
+    /**
+     * Execute an allowlisted YouTube Music InnerTube WEB_REMIX API request natively
+     * (with Music origin/referer headers) and return raw JSON text for TypeScript parsing.
+     */
+    @PluginMethod
+    public void ytmRequest(PluginCall call) {
+        String endpoint = call.getString("endpoint", "");
+        JSObject body = call.getObject("body", new JSObject());
+        if (endpoint == null || endpoint.trim().isEmpty()) {
+            call.reject("Missing YTM endpoint");
+            return;
+        }
+        resolverExecutor.execute(() -> {
+            try {
+                String raw = MobileYtmClient.request(endpoint.trim(), body);
+                JSObject out = new JSObject();
+                out.put("raw", raw);
+                call.resolve(out);
+            } catch (Exception e) {
+                call.reject(e.getMessage() != null ? e.getMessage() : "YTM request failed", e);
+            }
+        });
+    }
+
+    /**
+     * Resolve lyrics natively across LyricsPlus (word-synced), LRCLIB (line-synced & plain),
+     * and YouTube Music's own Lyrics tab without WebView CORS limits.
+     */
+    @PluginMethod
+    public void resolveLyrics(PluginCall call) {
+        String videoId = call.getString("videoId", "");
+        String title = call.getString("title", "");
+        String artist = call.getString("artist", "");
+        String album = call.getString("album", "");
+        Double duration = call.getDouble("duration", 0.0);
+
+        resolverExecutor.execute(() -> {
+            try {
+                org.json.JSONObject res = MobileLyricsResolver.resolve(
+                        resolverExecutor,
+                        videoId != null ? videoId.trim() : "",
+                        title,
+                        artist,
+                        album,
+                        duration != null ? duration : 0.0);
+                call.resolve(JSObject.fromJSONObject(res));
+            } catch (Exception e) {
+                call.reject(e.getMessage() != null ? e.getMessage() : "Lyrics resolution failed", e);
             }
         });
     }

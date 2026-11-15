@@ -177,6 +177,7 @@ export function Artwork({
       alt={alt}
       loading="lazy"
       decoding="async"
+      referrerPolicy="no-referrer"
       draggable={false}
       onError={() => setFailed(true)}
       className={`object-cover bg-ink-hi/[0.04] art-hairline ${rounded} ${className}`}

@@ -68,12 +68,26 @@ export async function resolveArtistMeta(name: string, withName = false): Promise
   const key = name.trim().toLowerCase();
   if (!key || key === "unknown artist") return null;
   const cached = useArtistMeta.getState().byName[key];
-  if (cached && Date.now() - cached.resolvedAt < FRESH_MS && (!withName || cached.name !== undefined)) return cached;
+  if (cached && cached.thumb && Date.now() - cached.resolvedAt < FRESH_MS && (!withName || cached.name !== undefined)) {
+    return cached;
+  }
   try {
-    const res = await requireBridge().search(name);
-    const top = res.artists?.[0];
+    let res = await requireBridge().search(name);
+    let top = res.artists?.[0];
+    if (!top?.id) {
+      const lead = name.split(/,|&|\b(?:feat\.?|ft\.?|with)\b/i)[0].trim();
+      if (lead && lead.toLowerCase() !== key) {
+        res = await requireBridge().search(lead);
+        top = res.artists?.[0];
+      }
+    }
     if (!top?.id) return null;
-    const meta: ArtistMeta = { id: top.id, name: top.name || "", thumb: top.thumb ?? null, resolvedAt: Date.now() };
+    const meta: ArtistMeta = {
+      id: top.id,
+      name: top.name || "",
+      thumb: top.thumb ?? cached?.thumb ?? null,
+      resolvedAt: Date.now(),
+    };
     useArtistMeta.getState().put(key, meta);
     return meta;
   } catch {
