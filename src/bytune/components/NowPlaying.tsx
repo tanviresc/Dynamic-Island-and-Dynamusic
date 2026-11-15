@@ -44,7 +44,7 @@ import { playFragmented, useCanvas } from "../lib/canvas";
 import { useLyricsOffset } from "../lib/lyricsOffset";
 import { useIdle } from "../lib/useIdle";
 import { useSwipeGesture } from "../lib/useSwipeGesture";
-import { useMobileMode, type MobileMode } from "../stores/mobileMode";
+import { isCapacitorNative, useMobileMode, type MobileMode } from "../stores/mobileMode";
 import type { LyricsResult } from "../types";
 
 /** How long the pointer rests before the controls and the cursor go (YouTube's wait). */
@@ -71,13 +71,14 @@ function FsBackdropLayer({
   enter: boolean;
 }) {
   const palette = useArtworkPalette(artwork);
+  const mobileNative = isCapacitorNative();
   return (
     <div className={`absolute inset-0 ${enter ? "fs-bg-in" : ""}`}>
       <div
         className="absolute inset-0"
         style={{ background: `linear-gradient(180deg, rgb(${palette.background}) 0%, #0a0a0d 88%)` }}
       />
-      {artwork && !legacy && (
+      {artwork && !legacy && !mobileNative && (
         <img
           src={upgradeArtwork(artwork, 1200)}
           alt=""
@@ -86,7 +87,7 @@ function FsBackdropLayer({
         />
       )}
       <div
-        className="absolute -inset-[20%] animate-drift"
+        className={`absolute -inset-[20%] ${mobileNative ? "" : "animate-drift"}`}
         style={{
           background: `radial-gradient(42% 44% at 22% 22%, rgb(${palette.accent} / ${boost ? 0.24 : 0.15}), transparent 66%),
                        radial-gradient(38% 40% at 80% 74%, rgb(${palette.wash} / ${boost ? 0.28 : 0.18}), transparent 64%)`,
@@ -620,7 +621,7 @@ export function NowPlaying() {
                   className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 aspect-square w-[min(52vh,44vw,660px)] rounded-full"
                   style={{
                     background: `radial-gradient(50% 50% at 50% 52%, rgb(${palette.accent} / 0.13), transparent 70%)`,
-                    filter: "blur(48px)",
+                    filter: isMobileDevice ? undefined : "blur(48px)",
                   }}
                 />
                 {/* Breathing scale lives on its own wrapper: the entrance

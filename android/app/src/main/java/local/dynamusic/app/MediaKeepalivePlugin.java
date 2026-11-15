@@ -1,7 +1,9 @@
 package local.dynamusic.app;
 
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.net.Uri;
 import android.util.Base64;
 import androidx.core.content.ContextCompat;
@@ -22,9 +24,41 @@ public class MediaKeepalivePlugin extends Plugin {
     private static final int MAX_AUDIO_BYTES = 24 * 1024 * 1024;
     private static final String DESKTOP_UA =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
-    private final ExecutorService executor = Executors.newFixedThreadPool(3);
-    private final ExecutorService resolverExecutor = Executors.newCachedThreadPool();
+    private final ExecutorService executor = Executors.newFixedThreadPool(2);
+    private final ExecutorService resolverExecutor = Executors.newFixedThreadPool(8);
     private final MobileStreamProxy streamProxy = new MobileStreamProxy();
+    private BroadcastReceiver mediaControlReceiver;
+
+    @Override
+    public void load() {
+        super.load();
+        mediaControlReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                if (intent == null) return;
+                String action = intent.getStringExtra(MediaPlaybackService.EXTRA_CONTROL_ACTION);
+                if (action == null || action.isEmpty()) return;
+                JSObject data = new JSObject();
+                data.put("action", action);
+                notifyListeners("mediaControl", data);
+            }
+        };
+        try {
+            IntentFilter filter = new IntentFilter(MediaPlaybackService.ACTION_MEDIA_CONTROL);
+            ContextCompat.registerReceiver(getContext(), mediaControlReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED);
+        } catch (Exception ignored) {}
+    }
+
+    @Override
+    protected void handleOnDestroy() {
+        if (mediaControlReceiver != null) {
+            try {
+                getContext().unregisterReceiver(mediaControlReceiver);
+            } catch (Exception ignored) {}
+            mediaControlReceiver = null;
+        }
+        super.handleOnDestroy();
+    }
 
     @PluginMethod
     public void sync(PluginCall call) {

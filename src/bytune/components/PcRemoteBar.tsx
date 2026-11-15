@@ -73,7 +73,7 @@ export function PcRemoteBar() {
         transform: `translate3d(${swipe.offsetX}px, 0, 0)`,
         transition: swipe.dragging ? "none" : "transform 200ms cubic-bezier(0.22, 1, 0.36, 1)",
       }}
-      className="fixed bottom-[68px] inset-x-2 z-40 bg-[#121214]/95 backdrop-blur-2xl border border-emerald-500/30 rounded-2xl p-2.5 flex flex-col gap-1.5 shadow-2xl select-none cursor-pointer will-change-transform max-w-full overflow-hidden"
+      className="fixed bottom-[68px] inset-x-2 z-40 bg-[#121214]/[0.97] border border-emerald-500/30 rounded-2xl p-2.5 flex flex-col gap-1.5 shadow-2xl select-none cursor-pointer will-change-transform max-w-full overflow-hidden"
     >
       {/* Indicator Tag + Connection Health */}
       <div className="flex items-center justify-between text-[11px] font-medium px-1 gap-2">

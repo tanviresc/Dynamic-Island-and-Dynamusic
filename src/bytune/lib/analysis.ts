@@ -13,6 +13,8 @@
  * never piles up work.
  */
 
+import { isCapacitorNative } from "../stores/mobileMode";
+
 const MAX_CACHE = 400;
 
 async function fetchAudio(trackId: string, localPath?: string, maxBytes = Infinity): Promise<ArrayBuffer | null> {
@@ -501,6 +503,10 @@ async function drainJobs(): Promise<void> {
 }
 
 async function runAnalysis(track: SongRef): Promise<TrackAnalysis | null> {
+  // Skip full-track decoded Float32 PCM analysis on Android WebView or offline sessions
+  // to avoid memory pressure, GC pauses, and audio underruns.
+  if (isCapacitorNative()) return null;
+  if (typeof navigator !== "undefined" && navigator.onLine === false) return null;
   const buf = await fetchAudio(track.id, track.localPath, MAX_BYTES);
   if (!buf) return null;
   // Past 10 min half the rate halves the decoded copy; beats and loudness survive it.

@@ -53,7 +53,7 @@ export function MobileMiniPlayer() {
         transform: `translate3d(${swipe.offsetX}px, 0, 0)`,
         transition: swipe.dragging ? "none" : "transform 200ms cubic-bezier(0.22, 1, 0.36, 1)",
       }}
-      className="fixed bottom-[68px] inset-x-2 z-40 bg-[#16161a]/95 backdrop-blur-2xl border border-white/10 rounded-2xl p-2 flex flex-col gap-1.5 shadow-2xl cursor-pointer select-none will-change-transform active:scale-[0.985]"
+      className="fixed bottom-[68px] inset-x-2 z-40 bg-[#16161a]/[0.96] border border-white/10 rounded-2xl p-2 flex flex-col gap-1.5 shadow-2xl cursor-pointer select-none will-change-transform active:scale-[0.985]"
     >
       <div className="flex items-center gap-3">
         {/* Cover Thumbnail */}

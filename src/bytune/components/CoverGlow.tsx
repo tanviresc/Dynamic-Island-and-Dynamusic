@@ -8,8 +8,10 @@
  */
 import { useEffect, useState } from "react";
 import { glowBrightness } from "../lib/coverColor";
-import { useCoverRead } from "../lib/palette";
+import { useArtworkPalette, useCoverRead } from "../lib/palette";
+import { isCapacitorNative } from "../stores/mobileMode";
 import { usePlayer } from "../stores/player";
+import { useSettings } from "../stores/settings";
 import { useHomeLead } from "../lib/recs/feed";
 import { useUI } from "../stores/ui";
 
@@ -22,8 +24,20 @@ interface Layer {
 }
 
 function GlowLayer({ url, out }: { url: string; out: boolean }) {
+  const lowPower = useSettings((s) => s.reduceDynamicBlur) || isCapacitorNative();
+  const palette = useArtworkPalette(lowPower ? url : null);
   // A light cover glows dimmer, so white text on it stays readable.
-  const brightness = glowBrightness(useCoverRead(url));
+  const brightness = glowBrightness(useCoverRead(lowPower ? null : url));
+  if (lowPower) {
+    return (
+      <div
+        className={`cover-glow-art${out ? " cover-glow-out" : ""}`}
+        style={{
+          background: `radial-gradient(90% 100% at 50% 0%, rgb(${palette.wash} / 0.42) 0%, rgb(${palette.background} / 0.22) 55%, transparent 100%)`,
+        }}
+      />
+    );
+  }
   return (
     <div
       className={`cover-glow-art${out ? " cover-glow-out" : ""}`}

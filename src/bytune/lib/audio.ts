@@ -53,6 +53,8 @@ import { analyseTrack, peekAnalysis, type TrackAnalysis } from "./analysis";
 import { upgradeArtwork } from "./artwork";
 import { shortTitle } from "./format";
 import { createMediaKeyTap } from "./media-key-tap";
+import { isSavedInOfflineVault, setActiveOfflineTrackIds } from "./offlineAudioVault";
+import { isCapacitorNative } from "../stores/mobileMode";
 import { useSleepTimer } from "./sleepTimer";
 import { inRoom, stopHere, useRoom } from "../stores/room";
 import {
@@ -287,8 +289,10 @@ function setLoudness(trackId: string, lufs: number): void {
 async function fetchLoudness(proxyUrl: string, track: Track): Promise<void> {
   const trackId = track.id;
   if (proxyUrl.startsWith("blob:")) {
-    needsMeasuring.add(trackId);
-    analyse(track);
+    if (!isCapacitorNative()) {
+      needsMeasuring.add(trackId);
+      analyse(track);
+    }
     return;
   }
   try {
@@ -297,9 +301,11 @@ async function fetchLoudness(proxyUrl: string, track: Track): Promise<void> {
     const data = (await res.json()) as { lufs?: unknown };
     const lufs = typeof data?.lufs === "number" && Number.isFinite(data.lufs) ? data.lufs : null;
     if (lufs === null) {
-      // A Piped stream: YouTube reported nothing, so measure it.
-      needsMeasuring.add(trackId);
-      analyse(track);
+      // A Piped stream: YouTube reported nothing, so measure it (desktop only).
+      if (!isCapacitorNative()) {
+        needsMeasuring.add(trackId);
+        analyse(track);
+      }
       return;
     }
     needsMeasuring.delete(trackId);
@@ -781,14 +787,18 @@ function clearStallWatchdog(): void {
 
 function scheduleStallWatchdog(expectedIndex: number): void {
   if (stallTimer !== null) return;
-  const startPos = el().currentTime || 0;
+  const activeEl = el();
+  // Local files & offline IndexedDB blobs never stall on upstream HTTP range requests.
+  if (activeEl.src.startsWith("blob:")) return;
+  const startPos = activeEl.currentTime || 0;
+  const timeoutMs = isCapacitorNative() ? 14000 : 8000;
   stallTimer = window.setTimeout(() => {
     stallTimer = null;
     if (!elements || expectedIndex !== mainIdx) return;
     const s = usePlayer.getState();
     const cur = s.queue[s.index];
     const a = el();
-    if (!s.playing || !cur || loadedId !== cur.id || a.paused) return;
+    if (!s.playing || !cur || loadedId !== cur.id || a.paused || a.src.startsWith("blob:")) return;
     // Never tear down a healthy stream if playback time progressed or at least 2s is buffered ahead.
     const progressed = a.currentTime > startPos + 0.2 || (Date.now() - lastProgressAt < 2500 && lastProgressAt > 0);
     if (progressed || a.readyState >= 3 || bufferedAheadSec(a) >= 2) {
@@ -796,7 +806,7 @@ function scheduleStallWatchdog(expectedIndex: number): void {
       return;
     }
     handleFailure(cur, new Error("stream_stalled"));
-  }, 8000);
+  }, timeoutMs);
 }
 
 function applySeekWhenReady(
@@ -1608,10 +1618,11 @@ function onTrackEnded(): void {
     return;
   }
   const a = el();
-  const knownDur = Number.isFinite(a.duration) && a.duration > 0 ? a.duration : current.duration;
-  // Premature EOF / dropped proxy connection guard: if track ended >1.5s before true end,
-  // treat as a recoverable stream drop at current position rather than auto-skipping!
-  if (knownDur > 10 && a.currentTime > 0 && a.currentTime < knownDur - ENDING_EPSILON_SEC) {
+  const isBlob = a.src.startsWith("blob:");
+  const mediaDur = Number.isFinite(a.duration) && a.duration > 0 ? a.duration : 0;
+  // Premature EOF / dropped proxy connection guard: only for non-blob network streams whose
+  // element-reported duration is known (> 10s), so metadata/CDN edits or offline blobs never false-skip.
+  if (!isBlob && mediaDur > 10 && a.currentTime > 0 && a.currentTime < mediaDur - ENDING_EPSILON_SEC) {
     handleFailure(current, new Error("premature_stream_end"));
     return;
   }
@@ -1711,6 +1722,10 @@ async function loadTrack(track: Track | null, autoplay: boolean): Promise<void> 
  *  both setting the src lost the resume point (play pressed while the launch load resolved). */
 let loadSeq = 0;
 
+function syncPinnedOfflineTracks(): void {
+  setActiveOfflineTrackIds([loadedId, prebuffered?.id, fade?.fromId, fade?.toId, armed?.toId]);
+}
+
 async function loadUrl(track: Track, autoplay: boolean, forceRotate: boolean): Promise<void> {
   if (!elements) return;
   const seq = ++loadSeq;
@@ -1731,6 +1746,7 @@ async function loadUrl(track: Track, autoplay: boolean, forceRotate: boolean): P
         /* ignore */
       }
       loadedId = track.id;
+      syncPinnedOfflineTracks();
       const trim = silenceEdges(track.id);
       if (pendingSeek > 0) {
         const resumeAt = pendingSeek;
@@ -1759,6 +1775,7 @@ async function loadUrl(track: Track, autoplay: boolean, forceRotate: boolean): P
       refreshVolumes();
       a.src = src;
       loadedId = track.id;
+      syncPinnedOfflineTracks();
       if (pendingSeek > 0) {
         const resumeAt = pendingSeek;
         pendingSeek = 0;
@@ -1781,6 +1798,7 @@ async function loadUrl(track: Track, autoplay: boolean, forceRotate: boolean): P
     a.src = url;
     refreshVolumes();
     loadedId = track.id;
+    syncPinnedOfflineTracks();
     const trim = silenceEdges(track.id);
     if (pendingSeek > 0) {
       const resumeAt = pendingSeek;
@@ -1818,6 +1836,20 @@ function handleFailure(track: Track, err?: unknown): void {
   }
   const deckAt = el().currentTime;
   const at = deckAt > 1 ? deckAt : usePlayer.getState().position;
+  const offlineNow = typeof navigator !== "undefined" && navigator.onLine === false;
+  const offlineError = err instanceof Error && err.message === "OFFLINE_UNAVAILABLE";
+  if ((offlineNow || offlineError) && !isSavedInOfflineVault(track.id)) {
+    const hasLaterSaved = state.queue
+      .slice(state.index + 1)
+      .some((t) => isSavedInOfflineVault(t.id));
+    if (hasLaterSaved) {
+      state.next(false);
+    } else {
+      usePlayer.setState({ playing: false, buffering: false, playbackStatus: "idle", error: "Offline" });
+      useUI.getState().toast("You're offline — only saved/liked songs can play", "info");
+    }
+    return;
+  }
   // Retry up to 3 times with fresh stream URL & exact resume position before skipping;
   // a track that played smoothly for > 30 s gets its retry budget refreshed.
   if (retryCount < MAX_RETRY_ATTEMPTS || at - retriedAt > 30) {
@@ -2041,6 +2073,32 @@ function setupMediaSession(): void {
   window.setInterval(() => {
     if (usePlayer.getState().playing) syncPositionState();
   }, 1000);
+
+  if (typeof window !== "undefined") {
+    const cap = (window as unknown as {
+      Capacitor?: {
+        Plugins?: {
+          MediaKeepalive?: {
+            addListener?: (
+              event: string,
+              cb: (data: { action?: string }) => void
+            ) => Promise<{ remove?: () => void }> | { remove?: () => void };
+          };
+        };
+      };
+    }).Capacitor;
+    try {
+      void cap?.Plugins?.MediaKeepalive?.addListener?.("mediaControl", (data) => {
+        if (data?.action === "pause") {
+          if (usePlayer.getState().playing) usePlayer.getState().setPlaying(false);
+        } else if (data?.action === "play") {
+          if (!usePlayer.getState().playing) usePlayer.getState().setPlaying(true);
+        }
+      });
+    } catch {
+      /* ignore */
+    }
+  }
 }
 
 /**

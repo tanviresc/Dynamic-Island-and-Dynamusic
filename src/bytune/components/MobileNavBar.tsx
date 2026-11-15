@@ -6,7 +6,7 @@ export function MobileNavBar() {
   const navigate = useUI((s) => s.navigate);
 
   return (
-    <nav className="fixed bottom-0 inset-x-0 h-16 bg-black/40 backdrop-blur-2xl backdrop-saturate-150 border-t border-white/10 z-40 select-none safe-bottom">
+    <nav className="fixed bottom-0 inset-x-0 h-16 bg-[#0e0e12]/95 border-t border-white/10 z-40 select-none safe-bottom">
       <div className="h-full max-w-md mx-auto flex items-center justify-between px-8">
         {/* Home Tab */}
         <button

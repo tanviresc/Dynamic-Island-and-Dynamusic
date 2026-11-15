@@ -112,10 +112,18 @@ final class MobileStreamProxy {
         }
     }
 
+    private static final int LOCK_STRIPES = 64;
     private final ConcurrentHashMap<String, ResolvedStream> cache = new ConcurrentHashMap<>();
-    private final ExecutorService proxyPool = Executors.newCachedThreadPool();
-    private final ExecutorService resolverPool = Executors.newCachedThreadPool();
+    private final ExecutorService proxyPool = Executors.newFixedThreadPool(12);
+    private final ExecutorService resolverPool = Executors.newFixedThreadPool(8);
     private final AtomicInteger preferredClientIdx = new AtomicInteger(0);
+    private final Object[] resolveLocks = new Object[LOCK_STRIPES];
+
+    {
+        for (int i = 0; i < LOCK_STRIPES; i++) {
+            resolveLocks[i] = new Object();
+        }
+    }
 
     private ServerSocket serverSocket;
     private volatile int port = -1;
@@ -146,19 +154,27 @@ final class MobileStreamProxy {
             return previous;
         }
 
-        String skipSource = null;
-        if (forceRotate) {
-            cache.remove(key);
-            if (previous != null) {
-                skipSource = previous.source;
+        Object lock = resolveLocks[(key.hashCode() & 0x7fffffff) % LOCK_STRIPES];
+        synchronized (lock) {
+            previous = cache.get(key);
+            if (!forceRotate && previous != null && System.currentTimeMillis() < previous.expiresAtMs) {
+                return previous;
             }
-            preferredClientIdx.updateAndGet((i) -> (i + 1) % INNERTUBE_CLIENTS.length);
-        }
 
-        String proxyUrl = buildProxyUrl(boundPort, videoId, normQuality, title, artist);
-        ResolvedStream fresh = resolveUpstream(videoId, normQuality, title, artist, proxyUrl, skipSource);
-        cache.put(key, fresh);
-        return fresh;
+            String skipSource = null;
+            if (forceRotate) {
+                cache.remove(key);
+                if (previous != null) {
+                    skipSource = previous.source;
+                }
+                preferredClientIdx.updateAndGet((i) -> (i + 1) % INNERTUBE_CLIENTS.length);
+            }
+
+            String proxyUrl = buildProxyUrl(boundPort, videoId, normQuality, title, artist);
+            ResolvedStream fresh = resolveUpstream(videoId, normQuality, title, artist, proxyUrl, skipSource);
+            cache.put(key, fresh);
+            return fresh;
+        }
     }
 
     private String buildProxyUrl(int boundPort, String videoId, String quality, String title, String artist) {
@@ -273,22 +289,26 @@ final class MobileStreamProxy {
         String body = "{\"videoId\":" + JSONObject.quote(videoId) + ",\"context\":{\"client\":" + client.clientJson + "}}";
         HttpURLConnection conn = (HttpURLConnection)
                 new URL("https://www.youtube.com/youtubei/v1/player?prettyPrint=false").openConnection();
-        conn.setRequestMethod("POST");
-        conn.setDoOutput(true);
-        conn.setConnectTimeout(5000);
-        conn.setReadTimeout(7000);
-        conn.setRequestProperty("Content-Type", "application/json");
-        conn.setRequestProperty("User-Agent", client.userAgent);
-        try (OutputStream out = conn.getOutputStream()) {
-            out.write(body.getBytes(StandardCharsets.UTF_8));
-        }
+        String jsonText;
+        try {
+            conn.setRequestMethod("POST");
+            conn.setDoOutput(true);
+            conn.setConnectTimeout(5000);
+            conn.setReadTimeout(7000);
+            conn.setRequestProperty("Content-Type", "application/json");
+            conn.setRequestProperty("User-Agent", client.userAgent);
+            try (OutputStream out = conn.getOutputStream()) {
+                out.write(body.getBytes(StandardCharsets.UTF_8));
+            }
 
-        int code = conn.getResponseCode();
-        if (code < 200 || code >= 300) {
-            throw new IOException("InnerTube HTTP " + code + " (" + client.name + ")");
+            int code = conn.getResponseCode();
+            if (code < 200 || code >= 300) {
+                throw new IOException("InnerTube HTTP " + code + " (" + client.name + ")");
+            }
+            jsonText = readStreamText(conn.getInputStream());
+        } finally {
+            conn.disconnect();
         }
-        String jsonText = readStreamText(conn.getInputStream());
-        conn.disconnect();
 
         JSONObject root;
         try {
@@ -555,7 +575,10 @@ final class MobileStreamProxy {
             conn.setRequestProperty("User-Agent", userAgent);
             conn.setRequestProperty("Range", "bytes=0-1023");
             int code = conn.getResponseCode();
-            return code == 200 || code == 206;
+            if (code != 200 && code != 206) return false;
+            String ct = conn.getContentType();
+            if (ct != null && ct.toLowerCase(Locale.US).contains("text/html")) return false;
+            return true;
         } catch (Exception ignored) {
             return false;
         } finally {

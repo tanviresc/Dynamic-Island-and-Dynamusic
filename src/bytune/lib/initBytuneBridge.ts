@@ -426,9 +426,13 @@ export function initBytuneBridge(): void {
       rpcSend("playback:event", event),
     statsSummary: (period: string) => rpcInvoke("stats:summary", period),
     getStreamUrl: async (id: string, forceRotate = false, quality?: string, title?: string, artist?: string) => {
-      if (!forceRotate) {
+      const offlineNow = typeof navigator !== "undefined" && navigator.onLine === false;
+      if (!forceRotate || offlineNow) {
         const offlineUrl = await getOfflineVaultUrl(id);
         if (offlineUrl) return offlineUrl;
+      }
+      if (offlineNow) {
+        throw new Error("OFFLINE_UNAVAILABLE");
       }
       try {
         const rawUrl = await rpcInvoke<string>("music:stream", id, forceRotate, quality, title, artist);

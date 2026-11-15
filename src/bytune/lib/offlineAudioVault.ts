@@ -19,17 +19,31 @@ function isUnpairedPhone(): boolean {
 
 let vaultServerUnreachableUntil = 0;
 
+export function base64ToBlob(base64: string, mime = "audio/mp4"): Blob {
+  const bin = atob(base64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) {
+    bytes[i] = bin.charCodeAt(i);
+  }
+  return new Blob([bytes], { type: mime });
+}
+
 async function fetchUrlAsBlob(url: string): Promise<Blob | null> {
   if (!url || url.startsWith("blob:")) return null;
   // 1. Standard browser/WebView fetch (works for CORS-enabled Piped / local proxy)
   try {
     const ctl = new AbortController();
-    const headerTimer = setTimeout(() => ctl.abort(), 12_000);
+    let timer = setTimeout(() => ctl.abort(), 15_000);
     const res = await fetch(url, { signal: ctl.signal });
-    clearTimeout(headerTimer);
+    clearTimeout(timer);
     if (res.ok) {
-      const candidate = await res.blob();
-      if (candidate && candidate.size >= 4096) return candidate;
+      timer = setTimeout(() => ctl.abort(), 90_000);
+      try {
+        const candidate = await res.blob();
+        if (candidate && candidate.size >= 4096) return candidate;
+      } finally {
+        clearTimeout(timer);
+      }
     }
   } catch {
     /* fall through to native Android downloader if available */
@@ -51,9 +65,7 @@ async function fetchUrlAsBlob(url: string): Promise<Blob | null> {
       if (fetcher) {
         const res = await fetcher({ url });
         if (res?.base64) {
-          const mime = res.mime || "audio/mp4";
-          const dataRes = await fetch(`data:${mime};base64,${res.base64}`);
-          const blob = await dataRes.blob();
+          const blob = base64ToBlob(res.base64, res.mime || "audio/mp4");
           if (blob && blob.size >= 4096) return blob;
         }
       }
@@ -67,7 +79,7 @@ async function fetchUrlAsBlob(url: string): Promise<Blob | null> {
 const DB_NAME = "dynamusic-offline-vault";
 const STORE_NAME = "tracks";
 const DB_VERSION = 1;
-const MAX_MEMORY_BLOB_URLS = 8;
+const MAX_MEMORY_BLOB_URLS = 32;
 
 interface StoredTrackAudio {
   id: string;
@@ -80,20 +92,33 @@ interface StoredTrackAudio {
 
 let dbPromise: Promise<IDBDatabase | null> | null = null;
 const memoryBlobUrls = new Map<string, string>();
+const pinnedTrackIds = new Set<string>();
 const savedIds = new Set<string>();
 const inFlightSaves = new Map<string, Promise<boolean>>();
 const vaultListeners = new Set<() => void>();
 
-function cacheBlobUrlLru(trackId: string, url: string): void {
+/**
+ * Pin track IDs whose blob URLs are actively loaded/playing in audio decks
+ * so the LRU cache never revokes a URL mid-playback.
+ */
+export function setActiveOfflineTrackIds(ids: (string | null | undefined)[]): void {
+  pinnedTrackIds.clear();
+  for (const id of ids) {
+    if (id) pinnedTrackIds.add(id);
+  }
+}
+
+export function cacheBlobUrlLru(trackId: string, url: string): void {
   if (memoryBlobUrls.has(trackId)) {
     memoryBlobUrls.delete(trackId);
   }
   memoryBlobUrls.set(trackId, url);
-  while (memoryBlobUrls.size > MAX_MEMORY_BLOB_URLS) {
-    const oldest = memoryBlobUrls.keys().next().value;
-    if (!oldest) break;
-    const oldUrl = memoryBlobUrls.get(oldest);
-    memoryBlobUrls.delete(oldest);
+  if (memoryBlobUrls.size <= MAX_MEMORY_BLOB_URLS) return;
+  for (const candidateId of Array.from(memoryBlobUrls.keys())) {
+    if (memoryBlobUrls.size <= MAX_MEMORY_BLOB_URLS) break;
+    if (candidateId === trackId || pinnedTrackIds.has(candidateId)) continue;
+    const oldUrl = memoryBlobUrls.get(candidateId);
+    memoryBlobUrls.delete(candidateId);
     if (oldUrl) {
       try {
         URL.revokeObjectURL(oldUrl);
@@ -201,7 +226,10 @@ export async function getOfflineVaultUrl(trackId: string): Promise<string | null
         const row = req.result as StoredTrackAudio | undefined;
         if (row?.blob && row.blob.size > 1024) {
           savedIds.add(trackId);
-          const url = URL.createObjectURL(row.blob);
+          const usableBlob = row.blob.type
+            ? row.blob
+            : new Blob([row.blob], { type: row.mime || "audio/mp4" });
+          const url = URL.createObjectURL(usableBlob);
           cacheBlobUrlLru(trackId, url);
           resolve(url);
         } else {
@@ -341,15 +369,18 @@ export async function removeTrackFromOfflineVault(trackId: string): Promise<void
  * Ensure all tracks in a list (such as Liked Songs) are saved inside the app's offline vault.
  */
 export async function syncLikedSongsToOfflineVault(tracks: Track[]): Promise<void> {
+  if (typeof navigator !== "undefined" && navigator.onLine === false) return;
   const queue = tracks.filter((t) => Boolean(t?.id) && !t.id.startsWith("local:") && !savedIds.has(t.id));
   if (queue.length === 0) return;
   let cursor = 0;
   const worker = async (): Promise<void> => {
     while (cursor < queue.length) {
+      if (typeof navigator !== "undefined" && navigator.onLine === false) break;
       const track = queue[cursor++];
       if (track) await saveTrackToOfflineVault(track);
     }
   };
-  await Promise.all(Array.from({ length: Math.min(3, queue.length) }, () => worker()));
+  const concurrency = isCapacitorNative() ? 1 : Math.min(3, queue.length);
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
 }
 

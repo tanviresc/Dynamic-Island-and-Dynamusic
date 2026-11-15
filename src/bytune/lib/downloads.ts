@@ -2,9 +2,11 @@
 import { useLibrary, type DownloadItem } from "../stores/library";
 import { useSettings } from "../stores/settings";
 import { useUI } from "../stores/ui";
+import { isTauriDesktop } from "../stores/mobileMode";
 import type { Track } from "../types";
 import { requireBridge } from "./bridge";
 import { staleDownloadIds } from "./download-reconcile";
+import { removeTrackFromOfflineVault, saveTrackToOfflineVault } from "./offlineAudioVault";
 
 export function getDownload(id: string): DownloadItem | undefined {
   return useLibrary.getState().downloads[id];
@@ -33,6 +35,22 @@ export async function startDownload(track: Track, dirOverride?: string): Promise
   });
 
   try {
+    if (!isTauriDesktop()) {
+      lib.patchDownload(track.id, { status: "downloading", progress: 0.2 });
+      const ok = await saveTrackToOfflineVault(track);
+      if (ok) {
+        useLibrary.getState().patchDownload(track.id, {
+          path: `offline-vault://${track.id}`,
+          status: "done",
+          progress: 1,
+        });
+        useUI.getState().toast(`Saved "${track.title}" for offline playback`, "success");
+      } else {
+        throw new Error("Could not save audio offline");
+      }
+      return;
+    }
+
     const s = useSettings.getState();
     const dir = dirOverride ?? s.downloadDir ?? undefined;
     // The main process queues it; lifecycle arrives over download:event.
@@ -48,7 +66,11 @@ export async function startDownload(track: Track, dirOverride?: string): Promise
 
 /** Cancelling takes the song off the Downloads list (its partial file is deleted). */
 export function cancelDownload(id: string): void {
-  void window.bytune?.cancelDownload(id);
+  if (!isTauriDesktop()) {
+    void removeTrackFromOfflineVault(id);
+  } else {
+    void window.bytune?.cancelDownload(id);
+  }
   useLibrary.getState().removeDownload(id);
 }
 
