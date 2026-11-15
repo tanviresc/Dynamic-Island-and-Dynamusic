@@ -12,6 +12,8 @@ import { useListening } from "../stores/listening";
 import { invalidateStatsCache } from "./recs/profile";
 import { syncLikedSongsToOfflineVault } from "./offlineAudioVault";
 import { hasBridge } from "./bridge";
+import { storage } from "./persist";
+import { DEVICE_SETTINGS_FIELDS } from "../../electron/sync-merge";
 
 const STORE_PERSIST: Record<string, { rehydrate: () => void | Promise<void> }> = {
   library: useLibrary.persist,
@@ -19,6 +21,37 @@ const STORE_PERSIST: Record<string, { rehydrate: () => void | Promise<void> }> =
   "recent-searches": useRecents.persist,
   "listening-signals": useListening.persist,
 };
+
+function resetStoreInMemory(name: string): void {
+  if (name === "library") {
+    const init = useLibrary.getInitialState();
+    const downloads = useLibrary.getState().downloads;
+    useLibrary.setState({
+      liked: init.liked,
+      playlists: init.playlists,
+      folders: init.folders,
+      followedArtists: init.followedArtists,
+      history: init.history,
+      pinnedSingles: init.pinnedSingles,
+      libraryOrder: init.libraryOrder,
+      deletionSync: undefined,
+      downloads,
+    });
+  } else if (name === "settings") {
+    const init = useSettings.getInitialState();
+    const cur = useSettings.getState();
+    const device = Object.fromEntries(
+      DEVICE_SETTINGS_FIELDS.map((k) => [k, (cur as unknown as Record<string, unknown>)[k]])
+    );
+    useSettings.setState({ ...init, ...device });
+  } else if (name === "recent-searches") {
+    const init = useRecents.getInitialState();
+    useRecents.setState({ searches: init.searches, deletionSync: undefined });
+  } else if (name === "listening-signals") {
+    const init = useListening.getInitialState();
+    useListening.setState({ skips: init.skips, version: init.version });
+  }
+}
 
 let appliedSeq = 0;
 
@@ -29,11 +62,22 @@ function apply(stores: string[], seq: number): void {
   // Replay summary read from it just needs its cache dropped.
   if (stores.includes("listening-history")) invalidateStatsCache();
   for (const name of stores) {
-    void Promise.resolve(STORE_PERSIST[name]?.rehydrate()).then(() => {
-      if (name === "library") {
-        void syncLikedSongsToOfflineVault(useLibrary.getState().liked);
-      }
-    });
+    const p = STORE_PERSIST[name];
+    if (!p) continue;
+    void Promise.resolve(storage.getItem(name))
+      .then((raw) => {
+        if (raw == null) {
+          resetStoreInMemory(name);
+          return;
+        }
+        return p.rehydrate();
+      })
+      .then(() => {
+        if (name === "library") {
+          void syncLikedSongsToOfflineVault(useLibrary.getState().liked);
+        }
+      })
+      .catch(() => undefined);
   }
 }
 

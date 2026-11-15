@@ -221,12 +221,26 @@ export function MatchedPlaylistView({ spotifyId, importId = "" }: { spotifyId: s
     if (shuffle) usePlayer.setState({ shuffle: true });
     usePlayer.getState().playQueue(matched, shuffle ? Math.floor(Math.random() * matched.length) : 0);
   };
-  const save = (): void => {
+  const isSpotifyLiked = fromSpotify && spotifyId === "liked";
+  const savePlaylist = (): void => {
     if (!playlist) return;
     const p = useLibrary.getState().importPlaylist(playlist.name, matched);
     useUI.getState().toast(`Saved “${p.name}” to your library`, "success");
     useUI.getState().navigate({ name: "playlist", param: p.id });
   };
+  const saveToLiked = (): void => {
+    if (!matched.length) return;
+    const added = useLibrary.getState().importLikedTracks(matched);
+    void window.bytune?.syncNow().catch(() => undefined);
+    useUI.getState().toast(
+      added > 0
+        ? `Imported ${added} song${added === 1 ? "" : "s"} to Liked Songs & saving offline`
+        : "All matched songs are already in Liked Songs",
+      "success"
+    );
+    useUI.getState().navigate({ name: "library", param: "liked" });
+  };
+  const save = isSpotifyLiked ? saveToLiked : savePlaylist;
   const openMenu = (x: number, y: number): void =>
     useUI.getState().openContextMenu(x, y, [
       {
@@ -239,6 +253,16 @@ export function MatchedPlaylistView({ spotifyId, importId = "" }: { spotifyId: s
         },
       },
       { label: "Download all", icon: Download, disabled: !matched.length, action: () => downloadAll(matched, "this playlist") },
+      ...(isSpotifyLiked
+        ? [
+            {
+              label: "Save as playlist",
+              icon: Plus,
+              disabled: !done || !matched.length,
+              action: savePlaylist,
+            },
+          ]
+        : []),
       ...(spotifyId
         ? [
             {
@@ -304,10 +328,16 @@ export function MatchedPlaylistView({ spotifyId, importId = "" }: { spotifyId: s
           className={HERO_PILL}
           onClick={save}
           disabled={!done || !matched.length}
-          title={done ? "Save the matched songs as a playlist" : "Available once every song is checked"}
+          title={
+            done
+              ? isSpotifyLiked
+                ? "Import matched songs into your Liked Songs & cache offline"
+                : "Save the matched songs as a playlist"
+              : "Available once every song is checked"
+          }
         >
-          <Plus className="w-[18px] h-[18px]" />
-          Save to library
+          {isSpotifyLiked ? <Heart className="w-[18px] h-[18px]" /> : <Plus className="w-[18px] h-[18px]" />}
+          {isSpotifyLiked ? "Import to Liked Songs" : "Save to library"}
         </button>
         <button type="button" className={HERO_ROUND} aria-label="More options" title="More options" onClick={(e) => openMenu(e.clientX, e.clientY)}>
           <MoreHorizontal className="w-5 h-5" />

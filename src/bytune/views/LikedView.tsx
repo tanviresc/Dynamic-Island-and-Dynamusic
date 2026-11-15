@@ -4,7 +4,7 @@
  * (App's panel drop).
  */
 import { useEffect, useState } from "react";
-import { Check, Download, Heart, Play, Shuffle, Smartphone } from "lucide-react";
+import { Check, Download, Heart, Play, RefreshCw, Shuffle, Smartphone } from "lucide-react";
 import { CollectionHero, HERO_PLAY } from "../components/CollectionHero";
 import { HERO_ROUND } from "../components/PlaylistHero";
 import { TrackList } from "../components/TrackList";
@@ -16,6 +16,9 @@ import {
   subscribeOfflineVault,
   syncLikedSongsToOfflineVault,
 } from "../lib/offlineAudioVault";
+import { useSpotify } from "../lib/spotify";
+import { syncSpotifyLikedToLibrary, useSpotifyLikedSync } from "../lib/spotifyLikedSync";
+import { getBackendBaseUrl, getBackendHost, isCapacitorNative, isTauriDesktop } from "../stores/mobileMode";
 import { useLibrary } from "../stores/library";
 import { usePlayer } from "../stores/player";
 import { useUI } from "../stores/ui";
@@ -25,6 +28,8 @@ export function LikedView() {
   const navigate = useUI((s) => s.navigate);
   const toast = useUI((s) => s.toast);
   const openDialog = useUI((s) => s.openDialog);
+  const spotifyConnected = useSpotify((s) => s.status.connected && !s.status.problem);
+  const spotifyLikedSync = useSpotifyLikedSync();
   const [, setVaultTick] = useState(0);
   const [lanUrl, setLanUrl] = useState<string>("http://192.168.0.2:47822");
 
@@ -33,7 +38,8 @@ export function LikedView() {
   }, []);
 
   useEffect(() => {
-    fetch("http://127.0.0.1:47822/lan-info")
+    if (!isTauriDesktop() && isCapacitorNative() && getBackendHost() === "127.0.0.1") return;
+    fetch(`${getBackendBaseUrl()}/lan-info`)
       .then((r) => r.json())
       .then((d: { urls?: string[] }) => {
         if (Array.isArray(d?.urls) && d.urls[0]) setLanUrl(d.urls[0]);
@@ -124,6 +130,22 @@ export function LikedView() {
         >
           {allSavedOffline ? <Check className="w-5 h-5 text-emerald-400" /> : <Download className="w-5 h-5" />}
         </button>
+        {spotifyConnected && (
+          <button
+            type="button"
+            className={HERO_ROUND}
+            aria-label="Import Spotify Liked Songs"
+            title={
+              spotifyLikedSync.syncing && spotifyLikedSync.total > 0
+                ? `Importing Spotify Liked Songs (${spotifyLikedSync.checked}/${spotifyLikedSync.total})`
+                : "Sync Spotify Liked Songs into Liked Songs"
+            }
+            disabled={spotifyLikedSync.syncing}
+            onClick={() => void syncSpotifyLikedToLibrary()}
+          >
+            <RefreshCw className={`w-5 h-5 ${spotifyLikedSync.syncing ? "animate-spin" : ""}`} />
+          </button>
+        )}
         <button
           type="button"
           className={HERO_ROUND}
@@ -142,11 +164,30 @@ export function LikedView() {
           <EmptyState
             icon={Heart}
             title="Songs you like will show up here"
-            body="Click the heart on any song, in the player, a playlist or search, and it lands here. Its cover joins the wall above."
+            body={
+              spotifyConnected
+                ? "Click the heart on any song, or import your Spotify Liked Songs straight here for offline listening across your devices."
+                : "Click the heart on any song, in the player, a playlist or search, and it lands here. Its cover joins the wall above."
+            }
             action={
-              <Btn variant="white" onClick={() => navigate({ name: "search" })}>
-                Find something to like
-              </Btn>
+              <div className="flex flex-wrap items-center justify-center gap-3">
+                {spotifyConnected && (
+                  <Btn
+                    variant="white"
+                    disabled={spotifyLikedSync.syncing}
+                    onClick={() => void syncSpotifyLikedToLibrary()}
+                  >
+                    {spotifyLikedSync.syncing && spotifyLikedSync.total > 0
+                      ? `Importing ${spotifyLikedSync.checked}/${spotifyLikedSync.total}…`
+                      : spotifyLikedSync.syncing
+                        ? "Reading Spotify…"
+                        : "Import Spotify Liked Songs"}
+                  </Btn>
+                )}
+                <Btn variant={spotifyConnected ? "ghost" : "white"} onClick={() => navigate({ name: "search" })}>
+                  Find something to like
+                </Btn>
+              </div>
             }
           />
         )}

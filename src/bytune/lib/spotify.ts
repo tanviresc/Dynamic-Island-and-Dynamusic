@@ -89,7 +89,10 @@ export async function connectSpotify(): Promise<boolean> {
   }
   const { status } = useSpotify.getState();
   if (status.problem) ui.toast(status.problem, "error");
-  else if (status.connected) ui.toast(`Connected Spotify${status.name ? ` as ${status.name}` : ""}`, "success");
+  else if (status.connected) {
+    ui.toast(`Connected Spotify${status.name ? ` as ${status.name}` : ""}`, "success");
+    void import("./spotifyLikedSync").then((m) => m.syncSpotifyLikedToLibrary({ quiet: false })).catch(() => undefined);
+  }
   return status.connected && !status.problem;
 }
 

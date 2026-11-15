@@ -6,11 +6,62 @@
  * 100% offline with zero network connection—both on Desktop and on Phone (PWA / Mobile).
  */
 import type { Track } from "../types";
-import { getBackendBaseUrl } from "../stores/mobileMode";
+import { getBackendBaseUrl, getBackendHost, isCapacitorNative, isTauriDesktop } from "../stores/mobileMode";
 import { fallbackMobileStreamUrl } from "./mobileStandaloneFallback";
 
 function getVaultBaseUrl(): string {
   return getBackendBaseUrl();
+}
+
+function isUnpairedPhone(): boolean {
+  return !isTauriDesktop() && isCapacitorNative() && getBackendHost() === "127.0.0.1";
+}
+
+let vaultServerUnreachableUntil = 0;
+
+async function fetchUrlAsBlob(url: string): Promise<Blob | null> {
+  if (!url || url.startsWith("blob:")) return null;
+  // 1. Standard browser/WebView fetch (works for CORS-enabled Piped / local proxy)
+  try {
+    const ctl = new AbortController();
+    const headerTimer = setTimeout(() => ctl.abort(), 12_000);
+    const res = await fetch(url, { signal: ctl.signal });
+    clearTimeout(headerTimer);
+    if (res.ok) {
+      const candidate = await res.blob();
+      if (candidate && candidate.size >= 4096) return candidate;
+    }
+  } catch {
+    /* fall through to native Android downloader if available */
+  }
+
+  // 2. Native Android downloader (bypasses WebView CORS on upstream audio CDNs)
+  if (typeof window !== "undefined") {
+    try {
+      const cap = (window as unknown as {
+        Capacitor?: {
+          Plugins?: {
+            MediaKeepalive?: {
+              fetchAudioBase64?: (opts: { url: string }) => Promise<{ base64?: string; mime?: string; size?: number }>;
+            };
+          };
+        };
+      }).Capacitor;
+      const fetcher = cap?.Plugins?.MediaKeepalive?.fetchAudioBase64;
+      if (fetcher) {
+        const res = await fetcher({ url });
+        if (res?.base64) {
+          const mime = res.mime || "audio/mp4";
+          const dataRes = await fetch(`data:${mime};base64,${res.base64}`);
+          const blob = await dataRes.blob();
+          if (blob && blob.size >= 4096) return blob;
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  return null;
 }
 
 const DB_NAME = "dynamusic-offline-vault";
@@ -83,6 +134,9 @@ export function getSavedOfflineCount(trackIds: string[]): number {
 function openVaultDb(): Promise<IDBDatabase | null> {
   if (typeof indexedDB === "undefined") return Promise.resolve(null);
   if (dbPromise) return dbPromise;
+  if (typeof navigator !== "undefined" && navigator.storage?.persist) {
+    void navigator.storage.persist().catch(() => false);
+  }
   dbPromise = new Promise<IDBDatabase | null>((resolve) => {
     try {
       const req = indexedDB.open(DB_NAME, DB_VERSION);
@@ -181,34 +235,42 @@ export async function saveTrackToOfflineVault(
 
       let blob: Blob | null = null;
 
-      // 1. Try the shared PC/Mobile server vault first (`GET /vault/:id` caches on PC disk and streams bytes to this device)
-      try {
-        const vaultRes = await fetch(`${getVaultBaseUrl()}/vault/${encodeURIComponent(track.id)}`, {
-          signal: AbortSignal.timeout(30_000),
-        });
-        if (vaultRes.ok) {
-          const candidate = await vaultRes.blob();
-          if (candidate && candidate.size >= 4096) {
-            blob = candidate;
+      // 1. Try the shared PC/Mobile server vault if potentially reachable (`GET /vault/:id`)
+      if (!isUnpairedPhone() && Date.now() >= vaultServerUnreachableUntil) {
+        const ctl = new AbortController();
+        const headerTimer = setTimeout(() => ctl.abort(), 3500);
+        try {
+          const vaultRes = await fetch(`${getVaultBaseUrl()}/vault/${encodeURIComponent(track.id)}`, {
+            signal: ctl.signal,
+          });
+          clearTimeout(headerTimer);
+          if (vaultRes.ok) {
+            const candidate = await vaultRes.blob();
+            if (candidate && candidate.size >= 4096) {
+              blob = candidate;
+            }
           }
+        } catch {
+          clearTimeout(headerTimer);
+          // Avoid stalling 3.5s per song when outside home / PC is off
+          vaultServerUnreachableUntil = Date.now() + 20_000;
         }
-      } catch {
-        /* fallback to direct stream resolution (e.g. mobile outside home) */
       }
 
-      // 2. Fallback: resolve stream via bridge or mobile standalone Piped resolver
+      // 2. Fallback: resolve stream via bridge or mobile standalone Piped resolver + CORS-resilient fetch
       if (!blob) {
-        const streamUrl = resolveNetworkStreamUrl
+        const primaryUrl = resolveNetworkStreamUrl
           ? await resolveNetworkStreamUrl(track.id)
-          : (await window.bytune?.getStreamUrl(track.id, false, "high", track.title, track.artist).catch(() => null)) ||
-            (await fallbackMobileStreamUrl(track.id));
-        if (!streamUrl || streamUrl.startsWith("blob:")) return streamUrl?.startsWith("blob:") ?? false;
-
-        const res = await fetch(streamUrl);
-        if (!res.ok) return false;
-        const candidate = await res.blob();
-        if (candidate && candidate.size >= 4096) {
-          blob = candidate;
+          : await window.bytune?.getStreamUrl(track.id, false, "high", track.title, track.artist).catch(() => null);
+        if (primaryUrl?.startsWith("blob:")) return true;
+        if (primaryUrl) {
+          blob = await fetchUrlAsBlob(primaryUrl);
+        }
+        if (!blob) {
+          const altUrl = await fallbackMobileStreamUrl(track.id).catch(() => null);
+          if (altUrl && altUrl !== primaryUrl) {
+            blob = await fetchUrlAsBlob(altUrl);
+          }
         }
       }
 
@@ -276,9 +338,15 @@ export async function removeTrackFromOfflineVault(trackId: string): Promise<void
  * Ensure all tracks in a list (such as Liked Songs) are saved inside the app's offline vault.
  */
 export async function syncLikedSongsToOfflineVault(tracks: Track[]): Promise<void> {
-  for (const track of tracks) {
-    if (!track?.id || track.id.startsWith("local:") || savedIds.has(track.id)) continue;
-    await saveTrackToOfflineVault(track);
-  }
+  const queue = tracks.filter((t) => Boolean(t?.id) && !t.id.startsWith("local:") && !savedIds.has(t.id));
+  if (queue.length === 0) return;
+  let cursor = 0;
+  const worker = async (): Promise<void> => {
+    while (cursor < queue.length) {
+      const track = queue[cursor++];
+      if (track) await saveTrackToOfflineVault(track);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(3, queue.length) }, () => worker()));
 }
 

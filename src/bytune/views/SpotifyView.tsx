@@ -5,13 +5,14 @@
  * Not connected, or needing to sign in again, the page says so and offers to.
  */
 import { useEffect, useState } from "react";
-import { ExternalLink, ListMusic, MoreHorizontal, RefreshCw, Settings, Unplug } from "lucide-react";
+import { ExternalLink, Heart, ListMusic, MoreHorizontal, RefreshCw, Settings, Unplug } from "lucide-react";
 import { CollectionHero, HERO_PLAY } from "../components/CollectionHero";
 import { CoverStack } from "../components/CoverStack";
 import { HERO_PILL, HERO_ROUND } from "../components/PlaylistHero";
 import { SPOTIFY_GREEN, SpotifyIcon } from "../components/SpotifyIcon";
 import { plural } from "../lib/format";
 import { askToDisconnectSpotify, connectSpotify, spotifyUrl, useSpotify } from "../lib/spotify";
+import { syncSpotifyLikedToLibrary, useSpotifyLikedSync } from "../lib/spotifyLikedSync";
 import { useUI } from "../stores/ui";
 import type { SpotifyPlaylistInfo } from "../types";
 
@@ -58,6 +59,7 @@ export function SpotifyView() {
   const status = useSpotify((s) => s.status);
   const playlists = useSpotify((s) => s.playlists);
   const connecting = useSpotify((s) => s.connecting);
+  const likedSync = useSpotifyLikedSync();
   const [refreshing, setRefreshing] = useState(false);
   const refresh = (): void => {
     setRefreshing(true);
@@ -131,6 +133,22 @@ export function SpotifyView() {
           <RefreshCw className={`w-[18px] h-[18px] ${refreshing ? "animate-spin" : ""}`} />
           Refresh
         </button>
+        {liked && (
+          <button
+            type="button"
+            className={HERO_PILL}
+            onClick={() => void syncSpotifyLikedToLibrary()}
+            disabled={likedSync.syncing}
+            title="Import your Spotify Liked Songs into Dynamusic Liked Songs & cache offline"
+          >
+            <Heart className={`w-[18px] h-[18px] ${likedSync.syncing ? "animate-pulse" : ""}`} />
+            {likedSync.syncing
+              ? likedSync.total > 0
+                ? `Importing ${likedSync.checked}/${likedSync.total}…`
+                : "Reading Liked Songs…"
+              : "Import Liked Songs"}
+          </button>
+        )}
         <button
           type="button"
           className={HERO_ROUND}

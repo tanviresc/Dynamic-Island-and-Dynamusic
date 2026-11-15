@@ -19,6 +19,7 @@ import { CaptionButtons } from "../components/TopBar";
 import { CoverDrum } from "../components/CoverDrum";
 import { useSession } from "../lib/session";
 import { isMac } from "../lib/platform";
+import { useMobileMode } from "../stores/mobileMode";
 import {
   availabilityState,
   DISPLAY_NAME_MAX,
@@ -841,6 +842,7 @@ function PickUsernameContent() {
 /* ------------------------------------------------------------------ */
 
 export function Onboarding({ initial }: { initial: Screen }) {
+  const isMobileDevice = useMobileMode((s) => s.isMobileDevice);
   const [screen, setScreen] = useState<Screen>(initial);
   const [dir, setDir] = useState<"fwd" | "back">("fwd");
   /** Steps taken, back steps counting down: the drum turns a notch the way each one went. */
@@ -861,7 +863,7 @@ export function Onboarding({ initial }: { initial: Screen }) {
       {/* Frameless-window chrome: a bare drag strip with the caption buttons. macOS draws its
           traffic lights top-left over this strip, so there's nothing to render there. */}
       <div className="app-drag h-12 shrink-0 flex items-start justify-end relative z-10">
-        {!isMac && <CaptionButtons />}
+        {!isMac && !isMobileDevice && <CaptionButtons />}
       </div>
 
       <div className="ob-scroll">

@@ -28,8 +28,33 @@ import {
   fallbackMobileStreamUrl,
   fallbackMobileSuggestions,
 } from "./mobileStandaloneFallback";
+import {
+  mobileAuthCancelGoogle,
+  mobileAuthClearGuestProfile,
+  mobileAuthContinueGuest,
+  mobileAuthGetSession,
+  mobileAuthSetDisplayName,
+  mobileAuthSetUsername,
+  mobileAuthSignIn,
+  mobileAuthSignInGoogle,
+  mobileAuthSignOut,
+  mobileAuthSignUp,
+  mobileAuthSkipUsername,
+  mobileAuthUsernameAvailable,
+  mobileNoteLocalWrite,
+  mobileSyncBackupNow,
+  mobileSyncNow,
+  mobileSyncRestoreNow,
+  mobileSyncStatus,
+  readMobileStore,
+  resetMobileDataStores,
+  setMobileAuthEventSink,
+  writeMobileStore,
+} from "./mobileCloudAuth";
 
 let lastLocalLibraryWriteAt = 0;
+
+class RpcServerError extends Error {}
 
 function backendUrl(): string {
   return getBackendBaseUrl();
@@ -127,7 +152,7 @@ async function rpcInvoke<T = any>(channel: string, ...args: unknown[]): Promise<
       }
       const data = (await res.json()) as { ok: boolean; result?: unknown; error?: string };
       if (!data.ok) {
-        throw new Error(data.error || `RPC error on ${channel}`);
+        throw new RpcServerError(data.error || `RPC error on ${channel}`);
       }
       return decodeBinaryOutput(data.result) as T;
     } catch (err) {
@@ -333,7 +358,22 @@ export function initBytuneBridge(): void {
   if (typeof window === "undefined") return;
   if (window.bytune) return;
 
+  setMobileAuthEventSink(emitBackendEvent);
   connectEventStream();
+
+  const withMobileCloudFallback = async <T>(rpcCall: () => Promise<T>, mobileCall: () => Promise<T> | T): Promise<T> => {
+    if (isUnpairedNativeMobile()) {
+      return await mobileCall();
+    }
+    try {
+      return await rpcCall();
+    } catch (err) {
+      if (!isTauriRuntime() && !(err instanceof RpcServerError)) {
+        return await mobileCall();
+      }
+      throw err;
+    }
+  };
 
   let documentScopePromise: Promise<string> | null = null;
   const documentScope = (): Promise<string> => {
@@ -519,8 +559,11 @@ export function initBytuneBridge(): void {
     onPipNeedState: (cb: () => void): (() => void) => onBackendEvent("pip:need-state", cb),
     onPipCursorInside: (cb: (inside: boolean) => void): (() => void) => onBackendEvent("pip:cursor-inside", cb),
 
-    // Persistence (Node sidecar JSON files in userData, with localStorage mirror fallback)
+    // Persistence (Node sidecar JSON files on desktop; isolated localStorage + Supabase sync on standalone mobile)
     readData: async (name: string) => {
+      if (isUnpairedNativeMobile()) {
+        return readMobileStore(name);
+      }
       try {
         const scope = await documentScope();
         let val = (await rpcInvoke("data:read", name, scope)) as any;
@@ -553,32 +596,23 @@ export function initBytuneBridge(): void {
           }
         }
         if (val !== null && val !== undefined) {
-          try {
-            localStorage.setItem(`dynamusic:store:${name}`, JSON.stringify(val));
-          } catch {
-            /* ignore quota */
-          }
+          writeMobileStore(name, val, false);
           return val;
         }
       } catch {
         /* fallback to localStorage if sidecar is unreachable */
       }
-      try {
-        const raw = localStorage.getItem(`dynamusic:store:${name}`);
-        return raw ? JSON.parse(raw) : null;
-      } catch {
-        return null;
-      }
+      return readMobileStore(name);
     },
     writeData: async (name: string, data: unknown) => {
       if (name === "library") {
         lastLocalLibraryWriteAt = Date.now();
       }
-      try {
-        localStorage.setItem(`dynamusic:store:${name}`, JSON.stringify(data));
-      } catch {
-        /* ignore quota */
+      if (isUnpairedNativeMobile()) {
+        writeMobileStore(name, data, true);
+        return;
       }
+      writeMobileStore(name, data, false);
       try {
         const scope = await documentScope();
         await rpcInvoke("data:write", name, data, scope);
@@ -590,8 +624,9 @@ export function initBytuneBridge(): void {
           }
         }
       } catch {
-        /* saved in localStorage mirror; mark dirty if library changed while offline */
-        if (name === "library") {
+        if (!isTauriRuntime()) {
+          mobileNoteLocalWrite(name);
+        } else if (name === "library") {
           try {
             localStorage.setItem("dynamusic:offline_dirty_library", JSON.stringify(data));
           } catch {
@@ -601,13 +636,7 @@ export function initBytuneBridge(): void {
       }
     },
     resetData: async () => {
-      try {
-        for (const k of Object.keys(localStorage)) {
-          if (k.startsWith("dynamusic:store:")) localStorage.removeItem(k);
-        }
-      } catch {
-        /* ignore */
-      }
+      resetMobileDataStores();
       documentScopePromise = null;
       await rpcInvoke("app:resetData").catch(() => undefined);
     },
@@ -658,75 +687,109 @@ export function initBytuneBridge(): void {
     backupImport: () => rpcInvoke("backup:import"),
 
     // Accounts (Supabase) + cloud sync
-    authGetSession: async () => {
-      try {
-        const sess = await rpcInvoke("auth:getSession");
-        if (sess && typeof sess === "object") {
-          try {
-            localStorage.setItem("dynamusic:store:__auth_session__", JSON.stringify(sess));
-          } catch {
-            /* ignore */
+    authGetSession: () =>
+      withMobileCloudFallback(
+        async () => {
+          const sess = await rpcInvoke("auth:getSession");
+          if (sess && typeof sess === "object") {
+            try {
+              localStorage.setItem("dynamusic:store:__auth_session__", JSON.stringify(sess));
+            } catch {
+              /* ignore */
+            }
           }
-        }
-        return sess;
-      } catch {
-        try {
-          const cached = localStorage.getItem("dynamusic:store:__auth_session__");
-          if (cached) return JSON.parse(cached);
-        } catch {
-          /* ignore */
-        }
-        return {
-          mode: "guest" as const,
-          userId: null,
-          username: null,
-          displayName: "Listener",
-          freshInstall: false,
-          needsUsername: false,
-        };
-      }
-    },
-    authSignUp: async (username: string, password: string, displayName: string) => {
+          return sess;
+        },
+        () => mobileAuthGetSession()
+      ),
+    authSignUp: (username: string, password: string, displayName: string) => {
       documentScopePromise = null;
-      return rpcInvoke("auth:signUp", username, password, displayName);
+      return withMobileCloudFallback(
+        () => rpcInvoke("auth:signUp", username, password, displayName),
+        () => mobileAuthSignUp(username, password, displayName)
+      );
     },
-    authSignIn: async (username: string, password: string) => {
+    authSignIn: (username: string, password: string) => {
       documentScopePromise = null;
-      return rpcInvoke("auth:signIn", username, password);
+      return withMobileCloudFallback(
+        () => rpcInvoke("auth:signIn", username, password),
+        () => mobileAuthSignIn(username, password)
+      );
     },
-    authSignInGoogle: async () => {
+    authSignInGoogle: () => {
       documentScopePromise = null;
-      return rpcInvoke("auth:signInGoogle");
+      return withMobileCloudFallback(
+        () => rpcInvoke("auth:signInGoogle"),
+        () => mobileAuthSignInGoogle()
+      );
     },
-    authCancelGoogle: () => rpcInvoke("auth:cancelGoogle").catch(() => false),
-    authContinueGuest: async (displayName?: string) => {
+    authCancelGoogle: () =>
+      withMobileCloudFallback(
+        () => rpcInvoke("auth:cancelGoogle").catch(() => false),
+        () => mobileAuthCancelGoogle()
+      ),
+    authContinueGuest: (displayName?: string) => {
       documentScopePromise = null;
-      return rpcInvoke("auth:continueGuest", displayName);
+      return withMobileCloudFallback(
+        () => rpcInvoke("auth:continueGuest", displayName),
+        () => mobileAuthContinueGuest(displayName)
+      );
     },
-    authClearGuestProfile: () => rpcInvoke("auth:clearGuestProfile"),
-    authUsernameAvailable: (username: string) => rpcInvoke("auth:usernameAvailable", username),
+    authClearGuestProfile: () =>
+      withMobileCloudFallback(
+        () => rpcInvoke("auth:clearGuestProfile"),
+        () => mobileAuthClearGuestProfile()
+      ),
+    authUsernameAvailable: (username: string) =>
+      withMobileCloudFallback(
+        () => rpcInvoke("auth:usernameAvailable", username),
+        () => mobileAuthUsernameAvailable(username)
+      ),
     authSetUsername: (username: string, displayName?: string) =>
-      rpcInvoke("auth:setUsername", username, displayName),
-    authSkipUsername: (displayName?: string) => rpcInvoke("auth:skipUsername", displayName),
-    authSetDisplayName: (name: string) => rpcInvoke("auth:setDisplayName", name),
-    authSignOut: async () => {
+      withMobileCloudFallback(
+        () => rpcInvoke("auth:setUsername", username, displayName),
+        () => mobileAuthSetUsername(username, displayName)
+      ),
+    authSkipUsername: (displayName?: string) =>
+      withMobileCloudFallback(
+        () => rpcInvoke("auth:skipUsername", displayName),
+        () => mobileAuthSkipUsername(displayName)
+      ),
+    authSetDisplayName: (name: string) =>
+      withMobileCloudFallback(
+        () => rpcInvoke("auth:setDisplayName", name),
+        () => mobileAuthSetDisplayName(name)
+      ),
+    authSignOut: () => {
       documentScopePromise = null;
-      return rpcInvoke("auth:signOut");
+      return withMobileCloudFallback(
+        () => rpcInvoke("auth:signOut"),
+        () => mobileAuthSignOut()
+      );
     },
     onAuthChanged: (
       cb: (info: { mode: string | null; userId: string | null; username: string | null; freshInstall?: boolean }) => void
     ): (() => void) => onBackendEvent("auth:changed", cb),
     syncStatus: () =>
-      rpcInvoke("sync:status").catch(() => ({
-        configured: true,
-        signedIn: false,
-        syncing: false,
-        lastSyncedAt: null,
-        error: null,
-      })),
-    syncNow: () => rpcInvoke("sync:now"),
-    syncBackupNow: () => rpcInvoke("sync:backupNow"),
-    syncRestoreNow: () => rpcInvoke("sync:restoreNow"),
+      withMobileCloudFallback(
+        () => rpcInvoke("sync:status"),
+        () => mobileSyncStatus()
+      ).catch(() => mobileSyncStatus()),
+    syncNow: () =>
+      withMobileCloudFallback(
+        () => rpcInvoke("sync:now"),
+        () => mobileSyncNow()
+      ),
+    syncBackupNow: () =>
+      withMobileCloudFallback(
+        () => rpcInvoke("sync:backupNow"),
+        () => mobileSyncBackupNow()
+      ),
+    syncRestoreNow: () =>
+      withMobileCloudFallback(
+        () => rpcInvoke("sync:restoreNow"),
+        () => mobileSyncRestoreNow()
+      ),
     onSyncRestored: (cb: (info: { stores: string[]; seq: number }) => void): (() => void) =>
       onBackendEvent("sync:restored", cb),
 

@@ -89,6 +89,7 @@ interface LibraryState {
 
   isLiked(id: string): boolean;
   toggleLike(track: Track): void;
+  importLikedTracks(tracks: Track[]): number;
   togglePinSingle(key: PinnedSingleKey): void;
   setLibraryOrder(keys: string[]): void;
   createPlaylist(name: string): Playlist;
@@ -177,6 +178,35 @@ export const useLibrary = create<LibraryState>()(
           flushCoalescedStorage();
           void saveTrackToOfflineVault(track);
         }
+      },
+
+      importLikedTracks(tracks) {
+        if (!Array.isArray(tracks) || tracks.length === 0) return 0;
+        const current = get().liked;
+        const seen = new Set(current.map((t) => t.id));
+        const added: Track[] = [];
+        for (const t of tracks) {
+          if (!t?.id || seen.has(t.id)) continue;
+          seen.add(t.id);
+          added.push(t);
+        }
+        if (added.length === 0) {
+          void syncLikedSongsToOfflineVault(current);
+          return 0;
+        }
+        for (const t of added) {
+          hydrationLikes?.set(t.id, { track: t, liked: true });
+        }
+        const nextLiked = [...added, ...current];
+        withChanges(
+          set,
+          get,
+          { liked: nextLiked },
+          added.map((t): DeletionChange => ({ kind: "add", group: "liked", id: t.id }))
+        );
+        flushCoalescedStorage();
+        void syncLikedSongsToOfflineVault(nextLiked);
+        return added.length;
       },
 
       createPlaylist(name) {
