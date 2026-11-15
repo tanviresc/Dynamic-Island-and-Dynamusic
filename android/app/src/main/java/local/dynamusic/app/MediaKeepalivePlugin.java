@@ -23,6 +23,8 @@ public class MediaKeepalivePlugin extends Plugin {
     private static final String DESKTOP_UA =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
     private final ExecutorService executor = Executors.newFixedThreadPool(3);
+    private final ExecutorService resolverExecutor = Executors.newCachedThreadPool();
+    private final MobileStreamProxy streamProxy = new MobileStreamProxy();
 
     @PluginMethod
     public void sync(PluginCall call) {
@@ -135,6 +137,41 @@ public class MediaKeepalivePlugin extends Plugin {
                 call.reject(e.getMessage() != null ? e.getMessage() : "Download failed", e);
             } finally {
                 if (conn != null) conn.disconnect();
+            }
+        });
+    }
+
+    /**
+     * Resolve a track stream natively on-device (YouTube InnerTube, JioSaavn CDN, Piped)
+     * and return a loopback proxy URL with CORS, matching User-Agent, and HTTP Range support.
+     */
+    @PluginMethod
+    public void resolveStream(PluginCall call) {
+        String videoId = call.getString("videoId", "");
+        boolean forceRotate = Boolean.TRUE.equals(call.getBoolean("forceRotate", false));
+        String quality = call.getString("quality", "");
+        String title = call.getString("title", "");
+        String artist = call.getString("artist", "");
+
+        if (videoId == null || videoId.trim().isEmpty()) {
+            call.reject("Missing videoId");
+            return;
+        }
+        resolverExecutor.execute(() -> {
+            try {
+                MobileStreamProxy.ResolvedStream resolved =
+                        streamProxy.resolve(videoId.trim(), forceRotate, quality, title, artist);
+                JSObject out = new JSObject();
+                out.put("proxyUrl", resolved.proxyUrl);
+                out.put("upstreamUrl", resolved.upstreamUrl);
+                out.put("mime", resolved.mimeType);
+                out.put("source", resolved.source);
+                if (resolved.lufs != null) {
+                    out.put("lufs", resolved.lufs);
+                }
+                call.resolve(out);
+            } catch (Exception e) {
+                call.reject(e.getMessage() != null ? e.getMessage() : "Stream resolution failed", e);
             }
         });
     }

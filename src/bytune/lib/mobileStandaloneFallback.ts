@@ -9,10 +9,8 @@ import type { SearchPageResult, SearchResults, SearchSuggestion, Track } from ".
 
 const PIPED_INSTANCES = [
   "https://api.piped.private.coffee",
-  "https://pipedapi.kavin.rocks",
   "https://pipedapi.adminforge.de",
-  "https://pipedapi.leptons.xyz",
-  "https://pipedapi.nosebs.ru",
+  "https://pipedapi.kavin.rocks",
 ];
 
 const INVIDIOUS_INSTANCES = [
@@ -28,8 +26,75 @@ function extractVideoId(urlOrId: string | undefined): string {
   return m ? m[1] : "";
 }
 
-export async function fallbackMobileStreamUrl(videoId: string): Promise<string | null> {
+export interface MobileStreamOptions {
+  forceRotate?: boolean;
+  quality?: string;
+  title?: string;
+  artist?: string;
+}
+
+interface NativeMediaKeepaliveBridge {
+  resolveStream?: (opts: {
+    videoId: string;
+    forceRotate?: boolean;
+    quality?: string;
+    title?: string;
+    artist?: string;
+  }) => Promise<{ proxyUrl?: string; upstreamUrl?: string; mime?: string; lufs?: number }>;
+}
+
+/** Rank audio streams, preferring MP4/AAC within requested bitrate cap before WebM/Opus. */
+export function pickBestPipedAudioUrl(
+  audioStreams: { url?: string; bitrate?: number; mimeType?: string }[],
+  quality?: string
+): string | null {
+  const maxBps = quality === "low" ? 64_000 : quality === "medium" ? 160_000 : Number.POSITIVE_INFINITY;
+  const valid = audioStreams.filter((s) => typeof s.url === "string" && s.url.startsWith("https://"));
+  if (!valid.length) return null;
+
+  const sortByScore = (list: typeof valid) =>
+    [...list].sort((a, b) => {
+      const aMp4 = (a.mimeType ?? "").toLowerCase().includes("audio/mp4") ? 1 : 0;
+      const bMp4 = (b.mimeType ?? "").toLowerCase().includes("audio/mp4") ? 1 : 0;
+      if (aMp4 !== bMp4) return bMp4 - aMp4;
+      const aBit = a.bitrate ?? 0;
+      const bBit = b.bitrate ?? 0;
+      const aWithin = aBit <= maxBps ? 1 : 0;
+      const bWithin = bBit <= maxBps ? 1 : 0;
+      if (aWithin !== bWithin) return bWithin - aWithin;
+      return aWithin ? bBit - aBit : aBit - bBit;
+    });
+
+  return sortByScore(valid)[0]?.url ?? null;
+}
+
+export async function fallbackMobileStreamUrl(
+  videoId: string,
+  opts?: MobileStreamOptions
+): Promise<string | null> {
   if (!videoId || videoId.startsWith("local:")) return null;
+
+  try {
+    const cap = (
+      globalThis as { Capacitor?: { Plugins?: { MediaKeepalive?: NativeMediaKeepaliveBridge } } }
+    )?.Capacitor;
+    const nativeResolve = cap?.Plugins?.MediaKeepalive?.resolveStream;
+    if (typeof nativeResolve === "function") {
+      const res = await nativeResolve({
+        videoId,
+        forceRotate: Boolean(opts?.forceRotate),
+        quality: opts?.quality ?? "",
+        title: opts?.title ?? "",
+        artist: opts?.artist ?? "",
+      });
+      if (typeof res?.proxyUrl === "string" && res.proxyUrl.length > 0) {
+        return res.proxyUrl;
+      }
+    }
+  } catch {
+    // Fall through to Piped mirrors if native resolver throws
+  }
+
   const attempts = PIPED_INSTANCES.map(async (host) => {
     const res = await fetch(`${host}/streams/${encodeURIComponent(videoId)}`, {
       signal: AbortSignal.timeout(7000),
@@ -38,11 +103,9 @@ export async function fallbackMobileStreamUrl(videoId: string): Promise<string |
     const data = (await res.json()) as {
       audioStreams?: { url?: string; bitrate?: number; mimeType?: string }[];
     };
-    const streams = (data.audioStreams ?? [])
-      .filter((s) => typeof s.url === "string" && s.url.startsWith("https://"))
-      .sort((a, b) => (b.bitrate ?? 0) - (a.bitrate ?? 0));
-    if (!streams.length || !streams[0].url) throw new Error("no audioStreams");
-    return streams[0].url;
+    const picked = pickBestPipedAudioUrl(data.audioStreams ?? [], opts?.quality);
+    if (!picked) throw new Error("no audioStreams");
+    return picked;
   });
   try {
     return await Promise.any(attempts);

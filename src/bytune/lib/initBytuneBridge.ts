@@ -438,7 +438,12 @@ export function initBytuneBridge(): void {
         }
         return rawUrl;
       } catch {
-        const fallback = await fallbackMobileStreamUrl(id);
+        const fallback = await fallbackMobileStreamUrl(id, {
+          forceRotate,
+          quality,
+          title,
+          artist,
+        });
         if (fallback) return fallback;
         throw new Error(`Unable to resolve stream for ${id}`);
       }

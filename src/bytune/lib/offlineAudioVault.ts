@@ -267,7 +267,10 @@ export async function saveTrackToOfflineVault(
           blob = await fetchUrlAsBlob(primaryUrl);
         }
         if (!blob) {
-          const altUrl = await fallbackMobileStreamUrl(track.id).catch(() => null);
+          const altUrl = await fallbackMobileStreamUrl(track.id, {
+            title: track.title,
+            artist: track.artist,
+          }).catch(() => null);
           if (altUrl && altUrl !== primaryUrl) {
             blob = await fetchUrlAsBlob(altUrl);
           }
