@@ -753,13 +753,16 @@ function AboutArtistCard({
 
 /* ------------------------------------------------------------------ root */
 
-export function RightRail() {
+export function RightRail({ className }: { className?: string }) {
   const mode = useUI((s) => s.rightPanel);
   const closeQueue = () => useUI.setState({ rightPanel: "details" });
 
   return (
     <aside
-      className="w-[328px] shrink-0 flex flex-col glass-pill rounded-2xl overflow-hidden"
+      className={
+        className ??
+        "hidden lg:flex lg:w-[264px] xl:w-[328px] shrink-0 flex-col glass-pill rounded-2xl overflow-hidden"
+      }
       aria-label="Now playing panel"
     >
       {mode === "queue" ? <QueuePanel onClose={closeQueue} /> : mode === "room" ? <RoomPanel onClose={closeQueue} /> : <DetailsBody />}

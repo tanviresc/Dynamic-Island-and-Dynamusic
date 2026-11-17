@@ -254,4 +254,44 @@ describe("DetectorEngine", () => {
     expect(needsInputEvents.length).toBe(1);
     expect(needsInputEvents[0].promptText).toBe("Action approval needed");
   });
+
+  it("emits done while tab is hidden even if background DOM still shows stale Stop button", () => {
+    const doneEvents: any[] = [];
+    let tabHidden = false;
+    const engine = new DetectorEngine({
+      config: siteConfig,
+      callbacks: {
+        onDone: (d) => doneEvents.push(d),
+        onNeedsInput: () => {},
+      },
+      querySelector: (sel) => mockDom[sel] || null,
+      now: () => mockTime,
+      isDocumentHidden: () => tabHidden,
+    });
+
+    // Generation starts while user is on the tab
+    mockDom['button[aria-label="Stop"]'] = createMockElement();
+    engine.setNetworkGenerating(true);
+    expect(engine.getState()).toBe("generating");
+
+    // User switches away to another tab/app while AI works
+    tabHidden = true;
+    mockTime += 2000;
+
+    // Stream finishes in background, even though hidden DOM hasn't repainted Stop button yet
+    engine.setNetworkGenerating(false);
+    expect(engine.getState()).toBe("settling");
+
+    vi.advanceTimersByTime(250);
+    expect(engine.getState()).toBe("idle");
+    expect(doneEvents.length).toBe(1);
+
+    // User later switches back to the tab -> Stop button disappears -> must NOT emit duplicate done
+    tabHidden = false;
+    engine.evaluate();
+    mockDom['button[aria-label="Stop"]'] = null;
+    engine.evaluate();
+    vi.advanceTimersByTime(2000);
+    expect(doneEvents.length).toBe(1);
+  });
 });

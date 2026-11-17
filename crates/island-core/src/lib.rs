@@ -78,6 +78,9 @@ pub enum Input {
         fixed_monitor_id: Option<String>,
         idle_threshold_min: u32,
     },
+    DisplaySettingsChanged {
+        display_ms: Millis,
+    },
     PauseToggled(bool),
     DndToggled(bool),
     ExternalRead(String),
@@ -169,7 +172,7 @@ impl Default for IslandCore {
             group_window_ms: DEFAULT_GROUP_WINDOW_MS,
             queue_cap: DEFAULT_QUEUE_CAP,
             email_dot_color: COLOR_GREEN.to_string(),
-            smart_skip_enabled: false,
+            smart_skip_enabled: true,
         }
     }
 }
@@ -351,7 +354,7 @@ impl IslandCore {
                 let proc = fg.process_name.to_lowercase();
                 match source {
                     Source::Claude => proc.contains("claude"),
-                    Source::Chatgpt => proc.contains("chatgpt"),
+                    Source::Chatgpt => proc.contains("chatgpt") || proc.contains("openai"),
                     Source::Gemini => proc.contains("gemini"),
                     Source::Desktop => {
                         if let Target::Process { process_names, .. } = target {
@@ -399,7 +402,13 @@ impl IslandCore {
             }
             Surface::Web => {
                 let proc = fg.process_name.to_lowercase();
-                let is_browser = proc.contains("chrome") || proc.contains("brave");
+                let is_browser = proc.contains("chrome")
+                    || proc.contains("brave")
+                    || proc.contains("msedge")
+                    || proc.contains("edge")
+                    || proc.contains("vivaldi")
+                    || proc.contains("opera")
+                    || proc.contains("arc");
                 if !is_browser {
                     return false;
                 }
@@ -714,6 +723,14 @@ impl IslandCore {
                 self.idle_threshold_min = idle_threshold_min;
             }
 
+            Input::DisplaySettingsChanged { display_ms } => {
+                let clamped = display_ms.clamp(1000, 15000);
+                self.display_ms = clamped;
+                if let Some(ref mut disp) = self.current_display {
+                    disp.deadline = disp.started_at + clamped;
+                }
+            }
+
             Input::HoverEnter => {
                 if let Some(ref mut disp) = self.current_display {
                     if !disp.is_hovered {
@@ -841,7 +858,9 @@ impl IslandCore {
     }
 
     fn run_auto_read(&mut self, effects: &mut Vec<Effect>) {
-        // Auto-read checks display queue and unread queue (idle ignored per §1.8)
+        // Auto-read checks unread queue only (idle ignored per §1.8).
+        // Actively displaying popups (current_display) must hold for their full configured
+        // display_ms duration and never be prematurely dismissed or purged on focus switches.
         let mut i = 0;
         while i < self.unread_queue.len() {
             let item = &self.unread_queue[i];
@@ -850,19 +869,6 @@ impl IslandCore {
                 effects.push(Effect::PersistRemove(removed.id, "auto_read"));
             } else {
                 i += 1;
-            }
-        }
-
-        // Also check currently displaying item
-        if let Some(ref disp) = self.current_display {
-            if self.check_is_looking_raw(
-                disp.item.source,
-                disp.item.surface,
-                &disp.item.target,
-                true,
-            ) {
-                let disp = self.current_display.take().unwrap();
-                effects.push(Effect::PersistRemove(disp.item.id, "auto_read"));
             }
         }
     }
@@ -1253,6 +1259,171 @@ mod tests {
         assert!(matches!(
             core.current_view_model(76000),
             ViewModel::Dot { .. }
+        ));
+    }
+
+    #[test]
+    fn test_popup_persists_across_focus_changes_and_desktop_switch() {
+        for duration_ms in [2000_u64, 4000_u64, 8000_u64] {
+            let mut core = IslandCore::new();
+            core.handle_input(
+                Input::DisplaySettingsChanged {
+                    display_ms: duration_ms,
+                },
+                0,
+            );
+
+            let mut ev = make_test_event(Uuid::new_v4(), Kind::Done);
+            ev.source = Source::Claude;
+            ev.surface = Surface::Desktop;
+            ev.target = Target::Process {
+                process_names: vec!["claude.exe".to_string()],
+                window_title_contains: None,
+            };
+
+            // Show popup at t=1000
+            core.handle_input(Input::EventAccepted(Box::new(ev.clone())), 1000);
+            assert!(matches!(
+                core.current_view_model(1000),
+                ViewModel::Pill { .. }
+            ));
+
+            // User switches focus to Claude desktop app at t=1500
+            let desktop_focus_state = PlatformState {
+                monitors: vec![],
+                foreground_window: Some(WindowSummary {
+                    hwnd: 100,
+                    title: "Claude".to_string(),
+                    process_name: "claude.exe".to_string(),
+                    rect: Rect::new(0, 0, 1200, 800),
+                    is_valid: true,
+                }),
+                cursor_pos: None,
+                active_monitor_id: None,
+                is_idle: false,
+                idle_ms: 0,
+                is_game_mode: false,
+                quns_state: 5,
+            };
+            let fx_focus = core.handle_input(
+                Input::PlatformContext(Box::new(desktop_focus_state.clone())),
+                1500,
+            );
+            assert!(!fx_focus
+                .iter()
+                .any(|f| matches!(f, Effect::PersistRemove(_, _))));
+            assert!(matches!(
+                core.current_view_model(1500),
+                ViewModel::Pill { .. }
+            ));
+
+            // Also test web focus report mid-display
+            core.handle_input(
+                Input::WebFocus(WebFocusReport {
+                    active_tab_id: 1,
+                    active_window_id: 1,
+                    active_url: None,
+                    is_browser_focused: true,
+                }),
+                1800,
+            );
+            assert!(matches!(
+                core.current_view_model(1800),
+                ViewModel::Pill { .. }
+            ));
+
+            // Still showing right before configured duration expires
+            let just_before = 1000 + duration_ms - 50;
+            core.handle_input(Input::Tick, just_before);
+            assert!(matches!(
+                core.current_view_model(just_before),
+                ViewModel::Pill { .. }
+            ));
+
+            // Dismisses to dot (unread) only after configured duration elapses
+            let expired_at = 1000 + duration_ms;
+            core.handle_input(Input::Tick, expired_at);
+            assert!(matches!(
+                core.current_view_model(expired_at),
+                ViewModel::Dot { .. }
+            ));
+            assert_eq!(core.unread_count(), 1);
+        }
+    }
+
+    #[test]
+    fn test_smart_skip_default_enabled_and_web_outside_vs_inside() {
+        let mut core = IslandCore::new();
+        assert!(core.smart_skip_enabled);
+
+        // User is inside Chrome looking at tab 42
+        let chrome_fg = PlatformState {
+            monitors: vec![],
+            foreground_window: Some(WindowSummary {
+                hwnd: 100,
+                title: "Claude - Google Chrome".to_string(),
+                process_name: "chrome.exe".to_string(),
+                rect: Rect::new(0, 0, 1200, 800),
+                is_valid: true,
+            }),
+            cursor_pos: None,
+            active_monitor_id: None,
+            is_idle: false,
+            idle_ms: 0,
+            is_game_mode: false,
+            quns_state: 5,
+        };
+        core.handle_input(Input::PlatformContext(Box::new(chrome_fg)), 1000);
+        core.handle_input(
+            Input::WebFocus(WebFocusReport {
+                active_tab_id: 42,
+                active_window_id: 1,
+                active_url: None,
+                is_browser_focused: true,
+            }),
+            1000,
+        );
+
+        let mut ev_inside = make_test_event(Uuid::new_v4(), Kind::Done);
+        ev_inside.target = Target::BrowserTab {
+            tab_id: 42,
+            window_id: 1,
+            url: None,
+        };
+        core.handle_input(Input::EventAccepted(Box::new(ev_inside)), 1100);
+        assert!(!core.is_displaying());
+        assert_eq!(core.unread_count(), 0);
+
+        // User switches to another desktop app (outside Chrome) -> tab 42 event notifies!
+        let vscode_fg = PlatformState {
+            monitors: vec![],
+            foreground_window: Some(WindowSummary {
+                hwnd: 200,
+                title: "VS Code".to_string(),
+                process_name: "Code.exe".to_string(),
+                rect: Rect::new(0, 0, 1200, 800),
+                is_valid: true,
+            }),
+            cursor_pos: None,
+            active_monitor_id: None,
+            is_idle: false,
+            idle_ms: 0,
+            is_game_mode: false,
+            quns_state: 5,
+        };
+        core.handle_input(Input::PlatformContext(Box::new(vscode_fg)), 2000);
+
+        let mut ev_outside = make_test_event(Uuid::new_v4(), Kind::Done);
+        ev_outside.target = Target::BrowserTab {
+            tab_id: 42,
+            window_id: 1,
+            url: None,
+        };
+        core.handle_input(Input::EventAccepted(Box::new(ev_outside)), 2100);
+        assert!(core.is_displaying());
+        assert!(matches!(
+            core.current_view_model(2100),
+            ViewModel::Pill { .. }
         ));
     }
 }

@@ -107,7 +107,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 function handleContentEvent(
   payload: {
     source: Source;
-    kind: "done" | "needs_input";
+    kind: "done" | "finished" | "needs_input";
     title: string;
     text: string;
     category?: string;

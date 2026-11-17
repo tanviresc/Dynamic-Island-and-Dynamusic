@@ -8,6 +8,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { AlertTriangle, ChevronLeft, ChevronRight, Music2, Play, type LucideIcon } from "lucide-react";
 import { extractPalette, type Palette } from "../lib/ambient";
 import { upgradeArtwork } from "../lib/artwork";
+import { useResolvedArtwork } from "../lib/useOfflineArtwork";
 import { useUI } from "../stores/ui";
 
 /* ============================================================ layout */
@@ -58,13 +59,18 @@ export function ShelfScroller({
   children,
   arrowTop = "top-[74px]",
   className = "",
+  trackClassName = "",
+  scrollerRef,
 }: {
   children: ReactNode;
   /** Arrow band position — defaults to the cover line's centre for the home cards (8px pad + 168px square). */
   arrowTop?: string;
   className?: string;
+  trackClassName?: string;
+  scrollerRef?: React.RefObject<HTMLDivElement>;
 }) {
-  const ref = useRef<HTMLDivElement>(null);
+  const internalRef = useRef<HTMLDivElement>(null);
+  const ref = scrollerRef ?? internalRef;
   const [canLeft, setCanLeft] = useState(false);
   const [canRight, setCanRight] = useState(false);
 
@@ -130,7 +136,7 @@ export function ShelfScroller({
 
   return (
     <div className={`group/shelf relative ${className}`}>
-      <div ref={ref} className="flex gap-4 overflow-x-auto pb-2 shelf-scroll">
+      <div ref={ref} className={`flex gap-4 overflow-x-auto pb-2 shelf-scroll ${trackClassName}`}>
         {children}
       </div>
       {arrow(-1)}
@@ -147,12 +153,14 @@ export function ShelfScroller({
  */
 export function Artwork({
   src,
+  trackId,
   alt = "",
   className = "",
   iconClassName = "w-5 h-5",
   rounded = "rounded-lg",
 }: {
   src?: string;
+  trackId?: string;
   alt?: string;
   className?: string;
   iconClassName?: string;
@@ -160,8 +168,9 @@ export function Artwork({
 }) {
   const [failed, setFailed] = useState(false);
   // Original quality even for covers cached before the quality fix — small
-  // placeholder URLs heal on sight instead of upscaling a 60px image.
-  const displaySrc = upgradeArtwork(src);
+  // placeholder URLs heal on sight instead of upscaling a 60px image, and
+  // offline Liked Songs resolve immediately from local IndexedDB / native cache.
+  const displaySrc = useResolvedArtwork(src, trackId) ?? upgradeArtwork(src);
   useEffect(() => setFailed(false), [displaySrc]);
 
   if (!displaySrc || failed) {

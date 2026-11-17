@@ -37,6 +37,7 @@ import {
   fade,
   fadedCount,
   heavyRotation as pickHeavyRotation,
+  jumpBackInTracks,
   latelyByArtist,
   type JournalEntry,
   type Rotation,
@@ -215,6 +216,8 @@ export interface TasteProfile {
   topTracks: ReplaySummary["tracks"];
   /** ids already in heavy rotation — candidates filter against these */
   playedTrackIds: Set<string>;
+  /** Rolling 2-day frequency-weighted picks for "Jump back in" */
+  jumpBackIn: Track[];
   recentlyPlayed: Track[];
   liked: Track[];
   searches: string[];
@@ -537,6 +540,8 @@ export function computeTasteProfile(input: ComputeInput): TasteProfile {
     dayBucket(now),
   ].join("|");
 
+  const jumpBackIn = jumpBackInTracks(journal, history, now, { limit: 6 });
+
   return {
     signature,
     generatedAt: now,
@@ -550,6 +555,7 @@ export function computeTasteProfile(input: ComputeInput): TasteProfile {
     pairs: backToBack(journal),
     topTracks: month.tracks,
     playedTrackIds,
+    jumpBackIn,
     recentlyPlayed: history,
     liked,
     searches,

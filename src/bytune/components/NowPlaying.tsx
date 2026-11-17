@@ -28,6 +28,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperti
 import { flushSync } from "react-dom";
 import { ChevronDown, Heart, Loader2, Monitor, Music2, Pause, Play, Shuffle, SkipBack, SkipForward, Smartphone } from "lucide-react";
 import { PlayerBar } from "./PlayerBar";
+import { SeekBar } from "./Controls";
 import { QueuePanel } from "./RightRail";
 import { LyricsView } from "./SyncedLyrics";
 import { invalidateLyricsCache, requestLyrics } from "./LyricsCenter";
@@ -37,14 +38,16 @@ import { useSettings } from "../stores/settings";
 import { useUI } from "../stores/ui";
 import { useArtworkPalette, type ArtworkPalette } from "../lib/palette";
 import { upgradeArtwork } from "../lib/artwork";
+import { useResolvedArtwork } from "../lib/useOfflineArtwork";
 import { useDrag } from "../lib/dnd";
 import { shortTitle, titleSource } from "../lib/format";
 import { FitText } from "./FitText";
 import { playFragmented, useCanvas } from "../lib/canvas";
 import { useLyricsOffset } from "../lib/lyricsOffset";
 import { useIdle } from "../lib/useIdle";
-import { useSwipeGesture } from "../lib/useSwipeGesture";
+import { useSwipeGesture, useVerticalDismissGesture } from "../lib/useSwipeGesture";
 import { isCapacitorNative, useMobileMode, type MobileMode } from "../stores/mobileMode";
+import { MobileCrossfadeBackdrop } from "./MobileCrossfadeBackdrop";
 import type { LyricsResult } from "../types";
 
 /** How long the pointer rests before the controls and the cursor go (YouTube's wait). */
@@ -107,13 +110,26 @@ function FsBackdropLayer({
  */
 function FsBackdrop({
   artwork,
+  trackId,
+  isMobile = false,
   boost,
   legacy,
 }: {
   artwork: string | null;
+  trackId?: string | null;
+  isMobile?: boolean;
   boost: boolean;
   legacy: boolean;
 }) {
+  if (isMobile) {
+    return (
+      <MobileCrossfadeBackdrop
+        trackKey={trackId ?? null}
+        thumb={artwork}
+        intensity="fullscreen"
+      />
+    );
+  }
   const id = artwork ?? "none";
   const [layers, setLayers] = useState<string[]>([id]);
 
@@ -121,7 +137,7 @@ function FsBackdrop({
     setLayers((prev) => (prev[prev.length - 1] === id ? prev : [...prev.slice(-2), id]));
     const timer = window.setTimeout(() => {
       setLayers((prev) => (prev.length > 1 ? prev.filter((x) => x === id) : prev));
-    }, 1300);
+    }, 4250);
     return () => window.clearTimeout(timer);
   }, [id]);
 
@@ -129,13 +145,14 @@ function FsBackdrop({
     <div className="absolute inset-0 overflow-hidden pointer-events-none" aria-hidden>
       {layers.map((layerId, i) => (
         <FsBackdropLayer
-          key={`${layerId}-${i}`}
+          key={layerId}
           artwork={layerId === "none" ? null : layerId}
           boost={boost}
           legacy={legacy}
-          enter={i === layers.length - 1}
+          enter={layers.length > 1 && i === layers.length - 1}
         />
       ))}
+      <div className="ambient-blur-veil" />
     </div>
   );
 }
@@ -481,6 +498,12 @@ export function NowPlaying() {
     onSwipeLeft: () => usePlayer.getState().prev(),
     disabled: !track,
   });
+  const dismissSwipe = useVerticalDismissGesture({
+    onDismiss: close,
+    threshold: 100,
+    disabled: !isMobileDevice || exiting,
+  });
+  const resolvedHeroThumb = useResolvedArtwork(shown?.thumb, shown?.id, 1200);
 
   const liked = useLibrary((s) => (shown ? s.liked.some((t) => t.id === shown.id) : false));
   const toggleLike = useLibrary((s) => s.toggleLike);
@@ -582,8 +605,27 @@ export function NowPlaying() {
       className={`fixed inset-0 z-[100] overflow-hidden bg-black fs-sheet-in ${
         exiting ? "fs-exiting" : ""
       } ${idle ? "fs-idle" : ""} ${moving ? "fs-moving" : ""}`}
+      style={
+        isMobileDevice
+          ? {
+              transform: `translate3d(0, ${dismissSwipe.offsetY}px, 0)`,
+              opacity: dismissSwipe.offsetY > 0 ? Math.max(0.35, 1 - dismissSwipe.offsetY / 420) : 1,
+              transition: dismissSwipe.dragging
+                ? "none"
+                : "transform 220ms cubic-bezier(0.22, 1, 0.36, 1), opacity 220ms ease-out",
+              willChange: "transform, opacity",
+            }
+          : undefined
+      }
+      {...(isMobileDevice ? dismissSwipe.handlers : {})}
     >
-      <FsBackdrop artwork={shown?.thumb ?? null} boost={boost} legacy={legacyMesh} />
+      <FsBackdrop
+        artwork={resolvedHeroThumb ?? null}
+        trackId={shown?.id ?? null}
+        isMobile={isMobileDevice}
+        boost={boost}
+        legacy={legacyMesh}
+      />
 
       <div className="relative h-full flex flex-col">
         {/* Fullscreen entry hint — desktop only */}
@@ -605,7 +647,14 @@ export function NowPlaying() {
 
         {/* Header — close (mobile: the iOS sheet-grabber). Idle, it fades
             and gives up its height. */}
-        <div className={`fs-chrome fs-head relative shrink-0 flex items-center px-3 ${isMobileDevice ? "h-11" : "h-14"}`}>
+        <div
+          className={`fs-chrome fs-head relative shrink-0 flex items-center px-3 ${isMobileDevice ? "min-h-11 pb-1" : "h-14"}`}
+          style={
+            isMobileDevice
+              ? { paddingTop: "max(env(safe-area-inset-top, 0px), var(--android-safe-top, 0px), 24px)" }
+              : undefined
+          }
+        >
           <button
             onClick={close}
             title="Close (Esc)"
@@ -671,7 +720,7 @@ export function NowPlaying() {
                     {canvasUrl && animatedCanvas ? (
                       <>
                         {/* Still art underneath: if the video stalls, the cover stands. */}
-                        <img src={upgradeArtwork(shown.thumb, 1200)} alt="" className="absolute inset-0 w-full h-full object-cover" />
+                        <img src={resolvedHeroThumb ?? upgradeArtwork(shown.thumb, 1200)} alt="" className="absolute inset-0 w-full h-full object-cover" />
                         <video
                           key={canvasUrl}
                           ref={canvasVideoRef}
@@ -686,7 +735,7 @@ export function NowPlaying() {
                     ) : shown.thumb ? (
                       <img
                         key={shown.id}
-                        src={upgradeArtwork(shown.thumb, 1200)}
+                        src={resolvedHeroThumb ?? upgradeArtwork(shown.thumb, 1200)}
                         alt=""
                         className="w-full h-full object-cover animate-art-in"
                       />
@@ -799,17 +848,27 @@ export function NowPlaying() {
         )}
 
         {isMobileDevice ? (
-          <MobileFullscreenControls
-            playing={playing}
-            loading={loading}
-            shuffle={shuffle}
-            mobileMode={mobileMode}
-            onToggleShuffle={() => usePlayer.getState().toggleShuffle()}
-            onPrev={() => usePlayer.getState().prev()}
-            onTogglePlay={() => usePlayer.getState().toggle()}
-            onNext={() => usePlayer.getState().next(true)}
-            onToggleMode={() => setMobileMode(mobileMode === "phone" ? "pc_remote" : "phone")}
-          />
+          <div
+            className="shrink-0 flex flex-col w-full"
+            style={{
+              paddingBottom: "max(env(safe-area-inset-bottom, 0px), var(--android-safe-bottom, 0px), 8px)",
+            }}
+          >
+            <div className="px-6 pt-1 pb-1 w-full max-w-md mx-auto" data-no-dismiss="true">
+              <SeekBar large showRemaining />
+            </div>
+            <MobileFullscreenControls
+              playing={playing}
+              loading={loading}
+              shuffle={shuffle}
+              mobileMode={mobileMode}
+              onToggleShuffle={() => usePlayer.getState().toggleShuffle()}
+              onPrev={() => usePlayer.getState().prev()}
+              onTogglePlay={() => usePlayer.getState().toggle()}
+              onNext={() => usePlayer.getState().next(true)}
+              onToggleMode={() => setMobileMode(mobileMode === "phone" ? "pc_remote" : "phone")}
+            />
+          </div>
         ) : (
           <div className="fs-chrome fs-dock h-[88px] shrink-0">
             <PlayerBar />

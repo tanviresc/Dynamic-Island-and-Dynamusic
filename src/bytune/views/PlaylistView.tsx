@@ -13,8 +13,9 @@ import { CollectionHero, HERO_PLAY } from "../components/CollectionHero";
 import { HERO_ROUND } from "../components/PlaylistHero";
 import { PlayingLight, useRowLight } from "../components/RowLight";
 import { Artwork, EmptyState, EqBars, ExplicitBadge } from "../components/primitives";
-import { playlistHeaderItems, playlistMenuItems } from "../lib/trackActions";
+import { playlistHeaderItems, playlistMenuItems, queueTrackPriorityWithToast } from "../lib/trackActions";
 import { useDrag } from "../lib/dnd";
+import { useSwipeGesture } from "../lib/useSwipeGesture";
 import { useSortable, type SortableDragProps } from "../lib/useSortable";
 import { collectionFacts } from "../lib/collection";
 import { fmtTime, shortTitle } from "../lib/format";
@@ -150,7 +151,7 @@ export function PlaylistView({ playlistId }: { playlistId: string }) {
         </button>
       </CollectionHero>
 
-      <div className="pt-6">
+      <div className="pt-4 md:pt-6 -mx-3 md:mx-0">
         {tracks.length ? (
           <div className="relative" onMouseLeave={rowLight.leave}>
             {rowLight.light}
@@ -165,7 +166,7 @@ export function PlaylistView({ playlistId }: { playlistId: string }) {
                     sortDrag={sortable.dragProps(i)}
                     onHover={rowLight.hover}
                   />
-                  {i < tracks.length - 1 && <div className="h-px bg-ink-hi/[0.05] ml-[64px] md:ml-[112px] mr-3" />}
+                  {i < tracks.length - 1 && <div className="h-px bg-ink-hi/[0.05] mx-4 md:ml-[112px] md:mr-3" />}
                 </div>
               ))}
             </div>
@@ -228,36 +229,56 @@ function PlaylistTrackRow({
   const toggleLike = useLibrary((s) => s.toggleLike);
   const drag = useDrag({ track, fromPlaylist: playlist.id });
   const isCurrent = currentId === track.id;
+  const badgeRef = useRef<HTMLDivElement | null>(null);
+  const swipe = useSwipeGesture({
+    onSwipeRight: () => queueTrackPriorityWithToast(track),
+    rightBadgeRef: badgeRef,
+  });
 
   const openMenu = (x: number, y: number): void => {
     openContextMenu(x, y, playlistMenuItems(playlist, track));
   };
 
   return (
-    <div
-      {...drag.props}
-      onDragStart={(e) => {
-        drag.props.onDragStart(e);
-        sortDrag.onDragStart(e);
-      }}
-      onDragEnd={(e) => {
-        drag.props.onDragEnd(e);
-        sortDrag.onDragEnd(e);
-      }}
-      onPointerDown={sortDrag.onPointerDown}
-      onPointerMove={sortDrag.onPointerMove}
-      onPointerUp={sortDrag.onPointerUp}
-      onPointerCancel={sortDrag.onPointerCancel}
-      onMouseEnter={(e) => onHover(e.currentTarget, track.thumb)}
-      onClick={() => playQueue(queue, index, playlist.id)}
-      onContextMenu={(e) => {
-        e.preventDefault();
-        openMenu(e.clientX, e.clientY);
-      }}
-      className={`tl-row fit-host group flex items-center gap-2.5 md:gap-3.5 h-[64px] w-full max-w-full overflow-hidden px-2 md:px-3 rounded-lg cursor-pointer select-none ${
-        isCurrent ? "bg-ink-hi/[0.06]" : "hover:bg-ink-hi/[0.04]"
-      } ${drag.dragging ? "opacity-40" : ""}`}
-    >
+    <div className="relative overflow-hidden md:rounded-lg">
+      <div
+        ref={badgeRef}
+        style={{ opacity: 0 }}
+        aria-hidden="true"
+        className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 inline-flex items-center gap-1.5 rounded-full bg-emerald-500/20 border border-emerald-400/40 px-2.5 py-1 text-[11.5px] font-semibold text-emerald-300"
+      >
+        <ListPlus className="w-3.5 h-3.5" />
+        Priority Queue
+      </div>
+      <div
+        {...drag.props}
+        {...swipe.handlers}
+        onDragStart={(e) => {
+          drag.props.onDragStart(e);
+          sortDrag.onDragStart(e);
+        }}
+        onDragEnd={(e) => {
+          drag.props.onDragEnd(e);
+          sortDrag.onDragEnd(e);
+        }}
+        onPointerDown={sortDrag.onPointerDown}
+        onPointerMove={sortDrag.onPointerMove}
+        onPointerUp={sortDrag.onPointerUp}
+        onPointerCancel={sortDrag.onPointerCancel}
+        onMouseEnter={(e) => onHover(e.currentTarget, track.thumb)}
+        onClick={() => {
+          if (swipe.consumeDidSwipe()) return;
+          playQueue(queue, index, playlist.id);
+        }}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          openMenu(e.clientX, e.clientY);
+        }}
+        style={{ touchAction: "pan-y" }}
+        className={`tl-row fit-host group relative flex items-center gap-3 md:gap-3.5 min-h-[68px] py-2 md:py-0 md:h-[64px] w-full max-w-full overflow-hidden px-4 md:px-3 md:rounded-lg cursor-pointer select-none ${
+          isCurrent ? "bg-ink-hi/[0.06]" : "hover:bg-ink-hi/[0.04] active:bg-ink-hi/[0.08]"
+        } ${drag.dragging ? "opacity-40" : ""}`}
+      >
       {isCurrent && <PlayingLight thumb={track.thumb} />}
       {/* The playlist's own running order: numbered rows, play on hover. */}
       <div data-ghost-hide className="hidden md:grid w-7 shrink-0 place-items-center text-[13px] text-ink-faint tabular-nums">
@@ -281,16 +302,21 @@ function PlaylistTrackRow({
           </>
         )}
       </div>
-      <Artwork src={track.thumb} className="w-11 h-11 md:w-[52px] md:h-[52px] rounded-lg shrink-0" iconClassName="w-4 h-4" alt="" />
+      <Artwork src={track.thumb} className="w-12 h-12 md:w-[52px] md:h-[52px] rounded-lg shrink-0" iconClassName="w-4 h-4" alt="" />
       <div className="flex-1 min-w-0 overflow-hidden">
-        <div className="flex items-center gap-1.5 min-w-0 text-[15px] md:text-[16px] font-semibold tracking-[-0.2px] text-ink-hi">
+        <div className="flex items-center gap-1.5 min-w-0 text-[15.5px] md:text-[16px] font-semibold tracking-[-0.2px] text-ink-hi">
           {track.explicit && <ExplicitBadge />}
           <span className="truncate md:hidden">{shortTitle(track.title)}</span>
           <span className="hidden md:block min-w-0 flex-1">
             <FitText text={shortTitle(track.title)} full={track.title} />
           </span>
         </div>
-        <div className="md:hidden truncate text-[13px] text-ink-dim mt-0.5">{track.artist}</div>
+        <div className="md:hidden flex items-center gap-1.5 min-w-0 text-[13px] text-ink-dim mt-0.5">
+          <span className="truncate">{track.artist}</span>
+          {track.duration > 0 && (
+            <span className="shrink-0 text-ink-faint tabular-nums">· {fmtTime(track.duration)}</span>
+          )}
+        </div>
         <div className="hidden md:block">
           <FitText text={track.artist} className="text-[14px] text-ink-dim mt-0.5" />
         </div>
@@ -306,11 +332,11 @@ function PlaylistTrackRow({
           }}
           title={liked ? "Remove from Liked" : "Add to Liked"}
           aria-label={liked ? "Remove from Liked" : "Add to Liked"}
-          className="p-1.5 rounded-md text-ink-faint hover:text-ink-hi hover:bg-ink-hi/[0.07] transition-colors"
+          className="p-2 md:p-1.5 rounded-full md:rounded-md text-ink-faint hover:text-ink-hi hover:bg-ink-hi/[0.07] transition-colors"
         >
           <Heart key={liked ? "liked" : "unliked"} className={`w-4 h-4 animate-icon-pop ${liked ? "fill-ink-hi text-ink-hi" : ""}`} />
         </button>
-        <span className="opacity-80">
+        <span className="hidden md:inline-flex opacity-80">
           <DownloadBadge id={track.id} />
         </span>
         <button
@@ -320,13 +346,14 @@ function PlaylistTrackRow({
           }}
           title="More options"
           aria-label={`More options for ${track.title}`}
-          className="p-1.5 rounded-md text-ink-faint hover:text-ink-hi hover:bg-ink-hi/[0.07] transition-colors"
+          className="p-2 md:p-1.5 rounded-full md:rounded-md text-ink-faint hover:text-ink-hi hover:bg-ink-hi/[0.07] transition-colors"
         >
-          <MoreHorizontal className="w-4 h-4" />
+          <MoreHorizontal className="w-5 h-5 md:w-4 md:h-4" />
         </button>
       </div>
-      <div className="w-9 md:w-11 shrink-0 text-right text-[11px] md:text-xs text-ink-faint tabular-nums">
+      <div className="hidden md:block w-11 shrink-0 text-right text-xs text-ink-faint tabular-nums">
         {track.duration > 0 ? fmtTime(track.duration) : "—"}
+      </div>
       </div>
     </div>
   );

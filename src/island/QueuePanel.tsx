@@ -2,8 +2,6 @@ import React, { useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { SourceIcon, SourceType } from "../shared/icons/SourceIcon";
 import { standardMotion, reducedMotion } from "./motion";
-import { IPCMusicState } from "./types";
-import { TimelineScrubber } from "./TimelineScrubber";
 
 export interface QueueItem {
   id: string;
@@ -21,10 +19,6 @@ export interface QueuePanelProps {
   onClear: () => void;
   onClose: () => void;
   isReducedMotion?: boolean;
-  musicState?: IPCMusicState | null;
-  onOpenDynamusic?: () => void;
-  onMusicControl?: (action: "play_pause" | "next" | "previous") => void;
-  onMusicSeek?: (targetSeconds: number) => void;
 }
 
 export function formatRelativeTime(dateStr: string): string {
@@ -56,15 +50,8 @@ export const QueuePanel: React.FC<QueuePanelProps> = ({
   onClear,
   onClose,
   isReducedMotion = false,
-  musicState,
-  onOpenDynamusic,
-  onMusicControl,
-  onMusicSeek,
 }) => {
   const motionPreset = isReducedMotion ? reducedMotion : standardMotion;
-  const hasSong = Boolean(
-    musicState && (musicState.isPlaying || (musicState.title && musicState.title !== "Dynamusic"))
-  );
 
   // Handle Escape key to close
   useEffect(() => {
@@ -79,35 +66,29 @@ export const QueuePanel: React.FC<QueuePanelProps> = ({
 
   return (
     <motion.div
-      className="island-interactive"
+      className={`island-interactive ${isReducedMotion ? "island-reduced-motion" : ""}`}
       initial={{
-        scaleX: 0.45,
-        scaleY: 0.45,
-        y: -12,
+        width: 24,
+        maxHeight: 24,
+        borderRadius: 12,
         opacity: 0,
-        clipPath: "inset(0% 20% 20% 20% round 24px)",
       }}
       animate={{
-        scaleX: 1,
-        scaleY: 1,
-        y: 0,
+        width: 320,
+        maxHeight: 360,
+        borderRadius: 18,
         opacity: 1,
-        clipPath: "inset(0% 0% 0% 0% round 18px)",
       }}
       exit={{
-        scaleX: 0.5,
-        scaleY: 0.5,
-        y: -10,
+        width: 24,
+        maxHeight: 24,
+        borderRadius: 12,
         opacity: 0,
         transition: motionPreset.queueClose.layout as any,
       }}
       transition={motionPreset.queueOpen.layout as any}
       style={{
-        width: 320,
-        maxHeight: 360,
-        borderRadius: 18,
-        transformOrigin: "50% 0%",
-        willChange: "transform, opacity, clip-path",
+        willChange: "width, max-height, opacity, border-radius",
         backgroundColor: "#000000",
         border: "1px solid rgba(255, 255, 255, 0.45)",
         boxShadow: "0 0 22px 2px rgba(255, 255, 255, 0.22), inset 0 1px 1.5px 0 rgba(255, 255, 255, 0.35)",
@@ -115,161 +96,9 @@ export const QueuePanel: React.FC<QueuePanelProps> = ({
         flexDirection: "column",
         overflow: "hidden",
         position: "relative",
+        pointerEvents: "auto",
       }}
     >
-      {/* Song Preview (shown when a song is playing/loaded) */}
-      {hasSong && musicState && (
-        <div
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            gap: 6,
-            padding: "8px 12px",
-            borderBottom: "1px solid rgba(255, 255, 255, 0.1)",
-            backgroundColor: "rgba(255, 255, 255, 0.04)",
-          }}
-        >
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <div
-            onClick={onOpenDynamusic}
-            style={{
-              width: 32,
-              height: 32,
-              borderRadius: 6,
-              overflow: "hidden",
-              flexShrink: 0,
-              backgroundColor: "rgba(255, 255, 255, 0.1)",
-              cursor: onOpenDynamusic ? "pointer" : "default",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-            }}
-            title="Open Dynamusic"
-          >
-            {musicState.albumArt ? (
-              <img
-                src={musicState.albumArt}
-                alt={musicState.title}
-                style={{ width: "100%", height: "100%", objectFit: "cover" }}
-              />
-            ) : (
-              <span style={{ fontSize: 13, color: "rgba(255,255,255,0.7)" }}>♪</span>
-            )}
-          </div>
-
-          <div
-            onClick={onOpenDynamusic}
-            style={{
-              flex: 1,
-              minWidth: 0,
-              cursor: onOpenDynamusic ? "pointer" : "default",
-            }}
-          >
-            <div
-              style={{
-                fontSize: 12,
-                fontWeight: 600,
-                color: "#ffffff",
-                whiteSpace: "nowrap",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-              }}
-            >
-              {musicState.title}
-            </div>
-            <div
-              style={{
-                fontSize: 10,
-                color: "rgba(255, 255, 255, 0.6)",
-                whiteSpace: "nowrap",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-              }}
-            >
-              {musicState.artist || "Dynamusic"}
-            </div>
-          </div>
-
-          {onMusicControl && (
-            <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onMusicControl("previous");
-                }}
-                style={{
-                  background: "none",
-                  border: "none",
-                  color: "rgba(255, 255, 255, 0.75)",
-                  cursor: "pointer",
-                  padding: "4px",
-                  fontSize: 11,
-                  lineHeight: 1,
-                }}
-                aria-label="Previous track"
-                title="Previous"
-              >
-                ⏮
-              </button>
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onMusicControl("play_pause");
-                }}
-                style={{
-                  background: "rgba(255, 255, 255, 0.14)",
-                  border: "none",
-                  borderRadius: "50%",
-                  width: 24,
-                  height: 24,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  color: "#ffffff",
-                  cursor: "pointer",
-                  fontSize: 10,
-                  lineHeight: 1,
-                }}
-                aria-label={musicState.isPlaying ? "Pause" : "Play"}
-                title={musicState.isPlaying ? "Pause" : "Play"}
-              >
-                {musicState.isPlaying ? "⏸" : "▶"}
-              </button>
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onMusicControl("next");
-                }}
-                style={{
-                  background: "none",
-                  border: "none",
-                  color: "rgba(255, 255, 255, 0.75)",
-                  cursor: "pointer",
-                  padding: "4px",
-                  fontSize: 11,
-                  lineHeight: 1,
-                }}
-                aria-label="Next track"
-                title="Next"
-              >
-                ⏭
-              </button>
-            </div>
-          )}
-          </div>
-
-          {onMusicSeek && (
-            <TimelineScrubber
-              positionMs={musicState.positionMs}
-              durationMs={musicState.durationMs}
-              isPlaying={musicState.isPlaying}
-              onSeek={onMusicSeek}
-            />
-          )}
-        </div>
-      )}
-
       {/* Header */}
       <div
         style={{
@@ -285,19 +114,7 @@ export const QueuePanel: React.FC<QueuePanelProps> = ({
         </span>
         <button
           onClick={onClear}
-          style={{
-            background: "none",
-            border: "none",
-            color: "rgba(255, 255, 255, 0.50)",
-            fontSize: 10,
-            fontWeight: 600,
-            cursor: "pointer",
-            padding: "2px 6px",
-            borderRadius: 4,
-            transition: "color 0.15s ease",
-          }}
-          onMouseEnter={(e) => ((e.target as HTMLElement).style.color = "#ffffff")}
-          onMouseLeave={(e) => ((e.target as HTMLElement).style.color = "rgba(255, 255, 255, 0.50)")}
+          className="island-queue-clear"
         >
           Clear
         </button>
@@ -335,18 +152,7 @@ export const QueuePanel: React.FC<QueuePanelProps> = ({
                   delay: isReducedMotion ? 0 : motionPreset.queueOpen.rowDelay + index * motionPreset.queueOpen.stagger,
                 }}
                 onClick={() => onItemClick(item.id)}
-                style={{
-                  height: 40,
-                  display: "flex",
-                  alignItems: "center",
-                  padding: "0 12px",
-                  gap: 8,
-                  cursor: "pointer",
-                  borderBottom: "1px solid rgba(255, 255, 255, 0.04)",
-                  transition: "background-color 0.15s ease",
-                }}
-                onMouseEnter={(e) => ((e.currentTarget as HTMLElement).style.backgroundColor = "rgba(255, 255, 255, 0.08)")}
-                onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.backgroundColor = "transparent")}
+                className="island-queue-row"
               >
                 <SourceIcon source={item.source} needsInput={needsInput} size={18} />
 

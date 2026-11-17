@@ -16,7 +16,7 @@ import { useHomeLead } from "../lib/recs/feed";
 import { useUI } from "../stores/ui";
 
 /** How long a cover takes to glow in over the last one (and to fade away). */
-export const GLOW_FADE_MS = 600;
+export const GLOW_FADE_MS = 4200;
 
 interface Layer {
   id: number;

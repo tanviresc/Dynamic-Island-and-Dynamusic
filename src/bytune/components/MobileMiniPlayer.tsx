@@ -6,6 +6,7 @@ import { useUI } from "../stores/ui";
 import { useMobileMode } from "../stores/mobileMode";
 import { getPlaybackClock, subscribePlaybackClock } from "../lib/playbackClock";
 import { useSwipeGesture } from "../lib/useSwipeGesture";
+import { useResolvedArtwork } from "../lib/useOfflineArtwork";
 
 function MiniProgressBar({ fallbackDuration }: { fallbackDuration: number }) {
   const clock = useSyncExternalStore(subscribePlaybackClock, getPlaybackClock);
@@ -38,6 +39,7 @@ export function MobileMiniPlayer() {
     onSwipeLeft: () => usePlayer.getState().prev(),
     disabled: !track,
   });
+  const resolvedThumb = useResolvedArtwork(track?.thumb, track?.id, 300);
 
   if (!track) return null;
 
@@ -50,16 +52,17 @@ export function MobileMiniPlayer() {
       }}
       style={{
         touchAction: "pan-y",
+        bottom: "calc(68px + max(env(safe-area-inset-bottom, 0px), var(--android-safe-bottom, 0px)))",
         transform: `translate3d(${swipe.offsetX}px, 0, 0)`,
         transition: swipe.dragging ? "none" : "transform 200ms cubic-bezier(0.22, 1, 0.36, 1)",
       }}
-      className="fixed bottom-[68px] inset-x-2 z-40 bg-[#16161a]/[0.96] border border-white/10 rounded-2xl p-2 flex flex-col gap-1.5 shadow-2xl cursor-pointer select-none will-change-transform active:scale-[0.985]"
+      className="fixed inset-x-2 z-40 bg-[#16161a]/[0.96] border border-white/10 rounded-2xl p-2 flex flex-col gap-1.5 shadow-2xl cursor-pointer select-none will-change-transform active:scale-[0.985]"
     >
       <div className="flex items-center gap-3">
         {/* Cover Thumbnail */}
         <div className="relative w-11 h-11 rounded-xl overflow-hidden bg-white/5 shrink-0 border border-white/10 shadow-md">
-          {track.thumb ? (
-            <img src={track.thumb} alt={track.title} className="w-full h-full object-cover" />
+          {resolvedThumb ? (
+            <img src={resolvedThumb} alt={track.title} className="w-full h-full object-cover" />
           ) : (
             <div className="w-full h-full flex items-center justify-center text-white/30 text-[10px]">No Art</div>
           )}

@@ -92,8 +92,6 @@ async fn send_island_input(action: String, state: State<'_, AppState>) -> Result
             "dot_clicked" => Input::DotClicked,
             "queue_clear" => Input::QueueClear,
             "queue_close" => Input::QueueClose,
-            "hover_enter" => Input::HoverEnter,
-            "hover_leave" => Input::HoverLeave,
             _ => return Err(format!("Unknown action: {}", action)),
         }
     };
@@ -137,6 +135,45 @@ async fn set_monitor_settings(
     };
 
     state.input_tx.send(input).await.map_err(|e| e.to_string())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DisplaySettingsPayload {
+    display_ms: u64,
+}
+
+#[tauri::command]
+async fn get_display_settings(
+    state: State<'_, AppState>,
+) -> Result<DisplaySettingsPayload, String> {
+    let guard = state.core.lock().unwrap();
+    Ok(DisplaySettingsPayload {
+        display_ms: guard.display_ms,
+    })
+}
+
+#[tauri::command]
+async fn set_display_settings(
+    display_ms: u64,
+    state: State<'_, AppState>,
+) -> Result<DisplaySettingsPayload, String> {
+    let clamped = display_ms.clamp(1000, 15000);
+    let json = serde_json::to_string(&clamped).map_err(|e| e.to_string())?;
+    state
+        .store
+        .set_setting_json("display_ms", &json)
+        .map_err(|e| e.to_string())?;
+    state
+        .input_tx
+        .send(Input::DisplaySettingsChanged {
+            display_ms: clamped,
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(DisplaySettingsPayload {
+        display_ms: clamped,
+    })
 }
 
 #[tauri::command]
@@ -375,6 +412,7 @@ async fn set_queue_focus(take_focus: bool, app: AppHandle) -> Result<(), String>
                     let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE);
                     if take_focus {
                         SetWindowLongW(hwnd, GWL_EXSTYLE, ex_style & !(WS_EX_NOACTIVATE.0 as i32));
+                        let _ = win.set_focus();
                         let _ = SetForegroundWindow(hwnd);
                         let _ = SetFocus(hwnd);
                     } else {
@@ -473,7 +511,7 @@ fn show_or_recreate_dynamusic(app_handle: &AppHandle) {
         )
         .title("Dynamusic")
         .inner_size(1280.0, 820.0)
-        .min_inner_size(940.0, 620.0)
+        .min_inner_size(480.0, 520.0)
         .decorations(false)
         .center()
         .visible(true)
@@ -530,7 +568,6 @@ async fn dynamusic_window_action(
                 if let Some(ref mut ms) = *guard {
                     ms.is_playing = false;
                 }
-                let _ = app_handle.emit("island://music-state", guard.clone());
             }
             let _ = win.hide();
             Ok(true)
@@ -556,13 +593,9 @@ async fn dynamusic_window_action(
 async fn update_music_state(
     state: Option<MusicState>,
     app_state: State<'_, AppState>,
-    app_handle: AppHandle,
 ) -> Result<(), String> {
-    {
-        let mut guard = app_state.music_state.lock().unwrap();
-        *guard = state.clone();
-    }
-    let _ = app_handle.emit("island://music-state", &state);
+    let mut guard = app_state.music_state.lock().unwrap();
+    *guard = state;
     Ok(())
 }
 
@@ -708,8 +741,8 @@ pub fn run() {
                                 let win_rect_opt = get_window_screen_rect(raw_hwnd);
                                 let scale = get_window_dpi_scale(raw_hwnd);
 
-                                // 6px tolerance when checking entrance; 12px hysteresis when checking exit
-                                let tolerance = if last_inside { 12 } else { 6 };
+                                // 8px tolerance when checking entrance; 12px hysteresis when checking exit
+                                let tolerance = if last_inside { 12 } else { 8 };
 
                                 let screen_hit_rect = match (rect_opt, win_rect_opt) {
                                     (Some(client_rect), Some(win_rect)) if !client_rect.is_empty() => {
@@ -796,7 +829,14 @@ pub fn run() {
 
             // Core State & Ingest channels
             let mut core = IslandCore::new();
-            core.display_ms = 4500;
+            let saved_display_ms = store
+                .get_setting_json("display_ms")
+                .ok()
+                .flatten()
+                .and_then(|j| serde_json::from_str::<u64>(&j).ok())
+                .map(|ms| ms.clamp(1000, 15000))
+                .unwrap_or(4000);
+            core.display_ms = saved_display_ms;
             if let Ok(unreads) = store.get_unread_notifications() {
                 core.load_initial_unread(unreads);
             }
@@ -1009,6 +1049,15 @@ pub fn run() {
 
             tauri::async_runtime::spawn(async move {
                 let mut interval = tokio::time::interval(Duration::from_millis(100));
+                let mut last_vm: Option<island_core::ViewModel> = None;
+                let ctx = EffectContext {
+                    app: &app_handle,
+                    store: &store_for_loop,
+                    tray: &tray,
+                    core: &core_for_loop,
+                    hit_rect: &hit_rect_for_effects,
+                    command_tx: &cmd_tx_for_effects,
+                };
                 loop {
                     tokio::select! {
                         _ = interval.tick() => {
@@ -1017,7 +1066,7 @@ pub fn run() {
                                 let mut guard = core_for_loop.lock().unwrap();
                                 guard.handle_input(Input::Tick, now)
                             };
-                            process_effects(&app_handle, &store_for_loop, &tray, &core_for_loop, &hit_rect_for_effects, &cmd_tx_for_effects, effects);
+                            process_effects(&ctx, &mut last_vm, effects);
                         }
                         Some(input) = input_rx.recv() => {
                             let now = current_millis();
@@ -1025,7 +1074,7 @@ pub fn run() {
                                 let mut guard = core_for_loop.lock().unwrap();
                                 guard.handle_input(input, now)
                             };
-                            process_effects(&app_handle, &store_for_loop, &tray, &core_for_loop, &hit_rect_for_effects, &cmd_tx_for_effects, effects);
+                            process_effects(&ctx, &mut last_vm, effects);
                         }
                     }
                 }
@@ -1147,8 +1196,18 @@ pub fn run() {
 
             // Background Desktop Apps Watcher Task (§1.10.2)
             let desktop_event_tx = event_tx.clone();
+            let configured_desktop_apps = store
+                .get_setting_json("desktop_apps")
+                .ok()
+                .flatten()
+                .and_then(|j| serde_json::from_str::<Vec<DesktopAppConfig>>(&j).ok())
+                .unwrap_or_else(default_desktop_apps);
             tauri::async_runtime::spawn(async move {
-                let _ = source_desktop::start_desktop_watcher(desktop_event_tx).await;
+                let _ = source_desktop::start_desktop_watcher_with_apps(
+                    desktop_event_tx,
+                    configured_desktop_apps,
+                )
+                .await;
             });
 
             // Register State
@@ -1174,6 +1233,8 @@ pub fn run() {
             update_hit_rect,
             get_monitors,
             set_monitor_settings,
+            get_display_settings,
+            set_display_settings,
             set_queue_focus,
             get_desktop_apps,
             save_desktop_apps,
@@ -1195,19 +1256,33 @@ pub fn run() {
         .expect("error while running island application");
 }
 
+struct EffectContext<'a> {
+    app: &'a AppHandle,
+    store: &'a Store,
+    tray: &'a TrayIcon,
+    core: &'a Arc<Mutex<IslandCore>>,
+    hit_rect: &'a Arc<Mutex<Option<Rect>>>,
+    command_tx: &'a broadcast::Sender<WsServerMessage>,
+}
+
 fn process_effects(
-    app: &AppHandle,
-    store: &Store,
-    tray: &TrayIcon,
-    core: &Arc<Mutex<IslandCore>>,
-    hit_rect: &Arc<Mutex<Option<Rect>>>,
-    command_tx: &broadcast::Sender<WsServerMessage>,
+    ctx: &EffectContext<'_>,
+    last_vm: &mut Option<island_core::ViewModel>,
     effects: Vec<Effect>,
 ) {
+    let app = ctx.app;
+    let store = ctx.store;
+    let tray = ctx.tray;
+    let core = ctx.core;
+    let hit_rect = ctx.hit_rect;
+    let command_tx = ctx.command_tx;
     for effect in effects {
         match effect {
             Effect::Render(vm) => {
-                let _ = app.emit("island://view", &vm);
+                if last_vm.as_ref() != Some(&vm) {
+                    let _ = app.emit("island://view", &vm);
+                    *last_vm = Some(vm);
+                }
                 let unread = {
                     let guard = core.lock().unwrap();
                     guard.unread_count()

@@ -50,7 +50,11 @@ final class MobileStreamProxy {
     private static final String JIOSAAVN_DES_KEY = "38346591";
     private static final long MAX_CACHE_TTL_MS = 4L * 60L * 60L * 1000L;
     private static final long MIN_CACHE_TTL_MS = 10L * 60L * 1000L;
+    private static final long INITIAL_SLICE_BYTES = 524_288L;
     private static final long GOOGLEVIDEO_SLICE_BYTES = 1_572_864L;
+    private static final long CLIENT_COOLDOWN_MS = 90_000L;
+    private static final long MIRROR_COOLDOWN_MS = 60_000L;
+    private static final long VISITOR_TTL_MS = 30L * 60L * 1000L;
     private static final Pattern EXPIRE_PARAM = Pattern.compile("[?&]expire=(\\d+)");
     private static final Pattern CLEN_PARAM = Pattern.compile("[?&]clen=(\\d+)");
     private static final Pattern VIDEO_ID_PATTERN = Pattern.compile("^[A-Za-z0-9_-]{11}$");
@@ -67,27 +71,44 @@ final class MobileStreamProxy {
         String gl = deviceCountry();
         return new ClientSpec[] {
             new ClientSpec(
-                    "VISIONOS",
-                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15",
-                    "{\"clientName\":\"VISIONOS\",\"clientVersion\":\"1.02\",\"deviceMake\":\"Apple\",\"deviceModel\":\"RealityDevice17,1\",\"osName\":\"visionOS\",\"osVersion\":\"26.5.23O471\",\"hl\":\"en\",\"gl\":\"" + gl + "\"}",
-                    "https://www.youtube.com/youtubei/v1/player?prettyPrint=false"),
-            new ClientSpec(
                     "ANDROID_VR",
+                    "28",
+                    "1.65.10",
                     "com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip",
                     "{\"clientName\":\"ANDROID_VR\",\"clientVersion\":\"1.65.10\",\"deviceMake\":\"Oculus\",\"deviceModel\":\"Quest 3\",\"osName\":\"Android\",\"osVersion\":\"12L\",\"androidSdkVersion\":32,\"hl\":\"en\",\"gl\":\"" + gl + "\"}",
                     "https://www.youtube.com/youtubei/v1/player?prettyPrint=false"),
             new ClientSpec(
+                    "ANDROID_VR_LEGACY",
+                    "28",
+                    "1.60.19",
+                    "com.google.android.apps.youtube.vr.oculus/1.60.19 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip",
+                    "{\"clientName\":\"ANDROID_VR\",\"clientVersion\":\"1.60.19\",\"deviceMake\":\"Oculus\",\"deviceModel\":\"Quest 3\",\"osName\":\"Android\",\"osVersion\":\"12L\",\"androidSdkVersion\":32,\"hl\":\"en\",\"gl\":\"" + gl + "\"}",
+                    "https://www.youtube.com/youtubei/v1/player?prettyPrint=false"),
+            new ClientSpec(
+                    "VISIONOS",
+                    "101",
+                    "1.02",
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15",
+                    "{\"clientName\":\"VISIONOS\",\"clientVersion\":\"1.02\",\"deviceMake\":\"Apple\",\"deviceModel\":\"RealityDevice17,1\",\"osName\":\"visionOS\",\"osVersion\":\"26.5.23O471\",\"hl\":\"en\",\"gl\":\"" + gl + "\"}",
+                    "https://www.youtube.com/youtubei/v1/player?prettyPrint=false"),
+            new ClientSpec(
                     "IOS",
+                    "5",
+                    "20.10.4",
                     "com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X)",
                     "{\"clientName\":\"IOS\",\"clientVersion\":\"20.10.4\",\"deviceMake\":\"Apple\",\"deviceModel\":\"iPhone16,2\",\"osName\":\"iPhone\",\"osVersion\":\"18.3.2.22D82\",\"hl\":\"en\",\"gl\":\"" + gl + "\"}",
                     "https://www.youtube.com/youtubei/v1/player?prettyPrint=false"),
             new ClientSpec(
                     "ANDROID_MUSIC",
+                    "21",
+                    "5.34.51",
                     "com.google.android.apps.youtube.music/5.34.51 (Linux; U; Android 14) gzip",
                     "{\"clientName\":\"ANDROID_MUSIC\",\"clientVersion\":\"5.34.51\",\"androidSdkVersion\":34,\"hl\":\"en\",\"gl\":\"" + gl + "\"}",
                     "https://music.youtube.com/youtubei/v1/player?prettyPrint=false"),
             new ClientSpec(
                     "ANDROID",
+                    "3",
+                    "20.10.38",
                     "com.google.android.youtube/20.10.38 (Linux; U; Android 15) gzip",
                     "{\"clientName\":\"ANDROID\",\"clientVersion\":\"20.10.38\",\"androidSdkVersion\":35,\"hl\":\"en\",\"gl\":\"" + gl + "\"}",
                     "https://www.youtube.com/youtubei/v1/player?prettyPrint=false")
@@ -138,12 +159,22 @@ final class MobileStreamProxy {
 
     private static final class ClientSpec {
         final String name;
+        final String clientId;
+        final String clientVersion;
         final String userAgent;
         final String clientJson;
         final String endpointUrl;
 
-        ClientSpec(String name, String userAgent, String clientJson, String endpointUrl) {
+        ClientSpec(
+                String name,
+                String clientId,
+                String clientVersion,
+                String userAgent,
+                String clientJson,
+                String endpointUrl) {
             this.name = name;
+            this.clientId = clientId;
+            this.clientVersion = clientVersion;
             this.userAgent = userAgent;
             this.clientJson = clientJson;
             this.endpointUrl = endpointUrl;
@@ -151,13 +182,25 @@ final class MobileStreamProxy {
     }
 
     private static final int LOCK_STRIPES = 64;
+    private static final MobileStreamProxy SHARED = new MobileStreamProxy();
+
+    static MobileStreamProxy getShared() {
+        return SHARED;
+    }
+
     private final ConcurrentHashMap<String, ResolvedStream> cache = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Long> clientCooldownUntil = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Long> mirrorCooldownUntil = new ConcurrentHashMap<>();
     private final ExecutorService proxyPool = Executors.newCachedThreadPool();
-    // Separate orchestrator vs leaf pools so nested resolution tasks never deadlock
+    // Separate orchestrator, resolver, and streaming pools so active audio reads never block stream API resolution
     private final ExecutorService orchestratorPool = Executors.newCachedThreadPool();
-    private final ExecutorService resolverPool = Executors.newFixedThreadPool(16);
+    private final ExecutorService resolverPool = Executors.newCachedThreadPool();
+    private final ExecutorService streamPool = Executors.newCachedThreadPool();
     private final AtomicInteger preferredClientIdx = new AtomicInteger(0);
     private final Object[] resolveLocks = new Object[LOCK_STRIPES];
+    private final Object visitorLock = new Object();
+    private volatile String cachedVisitorData = "";
+    private volatile long visitorDataExpiresAt = 0L;
 
     {
         for (int i = 0; i < LOCK_STRIPES; i++) {
@@ -232,6 +275,66 @@ final class MobileStreamProxy {
         return sb.toString();
     }
 
+    private void noteClientFailure(String source) {
+        if (source == null || source.isEmpty()) return;
+        clientCooldownUntil.put(source, System.currentTimeMillis() + CLIENT_COOLDOWN_MS);
+    }
+
+    private void noteClientSuccess(String source) {
+        if (source == null || source.isEmpty()) return;
+        clientCooldownUntil.remove(source);
+        ClientSpec[] clients = buildInnerTubeClients();
+        for (int i = 0; i < clients.length; i++) {
+            if (source.equals(clients[i].name)) {
+                preferredClientIdx.set(i);
+                break;
+            }
+        }
+    }
+
+    private String getVisitorData() {
+        long now = System.currentTimeMillis();
+        if (!cachedVisitorData.isEmpty() && now < visitorDataExpiresAt) {
+            return cachedVisitorData;
+        }
+        synchronized (visitorLock) {
+            now = System.currentTimeMillis();
+            if (!cachedVisitorData.isEmpty() && now < visitorDataExpiresAt) {
+                return cachedVisitorData;
+            }
+            HttpURLConnection conn = null;
+            try {
+                conn = (HttpURLConnection) new URL("https://www.youtube.com/youtubei/v1/visitor_id?prettyPrint=false")
+                        .openConnection();
+                conn.setRequestMethod("POST");
+                conn.setDoOutput(true);
+                conn.setConnectTimeout(2000);
+                conn.setReadTimeout(2000);
+                conn.setRequestProperty("Content-Type", "application/json");
+                conn.setRequestProperty("User-Agent", DESKTOP_UA);
+                String body = "{\"context\":{\"client\":{\"clientName\":\"WEB\",\"clientVersion\":\"2.20250115.01.00\"}}}";
+                try (OutputStream os = conn.getOutputStream()) {
+                    os.write(body.getBytes(StandardCharsets.UTF_8));
+                }
+                if (conn.getResponseCode() >= 200 && conn.getResponseCode() < 300) {
+                    JSONObject obj = new JSONObject(readStreamText(conn.getInputStream()));
+                    String vd = "";
+                    JSONObject rc = obj.optJSONObject("responseContext");
+                    if (rc != null) vd = rc.optString("visitorData", "");
+                    if (!vd.isEmpty()) {
+                        cachedVisitorData = vd;
+                        visitorDataExpiresAt = System.currentTimeMillis() + VISITOR_TTL_MS;
+                    }
+                }
+            } catch (Exception ignored) {
+                // Keep empty or stale visitorData; InnerTube still works for most clients
+            } finally {
+                if (conn != null) conn.disconnect();
+            }
+            return cachedVisitorData;
+        }
+    }
+
     private ResolvedStream resolveUpstream(
             String videoId,
             String quality,
@@ -241,38 +344,23 @@ final class MobileStreamProxy {
             String skipSource) throws IOException {
         int maxKbps = qualityToMaxKbps(quality);
 
-        // Race InnerTube against strictly-verified JioSaavn CDN when we can skip neither or only non-skipped sources
-        List<Future<ResolvedStream>> tasks = new ArrayList<>();
-        CompletionService<ResolvedStream> ecs = new ExecutorCompletionService<>(orchestratorPool);
-        tasks.add(ecs.submit(() -> resolveViaInnerTube(videoId, maxKbps, proxyUrl, skipSource)));
-        if (!"jiosaavn".equals(skipSource)) {
-            tasks.add(ecs.submit(() -> resolveViaJioSaavn(videoId, title, artist, proxyUrl)));
+        // 1. Primary fast path: InnerTube (direct device-IP GoogleVideo URLs with 5.5s race cap)
+        try {
+            ResolvedStream yt = resolveViaInnerTube(videoId, maxKbps, proxyUrl, skipSource);
+            if (yt != null) return yt;
+        } catch (Exception ignored) {
+            // Fall through to parallel third-party fallbacks
         }
 
-        long deadlineNs = System.nanoTime() + TimeUnit.SECONDS.toNanos(6);
-        for (int i = 0; i < tasks.size(); i++) {
-            long remMs = TimeUnit.NANOSECONDS.toMillis(deadlineNs - System.nanoTime());
-            if (remMs <= 0) break;
-            try {
-                Future<ResolvedStream> done = ecs.poll(remMs, TimeUnit.MILLISECONDS);
-                if (done == null) break;
-                ResolvedStream candidate = done.get();
-                if (candidate != null) {
-                    cancelFutures(tasks);
-                    return candidate;
-                }
-            } catch (Exception ignored) {
-                // Keep waiting for sibling task
-            }
-        }
-        cancelFutures(tasks);
-
-        // Emergency Piped + Invidious companion fallbacks in parallel
-        List<Future<ResolvedStream>> mirrorTasks = new ArrayList<>(2);
+        // 2. Parallel Piped + Invidious mirrors + JioSaavn fallback
+        List<Future<ResolvedStream>> mirrorTasks = new ArrayList<>(3);
         CompletionService<ResolvedStream> mirrorEcs = new ExecutorCompletionService<>(orchestratorPool);
         mirrorTasks.add(mirrorEcs.submit(() -> resolveViaPiped(videoId, maxKbps, proxyUrl)));
         mirrorTasks.add(mirrorEcs.submit(() -> resolveViaInvidious(videoId, maxKbps, proxyUrl)));
-        long mirrorDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        if (!"jiosaavn".equals(skipSource) && title != null && !title.trim().isEmpty()) {
+            mirrorTasks.add(mirrorEcs.submit(() -> resolveViaJioSaavn(videoId, title, artist, proxyUrl)));
+        }
+        long mirrorDeadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(4500);
         for (int i = 0; i < mirrorTasks.size(); i++) {
             long remMs = TimeUnit.NANOSECONDS.toMillis(mirrorDeadline - System.nanoTime());
             if (remMs <= 0) break;
@@ -285,12 +373,12 @@ final class MobileStreamProxy {
                     return candidate;
                 }
             } catch (Exception ignored) {
-                // Keep waiting for sibling mirror
+                // Keep waiting for sibling fallback
             }
         }
         cancelFutures(mirrorTasks);
 
-        // Last-resort alternate track match on YouTube Music if videoId itself is unavailable/region-locked
+        // 3. Last-resort alternate track match on YouTube Music if videoId itself is unavailable/region-locked
         if (title != null && !title.trim().isEmpty()) {
             try {
                 String altId = searchAlternateYtmVideoId(title, artist, videoId);
@@ -314,30 +402,31 @@ final class MobileStreamProxy {
     private ResolvedStream resolveViaInnerTube(String videoId, int maxKbps, String proxyUrl, String skipSource)
             throws IOException {
         ClientSpec[] clients = buildInnerTubeClients();
-        int start = preferredClientIdx.get() % clients.length;
-        List<ClientSpec> ordered = new ArrayList<>(clients.length);
+        int start = ((preferredClientIdx.get() % clients.length) + clients.length) % clients.length;
+        long now = System.currentTimeMillis();
+        List<ClientSpec> healthy = new ArrayList<>(clients.length);
+        List<ClientSpec> cooled = new ArrayList<>(clients.length);
         for (int i = 0; i < clients.length; i++) {
             ClientSpec spec = clients[(start + i) % clients.length];
-            if (!spec.name.equals(skipSource)) {
-                ordered.add(spec);
-            }
+            if (spec.name.equals(skipSource)) continue;
+            long until = clientCooldownUntil.getOrDefault(spec.name, 0L);
+            if (until <= now) healthy.add(spec);
+            else cooled.add(spec);
         }
-        if (ordered.isEmpty()) {
-            ordered.addAll(Arrays.asList(clients));
+        List<ClientSpec> ordered = healthy.isEmpty() ? (cooled.isEmpty() ? Arrays.asList(clients) : cooled) : healthy;
+
+        // Warm visitorData once if empty, bounded cleanly at 2s
+        String visitorData = cachedVisitorData;
+        if (visitorData.isEmpty() && now >= visitorDataExpiresAt) {
+            visitorData = getVisitorData();
         }
+        final String vd = visitorData;
 
         CompletionService<ResolvedStream> ecs = new ExecutorCompletionService<>(resolverPool);
         List<Future<ResolvedStream>> futures = new ArrayList<>(ordered.size());
         for (int i = 0; i < ordered.size(); i++) {
-            final int clientIdx = (start + i) % clients.length;
             final ClientSpec client = ordered.get(i);
-            futures.add(ecs.submit(() -> {
-                ResolvedStream res = fetchInnerTubeClient(videoId, client, maxKbps, proxyUrl);
-                if (res != null) {
-                    preferredClientIdx.set(clientIdx);
-                }
-                return res;
-            }));
+            futures.add(ecs.submit(() -> fetchInnerTubeClient(videoId, client, maxKbps, proxyUrl, vd)));
         }
 
         IOException lastErr = null;
@@ -361,24 +450,39 @@ final class MobileStreamProxy {
         throw lastErr != null ? lastErr : new IOException("InnerTube clients failed");
     }
 
-    private ResolvedStream fetchInnerTubeClient(String videoId, ClientSpec client, int maxKbps, String proxyUrl)
-            throws IOException {
-        String body = "{\"videoId\":" + JSONObject.quote(videoId) + ",\"context\":{\"client\":" + client.clientJson + "}}";
+    private ResolvedStream fetchInnerTubeClient(
+            String videoId,
+            ClientSpec client,
+            int maxKbps,
+            String proxyUrl,
+            String visitorData) throws IOException {
+        StringBuilder bodySb = new StringBuilder();
+        bodySb.append("{\"videoId\":").append(JSONObject.quote(videoId));
+        bodySb.append(",\"contentCheckOk\":true,\"racyCheckOk\":true");
+        bodySb.append(",\"context\":{\"client\":").append(client.clientJson).append("}}");
+        String body = bodySb.toString();
+
         HttpURLConnection conn = (HttpURLConnection) new URL(client.endpointUrl).openConnection();
         String jsonText;
         try {
             conn.setRequestMethod("POST");
             conn.setDoOutput(true);
-            conn.setConnectTimeout(4500);
-            conn.setReadTimeout(5000);
+            conn.setConnectTimeout(3500);
+            conn.setReadTimeout(4500);
             conn.setRequestProperty("Content-Type", "application/json");
             conn.setRequestProperty("User-Agent", client.userAgent);
+            conn.setRequestProperty("X-YouTube-Client-Name", client.clientId);
+            conn.setRequestProperty("X-YouTube-Client-Version", client.clientVersion);
+            if (visitorData != null && !visitorData.isEmpty()) {
+                conn.setRequestProperty("X-Goog-Visitor-Id", visitorData);
+            }
             try (OutputStream out = conn.getOutputStream()) {
                 out.write(body.getBytes(StandardCharsets.UTF_8));
             }
 
             int code = conn.getResponseCode();
             if (code < 200 || code >= 300) {
+                noteClientFailure(client.name);
                 throw new IOException("InnerTube HTTP " + code + " (" + client.name + ")");
             }
             jsonText = readStreamText(conn.getInputStream());
@@ -395,6 +499,9 @@ final class MobileStreamProxy {
         JSONObject playability = root.optJSONObject("playabilityStatus");
         String status = playability != null ? playability.optString("status", "") : "";
         if (!"OK".equalsIgnoreCase(status)) {
+            if ("LOGIN_REQUIRED".equalsIgnoreCase(status) || "UNPLAYABLE".equalsIgnoreCase(status)) {
+                noteClientFailure(client.name);
+            }
             throw new IOException("InnerTube status " + status + " (" + client.name + ")");
         }
 
@@ -407,11 +514,15 @@ final class MobileStreamProxy {
 
         Double lufs = extractLufs(root);
         JSONObject picked = pickBestAudioFormat(formats, maxKbps);
-        if (picked == null) throw new IOException("No direct audio format (" + client.name + ")");
+        if (picked == null) {
+            noteClientFailure(client.name);
+            throw new IOException("No direct audio format (" + client.name + ")");
+        }
 
         String streamUrl = picked.optString("url", "");
-        if (streamUrl.isEmpty() || !probeRange(streamUrl, client.userAgent)) {
-            throw new IOException("Range probe failed (" + client.name + ")");
+        if (streamUrl.isEmpty()) {
+            noteClientFailure(client.name);
+            throw new IOException("Empty audio url (" + client.name + ")");
         }
         String rawMime = picked.optString("mimeType", "audio/mp4");
         String cleanMime = rawMime.split(";")[0].trim();
@@ -646,109 +757,181 @@ final class MobileStreamProxy {
         }
     }
 
-    private ResolvedStream resolveViaPiped(String videoId, int maxKbps, String proxyUrl) {
-        for (String host : PIPED_INSTANCES) {
-            try {
-                String jsonText = httpGetText(host + "/streams/" + urlEncode(videoId), DESKTOP_UA, 5000);
-                JSONObject data = new JSONObject(jsonText);
-                JSONArray streams = data.optJSONArray("audioStreams");
-                if (streams == null || streams.length() == 0) continue;
-
-                JSONObject bestMp4 = null;
-                int bestMp4Rate = -1;
-                JSONObject bestAny = null;
-                int bestAnyRate = -1;
-                int capBps = maxKbps > 0 ? maxKbps * 1000 : Integer.MAX_VALUE;
-
-                for (int i = 0; i < streams.length(); i++) {
-                    JSONObject s = streams.optJSONObject(i);
-                    if (s == null) continue;
-                    String u = s.optString("url", "");
-                    String mime = s.optString("mimeType", "").toLowerCase(Locale.US);
-                    if (!u.startsWith("https://")) continue;
-                    int bitrate = s.optInt("bitrate", 0);
-                    if (mime.contains("audio/mp4") && bitrate <= capBps && bitrate > bestMp4Rate) {
-                        bestMp4Rate = bitrate;
-                        bestMp4 = s;
-                    }
-                    if (bitrate <= capBps && bitrate > bestAnyRate) {
-                        bestAnyRate = bitrate;
-                        bestAny = s;
-                    }
-                }
-                JSONObject picked = bestMp4 != null ? bestMp4 : bestAny;
-                if (picked == null) continue;
-                String pickedUrl = picked.getString("url");
-                if (!probeRange(pickedUrl, DESKTOP_UA)) continue;
-                String rawMime = picked.optString("mimeType", "audio/mp4");
-                String cleanMime = rawMime.split(";")[0].trim();
-                if (cleanMime.isEmpty()) cleanMime = "audio/mp4";
-                return new ResolvedStream(
-                        proxyUrl,
-                        pickedUrl,
-                        cleanMime,
-                        null,
-                        DESKTOP_UA,
-                        "piped",
-                        parseClenFromUrl(pickedUrl),
-                        computeTtlMs(pickedUrl));
-            } catch (Exception ignored) {
-                // Try next Piped mirror
+    private List<String> healthyHosts(String[] all) {
+        long now = System.currentTimeMillis();
+        List<String> ready = new ArrayList<>(all.length);
+        for (String h : all) {
+            if (mirrorCooldownUntil.getOrDefault(h, 0L) <= now) {
+                ready.add(h);
             }
         }
+        return ready.isEmpty() ? Arrays.asList(all) : ready;
+    }
+
+    private ResolvedStream resolveViaPiped(String videoId, int maxKbps, String proxyUrl) {
+        List<String> hosts = healthyHosts(PIPED_INSTANCES);
+        CompletionService<ResolvedStream> ecs = new ExecutorCompletionService<>(resolverPool);
+        List<Future<ResolvedStream>> tasks = new ArrayList<>(hosts.size());
+        for (final String host : hosts) {
+            tasks.add(ecs.submit(() -> {
+                try {
+                    String jsonText = httpGetText(host + "/streams/" + urlEncode(videoId), DESKTOP_UA, 3500);
+                    JSONObject data = new JSONObject(jsonText);
+                    JSONArray streams = data.optJSONArray("audioStreams");
+                    if (streams == null || streams.length() == 0) {
+                        mirrorCooldownUntil.put(host, System.currentTimeMillis() + MIRROR_COOLDOWN_MS);
+                        return null;
+                    }
+
+                    JSONObject bestMp4 = null;
+                    int bestMp4Rate = -1;
+                    JSONObject bestAny = null;
+                    int bestAnyRate = -1;
+                    int capBps = maxKbps > 0 ? maxKbps * 1000 : Integer.MAX_VALUE;
+
+                    for (int i = 0; i < streams.length(); i++) {
+                        JSONObject s = streams.optJSONObject(i);
+                        if (s == null) continue;
+                        String u = s.optString("url", "");
+                        String mime = s.optString("mimeType", "").toLowerCase(Locale.US);
+                        if (!u.startsWith("https://")) continue;
+                        int bitrate = s.optInt("bitrate", 0);
+                        if (mime.contains("audio/mp4") && bitrate <= capBps && bitrate > bestMp4Rate) {
+                            bestMp4Rate = bitrate;
+                            bestMp4 = s;
+                        }
+                        if (bitrate <= capBps && bitrate > bestAnyRate) {
+                            bestAnyRate = bitrate;
+                            bestAny = s;
+                        }
+                    }
+                    JSONObject picked = bestMp4 != null ? bestMp4 : bestAny;
+                    if (picked == null) return null;
+                    String pickedUrl = picked.getString("url");
+                    // Avoid returning third-party IP-locked googlevideo URLs unless reachable from device IP
+                    if (isGoogleVideo(pickedUrl) && !probeRange(pickedUrl, DESKTOP_UA)) {
+                        mirrorCooldownUntil.put(host, System.currentTimeMillis() + MIRROR_COOLDOWN_MS);
+                        return null;
+                    }
+                    mirrorCooldownUntil.remove(host);
+                    String rawMime = picked.optString("mimeType", "audio/mp4");
+                    String cleanMime = rawMime.split(";")[0].trim();
+                    if (cleanMime.isEmpty()) cleanMime = "audio/mp4";
+                    return new ResolvedStream(
+                            proxyUrl,
+                            pickedUrl,
+                            cleanMime,
+                            null,
+                            DESKTOP_UA,
+                            "piped",
+                            parseClenFromUrl(pickedUrl),
+                            computeTtlMs(pickedUrl));
+                } catch (Exception ignored) {
+                    mirrorCooldownUntil.put(host, System.currentTimeMillis() + MIRROR_COOLDOWN_MS);
+                    return null;
+                }
+            }));
+        }
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(3800);
+        for (int i = 0; i < tasks.size(); i++) {
+            long remMs = TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime());
+            if (remMs <= 0) break;
+            try {
+                Future<ResolvedStream> done = ecs.poll(remMs, TimeUnit.MILLISECONDS);
+                if (done == null) break;
+                ResolvedStream winner = done.get();
+                if (winner != null) {
+                    cancelFutures(tasks);
+                    return winner;
+                }
+            } catch (Exception ignored) {
+                // Keep racing healthy mirrors
+            }
+        }
+        cancelFutures(tasks);
         return null;
     }
 
     private ResolvedStream resolveViaInvidious(String videoId, int maxKbps, String proxyUrl) {
-        int capBps = maxKbps > 0 ? maxKbps * 1000 : Integer.MAX_VALUE;
-        for (String host : INVIDIOUS_INSTANCES) {
-            try {
-                String jsonText = httpGetText(host + "/api/v1/videos/" + urlEncode(videoId), DESKTOP_UA, 4500);
-                JSONObject data = new JSONObject(jsonText);
-                JSONArray formats = data.optJSONArray("adaptiveFormats");
-                if (formats == null || formats.length() == 0) continue;
-
-                JSONObject bestMp4 = null;
-                int bestMp4Rate = -1;
-                JSONObject bestAny = null;
-                int bestAnyRate = -1;
-
-                for (int i = 0; i < formats.length(); i++) {
-                    JSONObject f = formats.optJSONObject(i);
-                    if (f == null) continue;
-                    String u = f.optString("url", "");
-                    String type = f.optString("type", "").toLowerCase(Locale.US);
-                    if (!u.startsWith("https://") || !type.startsWith("audio/")) continue;
-                    int bitrate = parseBitrate(f.opt("bitrate"));
-                    if (type.contains("audio/mp4") && bitrate <= capBps && bitrate > bestMp4Rate) {
-                        bestMp4Rate = bitrate;
-                        bestMp4 = f;
+        final int capBps = maxKbps > 0 ? maxKbps * 1000 : Integer.MAX_VALUE;
+        List<String> hosts = healthyHosts(INVIDIOUS_INSTANCES);
+        CompletionService<ResolvedStream> ecs = new ExecutorCompletionService<>(resolverPool);
+        List<Future<ResolvedStream>> tasks = new ArrayList<>(hosts.size());
+        for (final String host : hosts) {
+            tasks.add(ecs.submit(() -> {
+                try {
+                    String jsonText = httpGetText(host + "/api/v1/videos/" + urlEncode(videoId), DESKTOP_UA, 3500);
+                    JSONObject data = new JSONObject(jsonText);
+                    JSONArray formats = data.optJSONArray("adaptiveFormats");
+                    if (formats == null || formats.length() == 0) {
+                        mirrorCooldownUntil.put(host, System.currentTimeMillis() + MIRROR_COOLDOWN_MS);
+                        return null;
                     }
-                    if (bitrate <= capBps && bitrate > bestAnyRate) {
-                        bestAnyRate = bitrate;
-                        bestAny = f;
+
+                    JSONObject bestMp4 = null;
+                    int bestMp4Rate = -1;
+                    JSONObject bestAny = null;
+                    int bestAnyRate = -1;
+
+                    for (int i = 0; i < formats.length(); i++) {
+                        JSONObject f = formats.optJSONObject(i);
+                        if (f == null) continue;
+                        String u = f.optString("url", "");
+                        String type = f.optString("type", "").toLowerCase(Locale.US);
+                        if (!u.startsWith("https://") || !type.startsWith("audio/")) continue;
+                        int bitrate = parseBitrate(f.opt("bitrate"));
+                        if (type.contains("audio/mp4") && bitrate <= capBps && bitrate > bestMp4Rate) {
+                            bestMp4Rate = bitrate;
+                            bestMp4 = f;
+                        }
+                        if (bitrate <= capBps && bitrate > bestAnyRate) {
+                            bestAnyRate = bitrate;
+                            bestAny = f;
+                        }
                     }
+                    JSONObject picked = bestMp4 != null ? bestMp4 : bestAny;
+                    if (picked == null) return null;
+                    String pickedUrl = picked.getString("url");
+                    if (isGoogleVideo(pickedUrl) && !probeRange(pickedUrl, DESKTOP_UA)) {
+                        mirrorCooldownUntil.put(host, System.currentTimeMillis() + MIRROR_COOLDOWN_MS);
+                        return null;
+                    }
+                    mirrorCooldownUntil.remove(host);
+                    String rawMime = picked.optString("type", "audio/mp4");
+                    String cleanMime = rawMime.split(";")[0].trim();
+                    if (cleanMime.isEmpty()) cleanMime = "audio/mp4";
+                    return new ResolvedStream(
+                            proxyUrl,
+                            pickedUrl,
+                            cleanMime,
+                            null,
+                            DESKTOP_UA,
+                            "invidious",
+                            parseContentLength(picked, pickedUrl),
+                            computeTtlMs(pickedUrl));
+                } catch (Exception ignored) {
+                    mirrorCooldownUntil.put(host, System.currentTimeMillis() + MIRROR_COOLDOWN_MS);
+                    return null;
                 }
-                JSONObject picked = bestMp4 != null ? bestMp4 : bestAny;
-                if (picked == null) continue;
-                String pickedUrl = picked.getString("url");
-                if (!probeRange(pickedUrl, DESKTOP_UA)) continue;
-                String rawMime = picked.optString("type", "audio/mp4");
-                String cleanMime = rawMime.split(";")[0].trim();
-                if (cleanMime.isEmpty()) cleanMime = "audio/mp4";
-                return new ResolvedStream(
-                        proxyUrl,
-                        pickedUrl,
-                        cleanMime,
-                        null,
-                        DESKTOP_UA,
-                        "invidious",
-                        parseContentLength(picked, pickedUrl),
-                        computeTtlMs(pickedUrl));
+            }));
+        }
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(3800);
+        for (int i = 0; i < tasks.size(); i++) {
+            long remMs = TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime());
+            if (remMs <= 0) break;
+            try {
+                Future<ResolvedStream> done = ecs.poll(remMs, TimeUnit.MILLISECONDS);
+                if (done == null) break;
+                ResolvedStream winner = done.get();
+                if (winner != null) {
+                    cancelFutures(tasks);
+                    return winner;
+                }
             } catch (Exception ignored) {
-                // Try next Invidious mirror
+                // Keep racing healthy mirrors
             }
         }
+        cancelFutures(tasks);
         return null;
     }
 
@@ -949,6 +1132,7 @@ final class MobileStreamProxy {
             conn = openUpstream(active, method, rangeHeader);
             int code = conn.getResponseCode();
             if (code == 403 || code == 410 || code >= 500) {
+                noteClientFailure(active.source);
                 conn.disconnect();
                 active = resolve(videoId, true, quality, title, artist);
                 if (isGoogleVideo(active.upstreamUrl)) {
@@ -961,9 +1145,11 @@ final class MobileStreamProxy {
             }
 
             if (code < 200 || code >= 400) {
+                noteClientFailure(active.source);
                 writeSimpleResponse(out, 502, "Bad Gateway", "text/plain", "Upstream HTTP " + code);
                 return;
             }
+            noteClientSuccess(active.source);
 
             String statusText = code == 206 ? "Partial Content" : "OK";
             String ct = conn.getContentType();
@@ -1003,6 +1189,7 @@ final class MobileStreamProxy {
         ResolvedStream active = initialEntry;
         long totalSize = resolveTotalLength(active);
         if (totalSize <= 0) {
+            noteClientFailure(active.source);
             try {
                 active = resolve(videoId, true, quality, title, artist);
                 if (!isGoogleVideo(active.upstreamUrl)) {
@@ -1065,6 +1252,65 @@ final class MobileStreamProxy {
             return true;
         }
 
+        if ("HEAD".equals(method)) {
+            long responseLength = reqEnd - reqStart + 1;
+            String contentRange = hasRange ? ("bytes " + reqStart + "-" + reqEnd + "/" + totalSize) : null;
+            writeCorsHeaders(
+                    out,
+                    hasRange ? 206 : 200,
+                    hasRange ? "Partial Content" : "OK",
+                    active.mimeType,
+                    responseLength,
+                    contentRange,
+                    true);
+            return true;
+        }
+
+        // Open slice 0 upstream FIRST before sending 200/206 headers to ExoPlayer so 403s
+        // rotate seamlessly to another InnerTube client without ever sending an empty body.
+        long firstSliceEnd = Math.min(reqStart + INITIAL_SLICE_BYTES - 1, reqEnd);
+        HttpURLConnection firstConn = null;
+        int firstCode = -1;
+        for (int attempt = 0; attempt < 2; attempt++) {
+            try {
+                firstConn = openUpstream(active, "GET", "bytes=" + reqStart + "-" + firstSliceEnd);
+                firstCode = firstConn.getResponseCode();
+                if (firstCode == 200 || firstCode == 206) {
+                    noteClientSuccess(active.source);
+                    break;
+                }
+            } catch (IOException ignored) {
+                firstCode = -1;
+            }
+            if (firstConn != null) {
+                firstConn.disconnect();
+                firstConn = null;
+            }
+            noteClientFailure(active.source);
+            if (attempt == 0) {
+                try {
+                    ResolvedStream rotated = resolve(videoId, true, quality, title, artist);
+                    if (!isGoogleVideo(rotated.upstreamUrl)) {
+                        return false;
+                    }
+                    long rotSize = resolveTotalLength(rotated);
+                    if (rotSize > 0) {
+                        totalSize = rotSize;
+                        reqEnd = Math.min(reqEnd, totalSize - 1);
+                        if (reqStart > reqEnd) return false;
+                        firstSliceEnd = Math.min(reqStart + INITIAL_SLICE_BYTES - 1, reqEnd);
+                    }
+                    active = rotated;
+                } catch (IOException ignored) {
+                    return false;
+                }
+            }
+        }
+        if (firstConn == null || (firstCode != 200 && firstCode != 206)) {
+            writeSimpleResponse(out, 502, "Bad Gateway", "text/plain", "Upstream HTTP " + firstCode);
+            return true;
+        }
+
         long responseLength = reqEnd - reqStart + 1;
         String contentRange = hasRange ? ("bytes " + reqStart + "-" + reqEnd + "/" + totalSize) : null;
         writeCorsHeaders(
@@ -1076,14 +1322,26 @@ final class MobileStreamProxy {
                 contentRange,
                 true);
 
-        if ("HEAD".equals(method)) {
-            return true;
-        }
-
         long offset = reqStart;
         Future<byte[]> prefetched = null;
         long prefetchedStart = -1;
         try {
+            // Stream slice 0 immediately packet-by-packet as bytes arrive from upstream (zero 1.5MB startup stall)
+            long nextAfterZero = firstSliceEnd + 1;
+            if (nextAfterZero <= reqEnd) {
+                final ResolvedStream snapEntry = active;
+                final long ne = Math.min(nextAfterZero + GOOGLEVIDEO_SLICE_BYTES - 1, reqEnd);
+                prefetchedStart = nextAfterZero;
+                prefetched = streamPool.submit(() -> fetchSlice(snapEntry, nextAfterZero, ne));
+            }
+            long streamedZero = pipeConnectionToOutput(firstConn, out);
+            firstConn.disconnect();
+            firstConn = null;
+            offset += streamedZero;
+            if (streamedZero == 0) {
+                return true;
+            }
+
             while (offset <= reqEnd) {
                 long sliceEnd = Math.min(offset + GOOGLEVIDEO_SLICE_BYTES - 1, reqEnd);
                 byte[] chunk = null;
@@ -1099,44 +1357,94 @@ final class MobileStreamProxy {
                     prefetched = null;
                 }
 
-                if (chunk == null) {
+                if (chunk != null) {
+                    long nextStart = offset + chunk.length;
+                    if (nextStart <= reqEnd) {
+                        final ResolvedStream snapEntry = active;
+                        final long ns = nextStart;
+                        final long ne = Math.min(ns + GOOGLEVIDEO_SLICE_BYTES - 1, reqEnd);
+                        prefetchedStart = ns;
+                        prefetched = streamPool.submit(() -> fetchSlice(snapEntry, ns, ne));
+                    }
+                    writeByteArrayChunked(out, chunk);
+                    offset += chunk.length;
+                } else {
+                    // Direct streaming without full slice buffering on miss
+                    HttpURLConnection sliceConn = null;
                     try {
-                        chunk = fetchSlice(active, offset, sliceEnd);
+                        sliceConn = openUpstream(active, "GET", "bytes=" + offset + "-" + sliceEnd);
+                        int sc = sliceConn.getResponseCode();
+                        if (sc != 200 && sc != 206) {
+                            throw new IOException("Slice HTTP " + sc);
+                        }
+                        long nextStart = sliceEnd + 1;
+                        if (nextStart <= reqEnd) {
+                            final ResolvedStream snapEntry = active;
+                            final long ns = nextStart;
+                            final long ne = Math.min(ns + GOOGLEVIDEO_SLICE_BYTES - 1, reqEnd);
+                            prefetchedStart = ns;
+                            prefetched = streamPool.submit(() -> fetchSlice(snapEntry, ns, ne));
+                        }
+                        long nWritten = pipeConnectionToOutput(sliceConn, out);
+                        if (nWritten == 0) throw new IOException("Empty slice");
+                        offset += nWritten;
                     } catch (IOException sliceErr) {
+                        if (sliceConn != null) sliceConn.disconnect();
+                        noteClientFailure(active.source);
                         ResolvedStream rotated = resolve(videoId, true, quality, title, artist);
                         if (!isGoogleVideo(rotated.upstreamUrl)
                                 || (rotated.contentLength > 0 && rotated.contentLength != totalSize)) {
                             throw sliceErr;
                         }
                         active = rotated;
-                        chunk = fetchSlice(active, offset, sliceEnd);
+                        HttpURLConnection retryConn = openUpstream(active, "GET", "bytes=" + offset + "-" + sliceEnd);
+                        try {
+                            int rc = retryConn.getResponseCode();
+                            if (rc < 200 || rc >= 300) throw sliceErr;
+                            long nWritten = pipeConnectionToOutput(retryConn, out);
+                            if (nWritten == 0) throw sliceErr;
+                            offset += nWritten;
+                        } finally {
+                            retryConn.disconnect();
+                        }
+                    } finally {
+                        if (sliceConn != null) sliceConn.disconnect();
                     }
                 }
-
-                long nextStart = offset + chunk.length;
-                if (nextStart <= reqEnd) {
-                    final ResolvedStream snapEntry = active;
-                    final long ns = nextStart;
-                    final long ne = Math.min(ns + GOOGLEVIDEO_SLICE_BYTES - 1, reqEnd);
-                    prefetchedStart = ns;
-                    prefetched = resolverPool.submit(() -> fetchSlice(snapEntry, ns, ne));
-                }
-
-                int pos = 0;
-                while (pos < chunk.length) {
-                    int n = Math.min(32768, chunk.length - pos);
-                    out.write(chunk, pos, n);
-                    pos += n;
-                }
-                out.flush();
-                offset += chunk.length;
             }
         } finally {
+            if (firstConn != null) firstConn.disconnect();
             if (prefetched != null) {
                 prefetched.cancel(true);
             }
         }
         return true;
+    }
+
+    private static long pipeConnectionToOutput(HttpURLConnection conn, OutputStream out) throws IOException {
+        long written = 0L;
+        byte[] buf = new byte[16384];
+        try (InputStream in = conn.getInputStream()) {
+            int n;
+            while ((n = in.read(buf)) != -1) {
+                if (n > 0) {
+                    out.write(buf, 0, n);
+                    out.flush();
+                    written += n;
+                }
+            }
+        }
+        return written;
+    }
+
+    private static void writeByteArrayChunked(OutputStream out, byte[] chunk) throws IOException {
+        int pos = 0;
+        while (pos < chunk.length) {
+            int n = Math.min(32768, chunk.length - pos);
+            out.write(chunk, pos, n);
+            pos += n;
+        }
+        out.flush();
     }
 
     private static long resolveTotalLength(ResolvedStream entry) {

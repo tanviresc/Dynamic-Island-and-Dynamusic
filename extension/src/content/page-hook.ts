@@ -37,7 +37,7 @@
         return /\/api\/organizations\/[^/]+\/chat_conversations\/[^/]+\/(completion|retry_completion)/i.test(p);
       }
       if (host.includes("chatgpt.com") || host.includes("chat.openai.com")) {
-        return /\/backend-(api|anon)\/(f\/)?conversation\/?$/i.test(p);
+        return /\/backend-(api|anon)\/(f\/)?conversation(\/|$)/i.test(p);
       }
       if (host.includes("gemini.google.com")) {
         return /StreamGenerate/i.test(p) || /bardchatui/i.test(url.search);
@@ -158,6 +158,43 @@
       writable: true,
       configurable: true,
     });
+  }
+
+  // Also hook XMLHttpRequest for sites (e.g. Gemini StreamGenerate) that stream over XHR
+  const OrigXHR = window.XMLHttpRequest;
+  if (typeof OrigXHR === "function") {
+    const xhrMeta = new WeakMap<XMLHttpRequest, { method: string; url: string }>();
+    const origOpen = OrigXHR.prototype.open;
+    const origSend = OrigXHR.prototype.send;
+
+    OrigXHR.prototype.open = function (
+      method: string,
+      url: string | URL,
+      ...rest: unknown[]
+    ): void {
+      xhrMeta.set(this, { method: String(method || "GET"), url: String(url || "") });
+      return (origOpen as (...args: unknown[]) => void).apply(this, [method, url, ...rest]);
+    };
+
+    OrigXHR.prototype.send = function (...args: unknown[]): void {
+      const meta = xhrMeta.get(this);
+      if (meta && isGenerationRequest(meta.url, meta.method)) {
+        activeStreams += 1;
+        if (activeStreams === 1) {
+          emitLifecycle("stream_active");
+        }
+        let finished = false;
+        const finishOnce = () => {
+          if (finished) return;
+          finished = true;
+          decrementStream();
+        };
+        this.addEventListener("loadend", finishOnce, { once: true });
+        this.addEventListener("abort", finishOnce, { once: true });
+        this.addEventListener("error", finishOnce, { once: true });
+      }
+      return (origSend as (...a: unknown[]) => void).apply(this, args);
+    };
   }
 })();
 

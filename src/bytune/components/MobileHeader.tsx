@@ -16,7 +16,10 @@ export function MobileHeader() {
   const { color, letter } = avatarFor(sessionMode, username, shownName({ mode: sessionMode, username, displayName }));
 
   return (
-    <header className="sticky top-0 inset-x-0 z-30 h-14 bg-[#0e0e12]/95 border-b border-white/10 px-3 flex items-center justify-between select-none">
+    <header
+      className="sticky top-0 inset-x-0 z-30 min-h-14 bg-[#0e0e12]/95 border-b border-white/10 px-3 pb-2 flex items-center justify-between select-none"
+      style={{ paddingTop: "max(env(safe-area-inset-top, 0px), var(--android-safe-top, 0px), 28px)" }}
+    >
       {/* Brand logo */}
       <button
         type="button"

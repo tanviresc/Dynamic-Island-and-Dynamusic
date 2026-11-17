@@ -227,12 +227,25 @@ async fn handle_ws_socket(mut socket: WebSocket, state: ServerState, origin: Opt
                             match parsed {
                                 Ok(WsClientMessage::Event { mut event }) => {
                                     let id = event.id;
+                                    let is_extension_origin = origin
+                                        .as_deref()
+                                        .is_some_and(|o| o.starts_with("chrome-extension://"));
                                     // Security check: Extension client over WS must use surface 'web'
-                                    if event.surface != Surface::Web {
+                                    if is_extension_origin && event.surface != Surface::Web {
                                         let ack = WsServerMessage::Ack {
                                             id,
                                             status: "rejected".to_string(),
                                             reason: Some("Extension client must use surface 'web'".to_string()),
+                                        };
+                                        let _ = socket.send(Message::Text(serde_json::to_string(&ack).unwrap())).await;
+                                    } else if !is_extension_origin
+                                        && event.surface != Surface::Web
+                                        && event.surface != Surface::Desktop
+                                    {
+                                        let ack = WsServerMessage::Ack {
+                                            id,
+                                            status: "rejected".to_string(),
+                                            reason: Some("WS client must use surface 'web' or 'desktop'".to_string()),
                                         };
                                         let _ = socket.send(Message::Text(serde_json::to_string(&ack).unwrap())).await;
                                     } else if event.normalize_and_validate(Utc::now()).is_ok() && state.event_tx.send(event).await.is_ok() {

@@ -11,13 +11,18 @@ export interface PlaybackClockSnapshot {
   duration: number;
   buffered: number;
   generation: number;
+  /** High-resolution timestamp (`performance.now()`) when `position` was recorded. */
+  updatedAtMs: number;
 }
+
+const nowMs = (): number => (typeof performance !== "undefined" ? performance.now() : Date.now());
 
 let snapshot: PlaybackClockSnapshot = {
   position: 0,
   duration: 0,
   buffered: 0,
   generation: 0,
+  updatedAtMs: nowMs(),
 };
 
 const listeners = new Set<() => void>();
@@ -44,6 +49,7 @@ export function setPlaybackClock(position: number, duration?: number, buffered?:
     duration: nextDur,
     buffered: nextBuf,
     generation: snapshot.generation + 1,
+    updatedAtMs: nowMs(),
   };
   notify();
 }
@@ -61,12 +67,25 @@ export function resetPlaybackClock(duration = 0): void {
     duration: Number.isFinite(duration) ? Math.max(0, duration) : 0,
     buffered: 0,
     generation: snapshot.generation + 1,
+    updatedAtMs: nowMs(),
   };
   notify();
 }
 
 export function getPlaybackClock(): PlaybackClockSnapshot {
   return snapshot;
+}
+
+/**
+ * Passive wall-clock interpolation between native ExoPlayer progress ticks (~250ms),
+ * eliminating stepped word-level lyric jitter on mobile APKs without polling timers.
+ */
+export function getInterpolatedPlaybackPosition(playing: boolean, speed = 1): number {
+  if (!playing) return snapshot.position;
+  const elapsedSec = Math.min(0.6, Math.max(0, (nowMs() - snapshot.updatedAtMs) / 1000));
+  const rate = Number.isFinite(speed) && speed > 0 ? speed : 1;
+  const interpolated = snapshot.position + elapsedSec * rate;
+  return snapshot.duration > 0 ? Math.min(snapshot.duration, interpolated) : interpolated;
 }
 
 export function subscribePlaybackClock(cb: () => void): () => void {

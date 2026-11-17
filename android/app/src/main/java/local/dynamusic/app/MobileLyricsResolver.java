@@ -29,6 +29,13 @@ final class MobileLyricsResolver {
     private static final String LYRICS_UA = "ByTune/1.0 (https://github.com/bytune-music)";
     private static final Pattern LRC_LINE = Pattern.compile("^((?:\\[\\d{1,3}:\\d{2}(?:[.:]\\d{1,3})?\\])+)(.*)$");
     private static final Pattern LRC_TAG = Pattern.compile("\\[(\\d{1,3}):(\\d{2})(?:[.:](\\d{1,3}))?\\]");
+    private static final Pattern ENHANCED_WORD = Pattern.compile("<(\\d{1,3}):(\\d{2})(?:[.:](\\d{1,3}))?>([^<]*)");
+    private static final Pattern LRC_OFFSET = Pattern.compile("(?im)^\\[offset:\\s*([+-]?\\d+)\\s*\\]$");
+    private static final Pattern LRC_TITLE_TAG = Pattern.compile("(?im)^\\[ti:([^\\]]*)\\]$");
+    private static final Pattern LRC_ARTIST_TAG = Pattern.compile("(?im)^\\[ar:([^\\]]*)\\]$");
+    private static final Pattern BRACKET_SPEAKER = Pattern.compile("^\\s*(?:\\[[^\\]\\n]{1,42}\\]|\\([^)\\n]{1,42}\\))\\s*[:：]\\s+(?=\\S)");
+    private static final Pattern STAGE_SPEAKER = Pattern.compile("(?i)^\\s*(?:v\\d{1,3}|chorus|verse\\s*\\d*|bridge|intro|outro|pre-chorus|hook|refrain|all|both|duet|ensemble|choir|male|female|man|woman|singer\\s*\\d*|vocal\\s*\\d*|guest)\\s*[:：]\\s+(?=\\S)");
+    private static final Pattern ARTIST_SPEAKER = Pattern.compile("^\\s*[A-Z][\\p{L}\\p{N}.'’&+\\-, ]{0,38}\\s*[:：]\\s+(?=\\S)");
     private static final Pattern VIDEO_ID = Pattern.compile("^[A-Za-z0-9_-]{11}$");
     private static final String[] LYRICSPLUS_MIRRORS = new String[] {
         "https://lyricsplus.prjktla.my.id",
@@ -202,6 +209,7 @@ final class MobileLyricsResolver {
 
             if (words.length() > 0) {
                 hasWords = true;
+                String rawText = words.getJSONObject(0).getString("text");
                 StringBuilder full = new StringBuilder();
                 double firstStart = startSec;
                 double lastEnd = startSec;
@@ -212,13 +220,19 @@ final class MobileLyricsResolver {
                     if (w > 0) full.append(' ');
                     full.append(wo.getString("text"));
                 }
+                String fullStr = full.toString();
+                String cleanedFull = stripSpeakerPrefix(fullStr, reqArtist);
+                if (!cleanedFull.equals(fullStr) && rawText.endsWith(":") && words.length() > 1) {
+                    words.remove(0);
+                }
+                if (cleanedFull.isEmpty()) continue;
                 outLine.put("time", firstStart);
-                outLine.put("text", full.toString());
+                outLine.put("text", cleanedFull);
                 outLine.put("words", words);
                 outLine.put("end", lastEnd);
                 outLines.put(outLine);
             } else {
-                String text = line.optString("text", "").trim();
+                String text = stripSpeakerPrefix(line.optString("text", ""), reqArtist);
                 if (!text.isEmpty()) {
                     outLine.put("time", startSec);
                     outLine.put("text", text);
@@ -317,7 +331,13 @@ final class MobileLyricsResolver {
                 if (!album.isEmpty()) url.append("&album_name=").append(enc(stripBrackets(album)));
                 String body = MobileYtmClient.httpGet(url.toString(), 4500, LYRICS_UA);
                 JSONObject rec = new JSONObject(body);
-                JSONObject parsed = fromLrclibRecord(rec);
+                if (rec.optBoolean("instrumental", false)) return null;
+                String recTrack = rec.optString("trackName", "");
+                String recArtist = rec.optString("artistName", "");
+                if (!recTrack.isEmpty() && !looseMatch(title, artist, recTrack, recArtist)) {
+                    return null;
+                }
+                JSONObject parsed = fromLrclibRecord(rec, title, artist, durationSec);
                 if (parsed != null) {
                     if (parsed.optJSONArray("synced") != null) return parsed;
                     plainFallback = parsed;
@@ -361,6 +381,7 @@ final class MobileLyricsResolver {
         for (int i = 0; i < results.length(); i++) {
             JSONObject rec = results.optJSONObject(i);
             if (rec == null) continue;
+            if (rec.optBoolean("instrumental", false)) continue;
             String recTrack = rec.optString("trackName", "");
             String recArtist = rec.optString("artistName", "");
             if (!looseMatch(reqTitle, reqArtist, recTrack, recArtist)) continue;
@@ -369,7 +390,7 @@ final class MobileLyricsResolver {
             double diff = (durationSec > 0 && recDur > 0) ? Math.abs(recDur - durationSec) : 0;
             if (durationSec > 0 && recDur > 0 && diff > 15) continue;
 
-            JSONObject parsed = fromLrclibRecord(rec);
+            JSONObject parsed = fromLrclibRecord(rec, reqTitle, reqArtist, durationSec);
             if (parsed == null) continue;
             if (parsed.optJSONArray("synced") != null) {
                 if (diff < bestSyncedDiff) {
@@ -383,16 +404,21 @@ final class MobileLyricsResolver {
         return bestSynced != null ? bestSynced : bestPlain;
     }
 
-    private static JSONObject fromLrclibRecord(JSONObject rec) throws JSONException {
+    private static JSONObject fromLrclibRecord(
+            JSONObject rec, String reqTitle, String reqArtist, double durationSec) throws JSONException {
+        if (rec.optBoolean("instrumental", false)) return null;
         String syncedLrc = rec.optString("syncedLyrics", "").trim();
-        String plain = rec.optString("plainLyrics", "").trim();
+        String plain = cleanPlainLyrics(rec.optString("plainLyrics", "").trim(), reqArtist);
 
-        JSONArray syncedArr = !syncedLrc.isEmpty() ? parseLrc(syncedLrc) : null;
+        boolean[] outWordSynced = new boolean[] { false };
+        JSONArray syncedArr = !syncedLrc.isEmpty() && validateLrcMetadata(syncedLrc, reqTitle, reqArtist, durationSec)
+                ? parseLrc(syncedLrc, reqArtist, outWordSynced)
+                : null;
         if (syncedArr != null && syncedArr.length() >= 3) {
             JSONObject obj = new JSONObject();
             obj.put("found", true);
             obj.put("source", "LRCLIB");
-            obj.put("wordSynced", false);
+            obj.put("wordSynced", outWordSynced[0]);
             obj.put("synced", syncedArr);
             obj.put("plain", plain.isEmpty() ? JSONObject.NULL : plain);
             return obj;
@@ -410,7 +436,7 @@ final class MobileLyricsResolver {
             JSONObject obj = new JSONObject();
             obj.put("found", true);
             obj.put("source", "LRCLIB");
-            obj.put("wordSynced", false);
+            obj.put("wordSynced", outWordSynced[0]);
             obj.put("synced", syncedArr);
             obj.put("plain", JSONObject.NULL);
             return obj;
@@ -418,41 +444,169 @@ final class MobileLyricsResolver {
         return null;
     }
 
-    private static JSONArray parseLrc(String lrc) throws JSONException {
-        List<double[]> times = new ArrayList<>();
-        List<String> texts = new ArrayList<>();
+    private static boolean validateLrcMetadata(
+            String lrc, String reqTitle, String reqArtist, double durationSec) {
+        Matcher ti = LRC_TITLE_TAG.matcher(lrc);
+        Matcher ar = LRC_ARTIST_TAG.matcher(lrc);
+        String tiVal = ti.find() ? ti.group(1).trim() : "";
+        String arVal = ar.find() ? ar.group(1).trim() : "";
+        if (!tiVal.isEmpty() && !looseMatch(reqTitle, reqArtist, tiVal, arVal)) {
+            return false;
+        }
+        return true;
+    }
+
+    private static double stampSeconds(String m, String s, String frac) {
+        double mins = Double.parseDouble(m);
+        double secs = Double.parseDouble(s);
+        double ms = 0;
+        if (frac != null && !frac.isEmpty()) {
+            ms = frac.length() == 3 ? Double.parseDouble(frac) / 1000.0
+                    : frac.length() == 2 ? Double.parseDouble(frac) / 100.0
+                    : Double.parseDouble(frac) / 10.0;
+        }
+        return mins * 60.0 + secs + ms;
+    }
+
+    private static String cleanPlainLyrics(String plain, String reqArtist) {
+        if (plain == null || plain.isEmpty()) return "";
+        StringBuilder sb = new StringBuilder();
+        String[] lines = plain.split("\\r?\\n");
+        for (int i = 0; i < lines.length; i++) {
+            String cleaned = stripSpeakerPrefix(lines[i], reqArtist);
+            if (sb.length() > 0) sb.append('\n');
+            sb.append(cleaned);
+        }
+        return sb.toString().trim();
+    }
+
+    private static String stripSpeakerPrefix(String raw, String trackArtist) {
+        if (raw == null) return "";
+        String text = raw.trim();
+        if (text.isEmpty()) return "";
+
+        Matcher bm = BRACKET_SPEAKER.matcher(text);
+        if (bm.find()) {
+            String rest = text.substring(bm.end()).trim();
+            if (!rest.isEmpty()) return rest;
+        }
+
+        Matcher sm = STAGE_SPEAKER.matcher(text);
+        if (sm.find()) {
+            String rest = text.substring(sm.end()).trim();
+            if (!rest.isEmpty()) return rest;
+        }
+
+        Matcher am = ARTIST_SPEAKER.matcher(text);
+        if (am.find()) {
+            String rest = text.substring(am.end()).trim();
+            if (!rest.isEmpty()) return rest;
+        }
+
+        int colon = text.indexOf(':');
+        if (colon <= 0 || colon > 42) colon = text.indexOf('\uFF1A');
+        if (colon > 0 && colon <= 42 && trackArtist != null && !trackArtist.isEmpty()) {
+            String candidate = text.substring(0, colon).trim().toLowerCase(Locale.US);
+            String artistLow = trackArtist.toLowerCase(Locale.US);
+            if (!candidate.isEmpty() && artistLow.contains(candidate)) {
+                String rest = text.substring(colon + 1).trim();
+                if (!rest.isEmpty()) return rest;
+            }
+        }
+        return text;
+    }
+
+    private static final class LrcRow {
+        final double time;
+        final String text;
+        final List<double[]> wordTimes;
+        final List<String> wordTexts;
+
+        LrcRow(double time, String text, List<double[]> wordTimes, List<String> wordTexts) {
+            this.time = time;
+            this.text = text;
+            this.wordTimes = wordTimes;
+            this.wordTexts = wordTexts;
+        }
+    }
+
+    private static JSONArray parseLrc(String lrc, String reqArtist, boolean[] outWordSynced) throws JSONException {
+        double offsetSec = 0;
+        Matcher om = LRC_OFFSET.matcher(lrc);
+        if (om.find()) {
+            try {
+                offsetSec = Double.parseDouble(om.group(1)) / 1000.0;
+            } catch (Exception ignored) {}
+        }
+
+        List<LrcRow> rows = new ArrayList<>();
+        boolean hasEnhanced = false;
         for (String line : lrc.split("\\r?\\n")) {
             Matcher m = LRC_LINE.matcher(line.trim());
             if (!m.matches()) continue;
             String tags = m.group(1);
-            String text = m.group(2).trim();
-            if (text.isEmpty()) continue;
+            String body = m.group(2);
+            List<Double> rawWordStarts = new ArrayList<>();
+            List<String> rawWordTexts = new ArrayList<>();
+            Matcher wm = ENHANCED_WORD.matcher(body);
+            while (wm.find()) {
+                double wt = Math.max(0.0, stampSeconds(wm.group(1), wm.group(2), wm.group(3)) - offsetSec);
+                String wtxt = wm.group(4).trim();
+                rawWordStarts.add(wt);
+                rawWordTexts.add(wtxt);
+                if (!wtxt.isEmpty()) hasEnhanced = true;
+            }
+            String plainText = stripSpeakerPrefix(ENHANCED_WORD.matcher(body).replaceAll("$4"), reqArtist);
+            if (plainText.isEmpty()) continue;
+
+            List<Double> lineTimes = new ArrayList<>();
             Matcher tm = LRC_TAG.matcher(tags);
             while (tm.find()) {
-                double mins = Double.parseDouble(tm.group(1));
-                double secs = Double.parseDouble(tm.group(2));
-                String frac = tm.group(3);
-                double ms = 0;
-                if (frac != null && !frac.isEmpty()) {
-                    ms = frac.length() == 3 ? Double.parseDouble(frac) / 1000.0
-                            : frac.length() == 2 ? Double.parseDouble(frac) / 100.0
-                            : Double.parseDouble(frac) / 10.0;
+                lineTimes.add(Math.max(0.0, stampSeconds(tm.group(1), tm.group(2), tm.group(3)) - offsetSec));
+            }
+            if (lineTimes.isEmpty()) continue;
+            double base = lineTimes.get(0);
+            for (double t : lineTimes) {
+                double delta = t - base;
+                List<double[]> wts = new ArrayList<>(rawWordStarts.size());
+                List<String> wtxts = new ArrayList<>(rawWordTexts);
+                for (int wi = 0; wi < rawWordStarts.size(); wi++) {
+                    wts.add(new double[] { Math.max(0.0, rawWordStarts.get(wi) + delta) });
                 }
-                times.add(new double[] { mins * 60.0 + secs + ms, times.size() });
-                texts.add(text);
+                rows.add(new LrcRow(t, plainText, wts, wtxts));
             }
         }
-        if (times.isEmpty()) return null;
-        List<Integer> order = new ArrayList<>(times.size());
-        for (int i = 0; i < times.size(); i++) order.add(i);
-        Collections.sort(order, Comparator.comparingDouble(a -> times.get(a)[0]));
+        if (rows.isEmpty()) return null;
+        Collections.sort(rows, Comparator.comparingDouble(r -> r.time));
 
         JSONArray arr = new JSONArray();
-        for (int idx : order) {
-            JSONObject row = new JSONObject();
-            row.put("time", times.get(idx)[0]);
-            row.put("text", texts.get(idx));
-            arr.put(row);
+        for (int i = 0; i < rows.size(); i++) {
+            LrcRow row = rows.get(i);
+            JSONObject obj = new JSONObject();
+            obj.put("time", row.time);
+            obj.put("text", row.text);
+            if (hasEnhanced && !row.wordTexts.isEmpty()) {
+                double lineEnd = (i + 1 < rows.size()) ? rows.get(i + 1).time : row.time + 4.0;
+                JSONArray wordsArr = new JSONArray();
+                for (int wi = 0; wi < row.wordTexts.size(); wi++) {
+                    String wt = row.wordTexts.get(wi);
+                    if (wt.isEmpty()) continue;
+                    double st = row.wordTimes.get(wi)[0];
+                    double en = (wi + 1 < row.wordTimes.size()) ? row.wordTimes.get(wi + 1)[0] : lineEnd;
+                    if (en < st) en = st;
+                    JSONObject wObj = new JSONObject();
+                    wObj.put("start", st);
+                    wObj.put("end", en);
+                    wObj.put("text", wt);
+                    wordsArr.put(wObj);
+                }
+                if (wordsArr.length() > 0) {
+                    outWordSynced[0] = true;
+                    obj.put("words", wordsArr);
+                    obj.put("end", wordsArr.getJSONObject(wordsArr.length() - 1).getDouble("end"));
+                }
+            }
+            arr.put(obj);
         }
         return arr;
     }
@@ -528,7 +682,8 @@ final class MobileLyricsResolver {
                     for (int i = 0; i < items.length(); i++) {
                         JSONObject item = items.optJSONObject(i);
                         if (item == null) continue;
-                        String text = item.optString("lyricLine", "").trim();
+                        String rawLine = item.optString("lyricLine", "").trim();
+                        String text = stripSpeakerPrefix(rawLine, "");
                         JSONObject cue = item.optJSONObject("cueRange");
                         if (text.isEmpty() || cue == null) continue;
                         double startSec = cue.optDouble("startTimeMilliseconds", 0) / 1000.0;

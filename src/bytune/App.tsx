@@ -14,6 +14,7 @@ import { TopBar } from "./components/TopBar";
 import { MobileHeader } from "./components/MobileHeader";
 import { MobileMiniPlayer } from "./components/MobileMiniPlayer";
 import { MobileNavBar } from "./components/MobileNavBar";
+import { MobileCrossfadeBackdrop } from "./components/MobileCrossfadeBackdrop";
 import { PcRemoteBar } from "./components/PcRemoteBar";
 import { useMobileMode } from "./stores/mobileMode";
 import { engineBoot } from "./lib/audio";
@@ -30,6 +31,7 @@ import { watchMenuCommands } from "./lib/menuCommands";
 import { watchUpdateNotice } from "./lib/updates";
 import { usePanelDrop } from "./lib/panelDrop";
 import { CoverGlow } from "./components/CoverGlow";
+import { AmbientCrossfadeBackdrop } from "./components/AmbientCrossfadeBackdrop";
 import { PanelScrollbar } from "./components/PanelScrollbar";
 import { watchSession, useSession } from "./lib/session";
 import { watchSyncRestores } from "./lib/syncRestore";
@@ -316,6 +318,7 @@ function CurrentView(): ReactNode {
 
 export default function App() {
   const viewName = useUI((s) => s.view.name);
+  const viewParam = useUI((s) => s.view.param ?? "");
   const viewReloadNonce = useUI((s) => s.viewReloadNonce);
   const pendingScroll = useUI((s) => s.pendingScroll);
   const lyricsCenter = useUI((s) => s.lyricsCenter);
@@ -400,7 +403,10 @@ export default function App() {
     // player (queue), settings (quality/speed/fades) and library (history)
     // alike, so the first load never reads a default over a saved value.
     const stores = [usePlayer.persist, useSettings.persist, useLibrary.persist];
+    let didBoot = false;
     const boot = (): void => {
+      if (didBoot) return;
+      didBoot = true;
       engineBoot();
       initAutoplay();
     };
@@ -410,7 +416,10 @@ export default function App() {
     }
     const unsubs = stores.map((p) =>
       p.onFinishHydration(() => {
-        if (stores.every((x) => x.hasHydrated())) boot();
+        if (stores.every((x) => x.hasHydrated())) {
+          unsubs.forEach((u) => u());
+          boot();
+        }
       })
     );
     return () => unsubs.forEach((u) => u());
@@ -467,6 +476,7 @@ export default function App() {
 
   const mobileMode = useMobileMode((s) => s.mode);
   const isMobileDevice = useMobileMode((s) => s.isMobileDevice);
+  const rightPanel = useUI((s) => s.rightPanel);
 
   // First run / reinstall gate — no shell is rendered until a mode is chosen.
   if (!session.loaded) return <div className="h-screen bg-canvas" />;
@@ -479,12 +489,13 @@ export default function App() {
     return (
       <div
         ref={shellRef}
-        className="h-screen flex flex-col ambient-root text-ink overflow-hidden select-none origin-center bg-base"
+        className="relative h-screen flex flex-col ambient-root text-ink overflow-hidden select-none origin-center bg-base"
       >
+        <MobileCrossfadeBackdrop intensity="shell" />
         <MobileHeader />
 
         <main
-          className="flex-1 min-w-0 flex flex-col bg-surface overflow-hidden relative"
+          className="relative z-10 flex-1 min-w-0 flex flex-col bg-surface/85 overflow-hidden"
           {...panelDrop.props}
         >
           <CoverGlow />
@@ -493,7 +504,20 @@ export default function App() {
             <LyricsCenter />
           ) : (
             <div ref={viewScrollRef} className="flex-1 min-h-0 w-full max-w-full overflow-y-auto overflow-x-hidden no-scrollbar relative" id="view-scroll">
-              <div key={`${viewReloadNonce}:${viewName}`} className="view-page w-full max-w-full overflow-x-hidden animate-rise-in px-3 pt-3 pb-36">
+              <div
+                key={`${viewReloadNonce}:${viewName}:${viewParam}`}
+                className={`view-page w-full max-w-full overflow-x-hidden px-3 pt-3 pb-36 ${
+                  viewName === "ytplaylist" ||
+                  viewName === "playlist" ||
+                  viewName === "album" ||
+                  viewName === "artist" ||
+                  viewName === "folder" ||
+                  viewName === "spotify" ||
+                  viewName === "import"
+                    ? "animate-mobile-detail-in"
+                    : "animate-mobile-tab-in"
+                }`}
+              >
                 <ErrorBoundary>
                   <CurrentView />
                 </ErrorBoundary>
@@ -520,12 +544,13 @@ export default function App() {
       onAnimationEnd={(e) => {
         if (e.animationName === "win-settle") e.currentTarget.classList.remove("win-settle");
       }}
-      className="h-screen flex flex-col ambient-root text-ink overflow-hidden select-none origin-center"
+      className="relative h-screen flex flex-col ambient-root text-ink overflow-hidden select-none origin-center"
     >
+      <AmbientCrossfadeBackdrop intensity="shell" />
       <TopBar />
       {/* Three-pane shell: sidebar · content · right rail, over a black canvas.
           8px gaps and side padding; 4px strip above the play bar (Spotify). */}
-      <div className="flex flex-1 min-h-0 gap-2 px-2 pb-1">
+      <div className="relative z-10 flex flex-1 min-h-0 gap-2 px-2 pb-1">
         <div className="flex h-full">
           <Sidebar />
         </div>
@@ -551,12 +576,12 @@ export default function App() {
               {/* No native scrollbar: it would take a strip of its own and cut
                   full-bleed covers short of the panel's right edge.
                   PanelScrollbar draws the thumb over the page instead. */}
-              <div ref={viewScrollRef} className="flex-1 min-h-0 overflow-y-auto no-scrollbar relative" id="view-scroll">
+              <div ref={viewScrollRef} className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden no-scrollbar relative" id="view-scroll">
                 {/* The reload nonce rides in the key: a bump remounts the current
                   view so its data effects re-run — that is the Refresh button's
                   mechanism everywhere except Home (which re-orchestrates its
                   feed without a remount). */}
-                <div key={`${viewReloadNonce}:${viewName}`} className="view-page animate-rise-in px-10 pt-5 pb-6">
+                <div key={`${viewReloadNonce}:${viewName}:${viewParam}`} className="view-page animate-rise-in px-4 sm:px-6 lg:px-10 pt-4 sm:pt-5 pb-6">
                   <ErrorBoundary>
                     <CurrentView />
                   </ErrorBoundary>
@@ -576,9 +601,21 @@ export default function App() {
             </>
           )}
         </main>
-        <div className="flex h-full">
+        <div className="hidden lg:flex h-full">
           <RightRail />
         </div>
+        {(rightPanel === "queue" || rightPanel === "room") && (
+          <div className="lg:hidden fixed inset-0 z-40 flex justify-end pt-[72px] pb-[92px] px-2">
+            <div
+              className="fixed inset-0 bg-black/50"
+              onClick={() => useUI.setState({ rightPanel: "details" })}
+              aria-hidden="true"
+            />
+            <div className="relative z-10 h-full flex">
+              <RightRail className="w-[min(328px,calc(100vw-16px))] h-full flex flex-col glass-pill rounded-2xl overflow-hidden shadow-2xl" />
+            </div>
+          </div>
+        )}
       </div>
 
       <PlayerBar />

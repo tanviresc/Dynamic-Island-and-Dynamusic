@@ -4,8 +4,15 @@ import {
   fallbackMobileLyrics,
   fallbackMobileSearch,
   fallbackMobileStreamUrl,
+  parseLrcText,
   pickBestPipedAudioUrl,
 } from "./lib/mobileStandaloneFallback";
+import { cleanMobileLyricLines, stripSingerPrefix } from "./lib/lyricsLines";
+import {
+  getInterpolatedPlaybackPosition,
+  resetPlaybackClock,
+  setPlaybackClock,
+} from "./lib/playbackClock";
 
 describe("mobileStandaloneFallback stream resolution", () => {
   const originalCapacitor = (globalThis as { Capacitor?: unknown }).Capacitor;
@@ -256,6 +263,56 @@ describe("mobileStandaloneFallback stream resolution", () => {
     expect(res.artists).toHaveLength(1);
     expect(res.artists[0].id).toBe("UCartist777");
     expect(res.artists[0].name).toBe("Noor");
+  });
+
+  it("parses enhanced word-level LRC timestamps and [offset:] for mobile playback", () => {
+    const raw = [
+      "[offset:500]",
+      "[00:10.00]<00:10.00>Hello <00:10.50>world<00:11.20>",
+      "[00:12.00]<00:12.00>Taylor Swift: <00:12.20>Singing <00:12.70>now<00:13.20>",
+    ].join("\n");
+    const parsed = parseLrcText(raw, "Taylor Swift");
+    expect(parsed.wordSynced).toBe(true);
+    expect(parsed.lines).toHaveLength(2);
+    expect(parsed.lines[0].text).toBe("Hello world");
+    expect(parsed.lines[0].words?.map((w) => [w.text, Number(w.start.toFixed(2)), Number(w.end.toFixed(2))])).toEqual([
+      ["Hello", 9.5, 10],
+      ["world", 10, 10.7],
+    ]);
+    expect(parsed.lines[1].text).toBe("Singing now");
+  });
+
+  it("strips singer/speaker prefixes on mobile lyrics without affecting normal lyrics or desktop", () => {
+    expect(stripSingerPrefix("Taylor Swift: Shake it off", "Taylor Swift")).toBe("Shake it off");
+    expect(stripSingerPrefix("[Justin Bieber]: Stay with me")).toBe("Stay with me");
+    expect(stripSingerPrefix("v1: Starting the verse")).toBe("Starting the verse");
+    expect(stripSingerPrefix("12:30 in the night")).toBe("12:30 in the night");
+
+    const sample = [
+      {
+        time: 5,
+        text: "SZA: Hold on tonight",
+        words: [
+          { start: 5, end: 5.2, text: "SZA:" },
+          { start: 5.2, end: 5.6, text: "Hold" },
+          { start: 5.6, end: 6.0, text: "on" },
+          { start: 6.0, end: 6.5, text: "tonight" },
+        ],
+      },
+    ];
+    expect(cleanMobileLyricLines(sample, false, "SZA")[0].text).toBe("SZA: Hold on tonight");
+    const mobileCleaned = cleanMobileLyricLines(sample, true, "SZA");
+    expect(mobileCleaned[0].text).toBe("Hold on tonight");
+    expect(mobileCleaned[0].words?.map((w) => w.text)).toEqual(["Hold", "on", "tonight"]);
+  });
+
+  it("smoothly interpolates native playback clock while playing and freezes when paused", () => {
+    resetPlaybackClock(120);
+    setPlaybackClock(10, 120, 30);
+    expect(getInterpolatedPlaybackPosition(false, 1)).toBe(10);
+    const playingPos = getInterpolatedPlaybackPosition(true, 1.5);
+    expect(playingPos).toBeGreaterThanOrEqual(10);
+    expect(playingPos).toBeLessThanOrEqual(120);
   });
 });
 

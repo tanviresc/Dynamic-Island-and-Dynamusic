@@ -17,6 +17,11 @@ import {
 import { artworkUrlOk } from "./artwork";
 import { OAUTH_REDIRECT, SUPABASE_ANON_KEY, SUPABASE_URL, SYNCED_STORES, syntheticEmail } from "./config";
 import {
+  readChunkedDataset,
+  readChunkedManifestSync,
+  writeChunkedDataset,
+} from "./mobileChunkedStore";
+import {
   DEVICE_SETTINGS_FIELDS,
   mergeArtistMeta,
   mergeLibrary,
@@ -158,11 +163,15 @@ function archiveKey(ownerId: string, name: string): string {
 }
 
 export function readMobileStore(name: string): unknown {
-  return readJson<unknown>(storeKey(name));
+  return readChunkedManifestSync<unknown>(storeKey(name));
+}
+
+export function readMobileStoreAsync(name: string): Promise<unknown> {
+  return readChunkedDataset<unknown>(storeKey(name));
 }
 
 export function writeMobileStore(name: string, data: unknown, markDirty = true): void {
-  writeJson(storeKey(name), data);
+  void writeChunkedDataset(storeKey(name), data);
   if (markDirty && isSyncedStore(name)) {
     mobileNoteLocalWrite(name);
   }
@@ -355,8 +364,8 @@ function switchMobileOwner(nextOwner: string, migrateGuest: boolean): void {
   } else {
     for (const name of ACCOUNT_STORES) {
       const local = readMobileStore(name);
-      writeJson(archiveKey(previous, name), local);
-      const saved = readJson<any>(archiveKey(nextOwner, name));
+      void writeChunkedDataset(archiveKey(previous, name), local);
+      const saved = readChunkedManifestSync<any>(archiveKey(nextOwner, name));
       let nextValue = saved;
       if (name === "library") {
         const downloads = (local as { state?: { downloads?: unknown } } | null)?.state?.downloads ?? {};
@@ -372,7 +381,7 @@ function switchMobileOwner(nextOwner: string, migrateGuest: boolean): void {
           nextValue = { state: { ...(saved?.state ?? {}), ...device }, version: saved?.version ?? 0 };
         }
       }
-      writeJson(storeKey(name), nextValue);
+      void writeChunkedDataset(storeKey(name), nextValue);
     }
   }
 
@@ -1032,6 +1041,22 @@ export async function mobileAuthGetSession(): Promise<MobileSessionInfo> {
   return info;
 }
 
+/**
+ * Synchronous cached session read for zero-block mobile startup (< 200ms first paint).
+ * Never touches network/Supabase locks; async `mobileAuthGetSession()` reconciles afterward.
+ */
+export function readCachedMobileSessionSync(): MobileSessionInfo | null {
+  if (typeof localStorage === "undefined") return null;
+  const cached = readJson<MobileSessionInfo>(SESSION_CACHE_KEY);
+  const profile = readProfile();
+  if (profile) {
+    const info = sessionInfoFromState();
+    if (info.mode !== null) return info;
+  }
+  if (cached && cached.mode !== null) return cached;
+  return null;
+}
+
 export async function mobileAuthUsernameAvailable(
   username: string
 ): Promise<{ available: boolean | null; reason?: string }> {
@@ -1318,7 +1343,7 @@ export async function mobileAuthSignOut(): Promise<MobileSessionInfo> {
 
 export function resetMobileDataStores(): void {
   for (const name of ACCOUNT_STORES) {
-    writeJson(storeKey(name), null);
+    void writeChunkedDataset(storeKey(name), null);
   }
   clearProfile();
   resetSyncState();

@@ -1,6 +1,7 @@
 /** Renderer-side session state — mirrors the main process's local profile. */
 import { create } from "zustand";
 import { hasBridge } from "./bridge";
+import { readCachedMobileSessionSync } from "./mobileCloudAuth";
 
 export interface SessionInfo {
   mode: "guest" | "account" | null;
@@ -20,6 +21,22 @@ interface SessionState extends SessionInfo {
   refresh(): Promise<void>;
 }
 
+function initialMobileSession(): Partial<SessionState> {
+  if (typeof window === "undefined" || "__TAURI_INTERNALS__" in window) return {};
+  const cached = readCachedMobileSessionSync();
+  if (!cached || !cached.mode) return {};
+  return {
+    mode: cached.mode,
+    userId: cached.userId ?? null,
+    username: cached.username ?? null,
+    displayName: typeof cached.displayName === "string" ? cached.displayName : null,
+    suggestedDisplayName: typeof cached.suggestedDisplayName === "string" ? cached.suggestedDisplayName : undefined,
+    freshInstall: cached.freshInstall === true,
+    needsUsername: cached.needsUsername === true,
+    loaded: true,
+  };
+}
+
 export const useSession = create<SessionState>((set) => ({
   mode: null,
   userId: null,
@@ -29,6 +46,7 @@ export const useSession = create<SessionState>((set) => ({
   freshInstall: false,
   needsUsername: false,
   loaded: false,
+  ...initialMobileSession(),
   refresh: async () => {
     try {
       const info = (await window.bytune?.authGetSession()) as SessionInfo | undefined;

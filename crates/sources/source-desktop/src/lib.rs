@@ -258,15 +258,13 @@ impl ToastProcessor {
             if !a.enabled {
                 return false;
             }
-            let id_match = toast
-                .app_id
-                .to_lowercase()
-                .contains(&a.source.to_string().to_lowercase())
-                || toast.app_id.to_lowercase().contains(&a.id.to_lowercase());
-            let title_match = toast
-                .title
-                .to_lowercase()
-                .contains(&a.display_name.to_lowercase());
+            let app_id_lower = toast.app_id.to_lowercase();
+            let title_lower_cmp = toast.title.to_lowercase();
+            let id_match = app_id_lower.contains(&a.source.to_string().to_lowercase())
+                || app_id_lower.contains(&a.id.to_lowercase())
+                || (a.source == Source::Claude && app_id_lower.contains("anthropic"))
+                || (a.source == Source::Chatgpt && app_id_lower.contains("openai"));
+            let title_match = title_lower_cmp.contains(&a.display_name.to_lowercase());
             id_match || title_match
         }) {
             let title = clamp_chars(
@@ -492,6 +490,193 @@ impl UiaSignalDetector {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TitleSignal {
+    Settled,
+    Working,
+    NeedsInput(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TitleState {
+    Idle,
+    Working {
+        started_at: u64,
+    },
+    Settling {
+        working_started_at: u64,
+        settling_started_at: u64,
+    },
+}
+
+pub fn classify_window_title(title: &str) -> TitleSignal {
+    let trimmed = title.trim();
+    if trimmed.is_empty() {
+        return TitleSignal::Settled;
+    }
+
+    let lower = trimmed.to_lowercase();
+    if lower.contains("approval")
+        || lower.contains("permission")
+        || lower.contains("confirm")
+        || lower.contains("needs input")
+        || lower.contains("action required")
+        || lower.contains("waiting for")
+    {
+        return TitleSignal::NeedsInput(clamp_chars(trimmed, 120));
+    }
+
+    let has_spinner = trimmed
+        .chars()
+        .any(|c| ('\u{2800}'..='\u{28FF}').contains(&c));
+    let has_working_word = lower.contains("generating")
+        || lower.contains("thinking")
+        || lower.contains("responding")
+        || lower.contains("working")
+        || lower.contains("loading");
+    let has_trailing_ellipsis = trimmed.ends_with("...") || trimmed.ends_with('…');
+
+    if has_spinner || has_working_word || has_trailing_ellipsis {
+        TitleSignal::Working
+    } else {
+        TitleSignal::Settled
+    }
+}
+
+pub struct WindowTitleDetector {
+    pub app: DesktopAppConfig,
+    state: TitleState,
+    settling_debounce_ms: u64,
+    min_work_duration_ms: u64,
+    gen_counter: u64,
+    last_prompt_title: Option<String>,
+    prompt_counter: u64,
+}
+
+impl WindowTitleDetector {
+    pub fn new(app: DesktopAppConfig) -> Self {
+        Self {
+            app,
+            state: TitleState::Idle,
+            settling_debounce_ms: 1200,
+            min_work_duration_ms: 600,
+            gen_counter: 0,
+            last_prompt_title: None,
+            prompt_counter: 0,
+        }
+    }
+
+    pub fn state(&self) -> TitleState {
+        self.state
+    }
+
+    pub fn tick(&mut self, window_title: Option<&str>, now: u64) -> Option<Event> {
+        let raw_title = window_title?;
+        let signal = classify_window_title(raw_title);
+
+        if let TitleSignal::NeedsInput(prompt_label) = signal {
+            if self.last_prompt_title.as_deref() != Some(&prompt_label) {
+                self.last_prompt_title = Some(prompt_label.clone());
+                self.prompt_counter += 1;
+                return Some(Event {
+                    id: Uuid::new_v4(),
+                    source: self.app.source,
+                    surface: Surface::Desktop,
+                    kind: Kind::NeedsInput,
+                    title: format!("{} · Needs input", self.app.display_name),
+                    text: clamp_chars(&prompt_label, 500),
+                    category: Some("Needs input".to_string()),
+                    account: None,
+                    target: Target::Process {
+                        process_names: self.app.process_names.clone(),
+                        window_title_contains: self.app.window_title_contains.clone(),
+                    },
+                    created_at: Utc::now(),
+                    dedupe_key: sanitize_ascii_key(
+                        &format!(
+                            "desktop:{}:title_prompt:{}",
+                            self.app.source, self.prompt_counter
+                        ),
+                        200,
+                    ),
+                });
+            }
+            return None;
+        } else {
+            self.last_prompt_title = None;
+        }
+
+        match self.state {
+            TitleState::Idle => {
+                if signal == TitleSignal::Working {
+                    self.state = TitleState::Working { started_at: now };
+                    self.gen_counter += 1;
+                }
+                None
+            }
+            TitleState::Working { started_at } => {
+                if signal == TitleSignal::Settled {
+                    self.state = TitleState::Settling {
+                        working_started_at: started_at,
+                        settling_started_at: now,
+                    };
+                }
+                None
+            }
+            TitleState::Settling {
+                working_started_at,
+                settling_started_at,
+            } => {
+                if signal == TitleSignal::Working {
+                    self.state = TitleState::Working {
+                        started_at: working_started_at,
+                    };
+                    None
+                } else if now.saturating_sub(settling_started_at) >= self.settling_debounce_ms {
+                    self.state = TitleState::Idle;
+                    let work_dur = settling_started_at.saturating_sub(working_started_at);
+                    if work_dur >= self.min_work_duration_ms {
+                        let clean = raw_title.trim();
+                        let text = if !clean.is_empty()
+                            && !clean.eq_ignore_ascii_case(&self.app.display_name)
+                        {
+                            clamp_chars(clean, 500)
+                        } else {
+                            "Response ready".to_string()
+                        };
+                        Some(Event {
+                            id: Uuid::new_v4(),
+                            source: self.app.source,
+                            surface: Surface::Desktop,
+                            kind: Kind::Done,
+                            title: format!("{} finished", self.app.display_name),
+                            text,
+                            category: None,
+                            account: None,
+                            target: Target::Process {
+                                process_names: self.app.process_names.clone(),
+                                window_title_contains: self.app.window_title_contains.clone(),
+                            },
+                            created_at: Utc::now(),
+                            dedupe_key: sanitize_ascii_key(
+                                &format!(
+                                    "desktop:{}:title_gen{}:done",
+                                    self.app.source, self.gen_counter
+                                ),
+                                200,
+                            ),
+                        })
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
+        }
+    }
+}
+
 #[cfg(windows)]
 fn find_process_window(target_process: &str) -> Option<(isize, String)> {
     use windows::Win32::Foundation::{BOOL, HWND, LPARAM, RECT};
@@ -681,6 +866,11 @@ fn probe_window_state(hwnd: isize) -> (bool, Option<String>) {
                 if let Ok(count) = elements.Length() {
                     for i in 0..count {
                         if let Ok(btn) = elements.GetElement(i) {
+                            let is_enabled =
+                                btn.CurrentIsEnabled().map(|b| b.as_bool()).unwrap_or(true);
+                            if !is_enabled {
+                                continue;
+                            }
                             let name_str =
                                 btn.CurrentName().map(|n| n.to_string()).unwrap_or_default();
                             let auto_id = btn
@@ -973,21 +1163,32 @@ fn start_os_toast_watcher_thread(thread_tx: tokio::sync::mpsc::Sender<Event>) {
 pub fn start_desktop_watcher(
     event_tx: tokio::sync::mpsc::Sender<Event>,
 ) -> tokio::task::JoinHandle<()> {
+    start_desktop_watcher_with_apps(event_tx, default_desktop_apps())
+}
+
+pub fn start_desktop_watcher_with_apps(
+    event_tx: tokio::sync::mpsc::Sender<Event>,
+    initial_apps: Vec<DesktopAppConfig>,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let (thread_tx, mut thread_rx) = tokio::sync::mpsc::channel::<Event>(32);
 
         #[cfg(windows)]
         start_os_toast_watcher_thread(thread_tx.clone());
 
-        // Spawn dedicated OS thread for COM UIAutomation polling
+        // Spawn dedicated OS thread for COM UIAutomation + Window Title polling
         let _ = std::thread::Builder::new()
             .name("island-desktop-watcher".to_string())
             .spawn(move || {
-                let apps = default_desktop_apps();
-                let mut detectors: HashMap<String, UiaSignalDetector> = HashMap::new();
-                for app in apps {
+                let mut uia_detectors: HashMap<String, UiaSignalDetector> = HashMap::new();
+                let mut title_detectors: HashMap<String, WindowTitleDetector> = HashMap::new();
+                let mut last_done_emit: HashMap<String, u64> = HashMap::new();
+
+                for app in initial_apps {
                     if app.enabled {
-                        detectors.insert(app.id.clone(), UiaSignalDetector::new(app));
+                        title_detectors
+                            .insert(app.id.clone(), WindowTitleDetector::new(app.clone()));
+                        uia_detectors.insert(app.id.clone(), UiaSignalDetector::new(app));
                     }
                 }
 
@@ -1000,7 +1201,7 @@ pub fn start_desktop_watcher(
 
                     #[cfg(windows)]
                     {
-                        for detector in detectors.values_mut() {
+                        for (app_id, detector) in uia_detectors.iter_mut() {
                             let mut found_window = None;
                             for proc_name in &detector.app.process_names {
                                 if let Some((hwnd, title)) = find_process_window(proc_name) {
@@ -1019,8 +1220,28 @@ pub fn start_desktop_watcher(
                                     {
                                         ev.text = clean_title.to_string();
                                     }
+                                    if ev.kind == Kind::Done {
+                                        last_done_emit.insert(app_id.clone(), now);
+                                    }
                                     if thread_tx.blocking_send(ev).is_err() {
                                         return;
+                                    }
+                                }
+
+                                if let Some(title_det) = title_detectors.get_mut(app_id) {
+                                    if let Some(ev) = title_det.tick(Some(&title), now) {
+                                        let suppressed = ev.kind == Kind::Done
+                                            && last_done_emit
+                                                .get(app_id)
+                                                .is_some_and(|t| now.saturating_sub(*t) < 3000);
+                                        if !suppressed {
+                                            if ev.kind == Kind::Done {
+                                                last_done_emit.insert(app_id.clone(), now);
+                                            }
+                                            if thread_tx.blocking_send(ev).is_err() {
+                                                return;
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -1201,6 +1422,93 @@ mod tests {
         let ev2 = detector
             .tick(false, Some("prompt-102".into()), 2000)
             .expect("new needs_input emitted");
+        assert_eq!(ev2.kind, Kind::NeedsInput);
+    }
+
+    #[test]
+    fn test_window_title_detector_working_to_done() {
+        let app = default_desktop_apps().into_iter().next().unwrap(); // Claude
+        let mut det = WindowTitleDetector::new(app);
+        assert_eq!(det.state(), TitleState::Idle);
+
+        // Idle title
+        assert!(det.tick(Some("Claude"), 1000).is_none());
+        assert_eq!(det.state(), TitleState::Idle);
+
+        // Spinner / generating title
+        assert!(det.tick(Some("⠋ Claude - Generating..."), 1500).is_none());
+        assert!(matches!(det.state(), TitleState::Working { .. }));
+
+        // Still working >= 600ms
+        assert!(det.tick(Some("⠙ Claude - Thinking..."), 2200).is_none());
+
+        // Settled title -> enters settling
+        assert!(det.tick(Some("Refactor plan - Claude"), 2300).is_none());
+        assert!(matches!(det.state(), TitleState::Settling { .. }));
+
+        // Before 1200ms debounce
+        assert!(det.tick(Some("Refactor plan - Claude"), 3000).is_none());
+
+        // Past 1200ms debounce -> emits Done
+        let ev = det
+            .tick(Some("Refactor plan - Claude"), 3500)
+            .expect("done emitted from window title");
+        assert_eq!(ev.source, Source::Claude);
+        assert_eq!(ev.surface, Surface::Desktop);
+        assert_eq!(ev.kind, Kind::Done);
+        assert_eq!(ev.text, "Refactor plan - Claude");
+        assert_eq!(det.state(), TitleState::Idle);
+    }
+
+    #[test]
+    fn test_window_title_detector_needs_input_dedupe() {
+        let chatgpt = default_desktop_apps()
+            .into_iter()
+            .find(|a| a.source == Source::Chatgpt)
+            .unwrap();
+        let mut det = WindowTitleDetector::new(chatgpt);
+
+        let ev = det
+            .tick(Some("ChatGPT - Action requires approval"), 1000)
+            .expect("needs_input emitted");
+        assert_eq!(ev.source, Source::Chatgpt);
+        assert_eq!(ev.kind, Kind::NeedsInput);
+
+        // Same title repeated -> deduped
+        assert!(det
+            .tick(Some("ChatGPT - Action requires approval"), 1400)
+            .is_none());
+
+        // Clears back to idle
+        assert!(det.tick(Some("ChatGPT"), 1800).is_none());
+    }
+
+    #[test]
+    fn test_toast_processor_openai_and_anthropic_aliases() {
+        let processor = ToastProcessor::new(default_desktop_apps());
+
+        let openai_toast = ToastMetadata {
+            app_id: "OpenAI.DesktopApp".into(),
+            title: "Task finished".into(),
+            body: "Analysis complete".into(),
+            timestamp: Utc::now(),
+        };
+        let ev = processor
+            .process_toast(&openai_toast)
+            .expect("chatgpt toast");
+        assert_eq!(ev.source, Source::Chatgpt);
+        assert_eq!(ev.kind, Kind::Done);
+
+        let anthropic_toast = ToastMetadata {
+            app_id: "com.anthropic.app".into(),
+            title: "Action needed".into(),
+            body: "Permission required to run tool".into(),
+            timestamp: Utc::now(),
+        };
+        let ev2 = processor
+            .process_toast(&anthropic_toast)
+            .expect("claude toast");
+        assert_eq!(ev2.source, Source::Claude);
         assert_eq!(ev2.kind, Kind::NeedsInput);
     }
 }

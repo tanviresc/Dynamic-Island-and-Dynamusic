@@ -78,6 +78,10 @@ export const SettingsShell: React.FC = () => {
   const [isAuthenticating, setIsAuthenticating] = useState<boolean>(false);
   const [emailStatusMsg, setEmailStatusMsg] = useState<string>("");
 
+  // Display & Timers State
+  const [displayMs, setDisplayMs] = useState<number>(4000);
+  const [displaySaved, setDisplaySaved] = useState<boolean>(false);
+
   useEffect(() => {
     invoke<boolean>("get_autostart")
       .then((val) => setAutostart(val))
@@ -88,7 +92,25 @@ export const SettingsShell: React.FC = () => {
     invoke<GmailAccountConfig[]>("get_gmail_accounts")
       .then((accs) => setGmailAccounts(accs))
       .catch(() => {});
+    invoke<{ displayMs: number }>("get_display_settings")
+      .then((res) => {
+        if (res && typeof res.displayMs === "number") {
+          setDisplayMs(res.displayMs);
+        }
+      })
+      .catch(() => {});
   }, []);
+
+  const handleUpdateDisplayMs = (nextMs: number) => {
+    const clamped = Math.min(15000, Math.max(1000, Math.round(nextMs)));
+    setDisplayMs(clamped);
+    invoke<{ displayMs: number }>("set_display_settings", { displayMs: clamped })
+      .then(() => {
+        setDisplaySaved(true);
+        setTimeout(() => setDisplaySaved(false), 1500);
+      })
+      .catch(() => {});
+  };
 
   const handleToggleAutostart = (enabled: boolean) => {
     setAutostart(enabled);
@@ -919,19 +941,70 @@ export const SettingsShell: React.FC = () => {
           </div>
         )}
 
-        {activeTab !== "general" &&
-          activeTab !== "security" &&
-          activeTab !== "developer" &&
-          activeTab !== "monitors" &&
-          activeTab !== "sources" &&
-          activeTab !== "email" && (
+        {activeTab === "display" && (
           <div>
-            <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 16 }}>
-              {activeTab.charAt(0).toUpperCase() + activeTab.slice(1)}
-            </h2>
-            <p style={{ color: "rgba(255, 255, 255, 0.6)", fontSize: 13 }}>
-              Configured in subsequent integration phases.
-            </p>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+              <div>
+                <h2 style={{ fontSize: 18, fontWeight: 600 }}>Display & Timers</h2>
+                <p style={{ fontSize: 12, color: "rgba(255, 255, 255, 0.5)", marginTop: 2 }}>
+                  Popups hold for the configured duration regardless of window focus changes.
+                </p>
+              </div>
+              {displaySaved && (
+                <span style={{ fontSize: 12, color: "#4ade80", fontWeight: 600 }}>Saved</span>
+              )}
+            </div>
+
+            <div
+              style={{
+                backgroundColor: "rgba(255, 255, 255, 0.04)",
+                border: "1px solid rgba(255, 255, 255, 0.1)",
+                borderRadius: 8,
+                padding: 16,
+                maxWidth: 520,
+                display: "flex",
+                flexDirection: "column",
+                gap: 14,
+              }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ fontSize: 14, fontWeight: 600 }}>Popup Duration</span>
+                <span style={{ fontSize: 13, fontWeight: 600, color: "#60a5fa" }}>
+                  {(displayMs / 1000).toFixed(1)}s ({displayMs} ms)
+                </span>
+              </div>
+
+              <div style={{ display: "flex", gap: 8 }}>
+                {[2000, 4000, 8000].map((preset) => (
+                  <button
+                    key={preset}
+                    onClick={() => handleUpdateDisplayMs(preset)}
+                    style={{
+                      padding: "6px 14px",
+                      borderRadius: 6,
+                      border: displayMs === preset ? "1px solid #3b82f6" : "1px solid rgba(255, 255, 255, 0.14)",
+                      backgroundColor: displayMs === preset ? "rgba(59, 130, 246, 0.25)" : "rgba(255, 255, 255, 0.06)",
+                      color: "#ffffff",
+                      fontSize: 12,
+                      fontWeight: 600,
+                      cursor: "pointer",
+                    }}
+                  >
+                    {preset / 1000}s
+                  </button>
+                ))}
+              </div>
+
+              <input
+                type="range"
+                min={1000}
+                max={15000}
+                step={500}
+                value={displayMs}
+                onChange={(e) => handleUpdateDisplayMs(Number(e.target.value))}
+                style={{ width: "100%", cursor: "pointer" }}
+              />
+            </div>
           </div>
         )}
       </div>

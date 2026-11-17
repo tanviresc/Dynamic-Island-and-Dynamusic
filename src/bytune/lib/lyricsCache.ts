@@ -1,21 +1,35 @@
 /**
- * Persistent offline-first lyrics cache backed by IndexedDB (with in-memory LRU
- * and localStorage fallback) so repeat & offline playback loads lyrics instantly.
+ * Persistent chunked offline-first lyrics cache backed by IndexedDB (`lyrics` headers
+ * + small paginated `lyrics_chunks`) so storing/loading long enhanced LRC datasets
+ * never freezes the UI thread during playback.
  */
-import type { LyricsResult } from "../types";
+import type { LyricsResult, SyncedLyricLine } from "../types";
 import { cleanTrackQuery } from "./mobileStandaloneFallback";
 
 const DB_NAME = "dynamusic-lyrics-cache";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE_NAME = "lyrics";
+const CHUNK_STORE_NAME = "lyrics_chunks";
 const LS_INDEX_KEY = "dynamusic:lyrics_cache_v1";
+const LYRICS_STORAGE_CHUNK_SIZE = 24;
 const MAX_MEM_ENTRIES = 64;
-const MAX_LS_ENTRIES = 24;
+const MAX_LS_ENTRIES = 12;
 
-interface StoredLyricsEntry {
+interface StoredLyricsHeader {
   key: string;
-  result: LyricsResult;
+  source?: string | null;
+  wordSynced?: boolean;
+  plain?: string | null;
+  chunkCount?: number;
+  /** Legacy inline field for backwards compatibility with pre-v2 entries. */
+  result?: LyricsResult;
+  duration?: number;
   savedAt: number;
+}
+
+interface StoredLyricsChunk {
+  chunkKey: string;
+  lines: SyncedLyricLine[];
 }
 
 const memCache = new Map<string, LyricsResult>();
@@ -31,6 +45,9 @@ function openLyricsDb(): Promise<IDBDatabase | null> {
         const db = req.result;
         if (!db.objectStoreNames.contains(STORE_NAME)) {
           db.createObjectStore(STORE_NAME, { keyPath: "key" });
+        }
+        if (!db.objectStoreNames.contains(CHUNK_STORE_NAME)) {
+          db.createObjectStore(CHUNK_STORE_NAME, { keyPath: "chunkKey" });
         }
       };
       req.onsuccess = () => resolve(req.result);
@@ -70,15 +87,32 @@ export function buildLyricsCacheKeys(track: {
   return keys;
 }
 
-function readLocalFallback(keys: string[]): LyricsResult | null {
+function isCompatibleHeader(
+  entry: StoredLyricsHeader | undefined,
+  key: string,
+  trackDuration?: number
+): entry is StoredLyricsHeader {
+  if (!entry) return false;
+  const hasContent =
+    (entry.chunkCount ?? 0) > 0 ||
+    Boolean(entry.plain && entry.plain.trim()) ||
+    Boolean(entry.result && (entry.result.synced?.length || entry.result.plain));
+  if (!hasContent) return false;
+  if (key.startsWith("meta:") && trackDuration && trackDuration > 0 && entry.duration && entry.duration > 0) {
+    if (Math.abs(trackDuration - entry.duration) > 10) return false;
+  }
+  return true;
+}
+
+function readLocalFallback(keys: string[], trackDuration?: number): LyricsResult | null {
   try {
     if (typeof localStorage === "undefined") return null;
     const raw = localStorage.getItem(LS_INDEX_KEY);
     if (!raw) return null;
-    const map = JSON.parse(raw) as Record<string, StoredLyricsEntry>;
+    const map = JSON.parse(raw) as Record<string, StoredLyricsHeader>;
     for (const key of keys) {
       const entry = map[key];
-      if (entry?.result && (entry.result.synced?.length || entry.result.plain)) {
+      if (isCompatibleHeader(entry, key, trackDuration) && entry.result) {
         return entry.result;
       }
     }
@@ -88,17 +122,17 @@ function readLocalFallback(keys: string[]): LyricsResult | null {
   return null;
 }
 
-function writeLocalFallback(keys: string[], result: LyricsResult): void {
+function writeLocalFallback(keys: string[], result: LyricsResult, duration?: number): void {
   try {
     if (typeof localStorage === "undefined") return;
     const raw = localStorage.getItem(LS_INDEX_KEY);
-    const map = raw ? (JSON.parse(raw) as Record<string, StoredLyricsEntry>) : {};
+    const map = raw ? (JSON.parse(raw) as Record<string, StoredLyricsHeader>) : {};
     const now = Date.now();
     for (const key of keys) {
-      map[key] = { key, result, savedAt: now };
+      map[key] = { key, source: result.source, result, duration, savedAt: now };
     }
     const entries = Object.values(map).sort((a, b) => b.savedAt - a.savedAt).slice(0, MAX_LS_ENTRIES);
-    const pruned: Record<string, StoredLyricsEntry> = {};
+    const pruned: Record<string, StoredLyricsHeader> = {};
     for (const e of entries) {
       pruned[e.key] = e;
     }
@@ -108,10 +142,40 @@ function writeLocalFallback(keys: string[], result: LyricsResult): void {
   }
 }
 
+async function readChunkedResult(db: IDBDatabase, entry: StoredLyricsHeader): Promise<LyricsResult | null> {
+  if (entry.result && (entry.result.synced?.length || entry.result.plain)) {
+    return entry.result;
+  }
+  const chunkCount = entry.chunkCount ?? 0;
+  let synced: SyncedLyricLine[] | null = null;
+  if (chunkCount > 0 && db.objectStoreNames.contains(CHUNK_STORE_NAME)) {
+    const tx = db.transaction(CHUNK_STORE_NAME, "readonly");
+    const store = tx.objectStore(CHUNK_STORE_NAME);
+    const collected: SyncedLyricLine[] = [];
+    for (let idx = 0; idx < chunkCount; idx++) {
+      const chunk = await new Promise<StoredLyricsChunk | undefined>((resolve) => {
+        const req = store.get(`${entry.key}#${idx}`);
+        req.onsuccess = () => resolve(req.result as StoredLyricsChunk | undefined);
+        req.onerror = () => resolve(undefined);
+      });
+      if (chunk?.lines?.length) collected.push(...chunk.lines);
+    }
+    if (collected.length > 0) synced = collected;
+  }
+  if (!synced?.length && !entry.plain) return null;
+  return {
+    ...(entry.source ? { source: entry.source } : {}),
+    wordSynced: entry.wordSynced,
+    synced,
+    plain: entry.plain ?? null,
+  };
+}
+
 export async function getCachedLyrics(track: {
   id?: string | null;
   title: string;
   artist: string;
+  duration?: number;
 }): Promise<LyricsResult | null> {
   const keys = buildLyricsCacheKeys(track);
   for (const key of keys) {
@@ -128,14 +192,17 @@ export async function getCachedLyrics(track: {
       const tx = db.transaction(STORE_NAME, "readonly");
       const store = tx.objectStore(STORE_NAME);
       for (const key of keys) {
-        const entry = await new Promise<StoredLyricsEntry | undefined>((resolve) => {
+        const entry = await new Promise<StoredLyricsHeader | undefined>((resolve) => {
           const req = store.get(key);
-          req.onsuccess = () => resolve(req.result as StoredLyricsEntry | undefined);
+          req.onsuccess = () => resolve(req.result as StoredLyricsHeader | undefined);
           req.onerror = () => resolve(undefined);
         });
-        if (entry?.result && (entry.result.synced?.length || entry.result.plain)) {
-          for (const k of keys) setMem(k, entry.result);
-          return entry.result;
+        if (isCompatibleHeader(entry, key, track.duration)) {
+          const assembled = await readChunkedResult(db, entry);
+          if (assembled) {
+            for (const k of keys) setMem(k, assembled);
+            return assembled;
+          }
         }
       }
     } catch {
@@ -143,7 +210,7 @@ export async function getCachedLyrics(track: {
     }
   }
 
-  const lsHit = readLocalFallback(keys);
+  const lsHit = readLocalFallback(keys, track.duration);
   if (lsHit) {
     for (const k of keys) setMem(k, lsHit);
   }
@@ -151,26 +218,55 @@ export async function getCachedLyrics(track: {
 }
 
 export async function saveCachedLyrics(
-  track: { id?: string | null; title: string; artist: string },
+  track: { id?: string | null; title: string; artist: string; duration?: number },
   result: LyricsResult
 ): Promise<void> {
   if (!result || (!result.synced?.length && !result.plain)) return;
   const keys = buildLyricsCacheKeys(track);
   if (!keys.length) return;
+  const duration = track.duration && track.duration > 0 ? track.duration : undefined;
   for (const key of keys) setMem(key, result);
-  writeLocalFallback(keys, result);
 
   const db = await openLyricsDb();
   if (db) {
     try {
-      const tx = db.transaction(STORE_NAME, "readwrite");
-      const store = tx.objectStore(STORE_NAME);
+      const storeNames = db.objectStoreNames.contains(CHUNK_STORE_NAME)
+        ? [STORE_NAME, CHUNK_STORE_NAME]
+        : [STORE_NAME];
+      const tx = db.transaction(storeNames, "readwrite");
+      const headerStore = tx.objectStore(STORE_NAME);
+      const chunkStore = db.objectStoreNames.contains(CHUNK_STORE_NAME)
+        ? tx.objectStore(CHUNK_STORE_NAME)
+        : null;
       const savedAt = Date.now();
+      const synced = result.synced ?? [];
+      const chunkCount = chunkStore ? Math.ceil(synced.length / LYRICS_STORAGE_CHUNK_SIZE) : 0;
+
       for (const key of keys) {
-        store.put({ key, result, savedAt } satisfies StoredLyricsEntry);
+        if (chunkStore) {
+          headerStore.put({
+            key,
+            source: result.source ?? null,
+            wordSynced: result.wordSynced,
+            plain: result.plain ?? null,
+            chunkCount,
+            duration,
+            savedAt,
+          } satisfies StoredLyricsHeader);
+          for (let c = 0; c < chunkCount; c++) {
+            const slice = synced.slice(c * LYRICS_STORAGE_CHUNK_SIZE, (c + 1) * LYRICS_STORAGE_CHUNK_SIZE);
+            chunkStore.put({ chunkKey: `${key}#${c}`, lines: slice } satisfies StoredLyricsChunk);
+          }
+        } else {
+          headerStore.put({ key, source: result.source ?? null, result, duration, savedAt } satisfies StoredLyricsHeader);
+        }
       }
+      return;
     } catch {
-      /* localStorage + memory already updated */
+      /* fall through to localStorage */
     }
   }
+
+  writeLocalFallback(keys, result, duration);
 }
+

@@ -6,6 +6,111 @@ import { useUI } from "../stores/ui";
 import { fmtTime } from "../lib/format";
 import { useSwipeGesture } from "../lib/useSwipeGesture";
 
+function useRemoteLivePosition(
+  isPlaying: boolean,
+  trackId: string | undefined,
+  position: number | undefined,
+  serverTimestamp: number | undefined
+): [number, (sec: number) => void] {
+  const [livePos, setLivePos] = useState(() => getInterpolatedPcPosition(useMobileMode.getState().pcState));
+  useEffect(() => {
+    setLivePos(getInterpolatedPcPosition(useMobileMode.getState().pcState));
+    if (!isPlaying || (typeof document !== "undefined" && document.hidden)) return;
+    const id = window.setInterval(() => {
+      if (!document.hidden) {
+        setLivePos(getInterpolatedPcPosition(useMobileMode.getState().pcState));
+      }
+    }, 250);
+    return () => window.clearInterval(id);
+  }, [isPlaying, position, serverTimestamp, trackId]);
+  return [livePos, setLivePos];
+}
+
+function RemoteTimeText({
+  duration,
+  isPlaying,
+  trackId,
+  position,
+  serverTimestamp,
+}: {
+  duration: number;
+  isPlaying: boolean;
+  trackId?: string;
+  position?: number;
+  serverTimestamp?: number;
+}) {
+  const [livePos] = useRemoteLivePosition(isPlaying, trackId, position, serverTimestamp);
+  return (
+    <span className="text-white/45 text-[10px] tabular-nums shrink-0">
+      {fmtTime(livePos)} / {fmtTime(duration)}
+    </span>
+  );
+}
+
+function RemoteProgressScrubber({
+  duration,
+  isPlaying,
+  trackId,
+  position,
+  serverTimestamp,
+  onSeek,
+}: {
+  duration: number;
+  isPlaying: boolean;
+  trackId?: string;
+  position?: number;
+  serverTimestamp?: number;
+  onSeek: (sec: number) => void;
+}) {
+  const [livePos, setLivePos] = useRemoteLivePosition(isPlaying, trackId, position, serverTimestamp);
+  const [dragSec, setDragSec] = useState<number | null>(null);
+  const scrubRef = useRef<HTMLDivElement>(null);
+  const computeScrubSec = (clientX: number): number => {
+    const el = scrubRef.current;
+    if (!el || duration <= 0) return 0;
+    const rect = el.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / Math.max(1, rect.width)));
+    return ratio * duration;
+  };
+  const shownPos = dragSec ?? livePos;
+  const pct = duration > 0 ? Math.min(100, Math.max(0, (shownPos / duration) * 100)) : 0;
+
+  return (
+    <div
+      ref={scrubRef}
+      className="w-full py-1.5 -my-1 cursor-pointer touch-none"
+      onClick={(e) => e.stopPropagation()}
+      onPointerDown={(e) => {
+        if (!duration) return;
+        e.stopPropagation();
+        e.currentTarget.setPointerCapture(e.pointerId);
+        setDragSec(computeScrubSec(e.clientX));
+      }}
+      onPointerMove={(e) => {
+        if (dragSec === null) return;
+        e.stopPropagation();
+        setDragSec(computeScrubSec(e.clientX));
+      }}
+      onPointerUp={(e) => {
+        if (dragSec === null) return;
+        e.stopPropagation();
+        const finalSec = computeScrubSec(e.clientX);
+        setDragSec(null);
+        setLivePos(finalSec);
+        onSeek(finalSec);
+      }}
+      onPointerCancel={() => setDragSec(null)}
+    >
+      <div className="w-full h-1 bg-white/10 rounded-full overflow-hidden">
+        <div
+          className="h-full w-full bg-emerald-400 rounded-full origin-left will-change-transform"
+          style={{ transform: `scaleX(${pct / 100})` }}
+        />
+      </div>
+    </div>
+  );
+}
+
 export function PcRemoteBar() {
   const mode = useMobileMode((s) => s.mode);
   const setMode = useMobileMode((s) => s.setMode);
@@ -25,35 +130,10 @@ export function PcRemoteBar() {
   const isPlaying = Boolean(pcState?.playing);
   const duration = pcState?.duration ?? (track?.duration ?? 0);
 
-  // Smooth local interpolation between 2s desktop server state heartbeats
-  const [livePos, setLivePos] = useState(() => getInterpolatedPcPosition(pcState));
-  useEffect(() => {
-    setLivePos(getInterpolatedPcPosition(pcState));
-    if (!isPlaying) return;
-    const id = window.setInterval(() => {
-      setLivePos(getInterpolatedPcPosition(useMobileMode.getState().pcState));
-    }, 200);
-    return () => window.clearInterval(id);
-  }, [isPlaying, pcState?.position, pcState?.serverTimestamp, track?.id]);
-
-  // Scrubber pointer drag state
-  const [dragSec, setDragSec] = useState<number | null>(null);
-  const scrubRef = useRef<HTMLDivElement>(null);
-  const computeScrubSec = (clientX: number): number => {
-    const el = scrubRef.current;
-    if (!el || duration <= 0) return 0;
-    const rect = el.getBoundingClientRect();
-    const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / Math.max(1, rect.width)));
-    return ratio * duration;
-  };
-
   // Smooth debounced PC volume control (updates locally immediately, throttles network)
   const [localVol, setLocalVol] = useState<number | null>(null);
   const volThrottleRef = useRef<number>(0);
   const shownVol = localVol ?? (typeof pcState?.volume === "number" ? pcState.volume : 0.8);
-
-  const shownPos = dragSec ?? livePos;
-  const pct = duration > 0 ? Math.min(100, Math.max(0, (shownPos / duration) * 100)) : 0;
 
   const swipe = useSwipeGesture({
     onSwipeRight: () => sendCommand("NEXT"),
@@ -128,9 +208,13 @@ export function PcRemoteBar() {
             </button>
           )}
         </div>
-        <span className="text-white/45 text-[10px] tabular-nums shrink-0">
-          {fmtTime(shownPos)} / {fmtTime(duration)}
-        </span>
+        <RemoteTimeText
+          duration={duration}
+          isPlaying={isPlaying}
+          trackId={track?.id}
+          position={pcState?.position}
+          serverTimestamp={pcState?.serverTimestamp}
+        />
       </div>
 
       {/* Track & Controls */}
@@ -243,35 +327,14 @@ export function PcRemoteBar() {
       </div>
 
       {/* Draggable Progress Bar */}
-      <div
-        ref={scrubRef}
-        className="w-full py-1.5 -my-1 cursor-pointer touch-none"
-        onClick={(e) => e.stopPropagation()}
-        onPointerDown={(e) => {
-          if (!duration) return;
-          e.stopPropagation();
-          e.currentTarget.setPointerCapture(e.pointerId);
-          setDragSec(computeScrubSec(e.clientX));
-        }}
-        onPointerMove={(e) => {
-          if (dragSec === null) return;
-          e.stopPropagation();
-          setDragSec(computeScrubSec(e.clientX));
-        }}
-        onPointerUp={(e) => {
-          if (dragSec === null) return;
-          e.stopPropagation();
-          const finalSec = computeScrubSec(e.clientX);
-          setDragSec(null);
-          setLivePos(finalSec);
-          void sendCommand("SEEK", finalSec);
-        }}
-        onPointerCancel={() => setDragSec(null)}
-      >
-        <div className="w-full h-1 bg-white/10 rounded-full overflow-hidden">
-          <div className="h-full bg-emerald-400 rounded-full" style={{ width: `${pct}%` }} />
-        </div>
-      </div>
+      <RemoteProgressScrubber
+        duration={duration}
+        isPlaying={isPlaying}
+        trackId={track?.id}
+        position={pcState?.position}
+        serverTimestamp={pcState?.serverTimestamp}
+        onSeek={(sec) => void sendCommand("SEEK", sec)}
+      />
     </div>
   );
 }

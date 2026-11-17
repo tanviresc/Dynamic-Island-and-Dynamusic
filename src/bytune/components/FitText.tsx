@@ -136,7 +136,19 @@ export function FitText({
     };
     const unwatch = watch(lines === 1 ? [el, body] : [el], measure);
     schedule(measure);
+    const onVisibility = (): void => {
+      for (const a of running) {
+        try {
+          if (document.hidden) a.pause();
+          else a.play();
+        } catch {
+          /* ignore finished/cancelled animations */
+        }
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
     return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
       unwatch();
       pending.delete(measure);
       stop();

@@ -22,7 +22,7 @@ export interface MotionPresets {
     rowDuration: number;
   };
   dotAppear: {
-    scale: { type?: string; stiffness?: number; damping?: number };
+    scale: { type?: string; stiffness?: number; damping?: number; duration?: number; ease?: string | number[] };
     opacity: { duration: number };
   };
   dotDisappear: {
@@ -37,41 +37,41 @@ export interface MotionPresets {
 
 export const standardMotion: MotionPresets = {
   appear: {
-    layout: { type: "spring", stiffness: 420, damping: 32, mass: 0.8 },
+    layout: { duration: 0.45, ease: [0.16, 1, 0.3, 1] },
     content: {
-      opacity: { duration: 0.18, delay: 0.04, ease: "easeOut" },
+      opacity: { duration: 0.28, delay: 0.08, ease: "easeOut" },
     },
   },
   disappear: {
-    layout: { type: "spring", stiffness: 480, damping: 36, mass: 0.7 },
+    layout: { duration: 0.45, ease: [0.16, 1, 0.3, 1] },
     content: {
-      opacity: { duration: 0.14, ease: "easeInOut" },
+      opacity: { duration: 0.16, ease: "easeInOut" },
     },
   },
   contentChange: {
-    layout: { type: "spring", stiffness: 420, damping: 32, duration: 0.25 },
-    crossfade: { duration: 0.18 },
+    layout: { duration: 0.45, ease: [0.16, 1, 0.3, 1] },
+    crossfade: { duration: 0.2 },
   },
   queueOpen: {
-    layout: { type: "spring", stiffness: 400, damping: 30, mass: 0.85 },
+    layout: { duration: 0.45, ease: [0.16, 1, 0.3, 1] },
     stagger: 0.025,
-    rowDuration: 0.18,
-    rowDelay: 0.04,
+    rowDuration: 0.22,
+    rowDelay: 0.06,
   },
   queueClose: {
-    layout: { type: "spring", stiffness: 460, damping: 34, mass: 0.75 },
-    rowDuration: 0.12,
+    layout: { duration: 0.45, ease: [0.16, 1, 0.3, 1] },
+    rowDuration: 0.14,
   },
   dotAppear: {
-    scale: { type: "spring", stiffness: 420, damping: 24 },
-    opacity: { duration: 0.18 },
+    scale: { duration: 0.45, ease: [0.16, 1, 0.3, 1] },
+    opacity: { duration: 0.25 },
   },
   dotDisappear: {
-    duration: 0.16,
+    duration: 0.35,
     ease: "easeInOut",
   },
   dotColor: {
-    duration: 0.25,
+    duration: 0.45,
     ease: "easeInOut",
   },
 };

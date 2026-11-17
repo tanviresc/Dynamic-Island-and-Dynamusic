@@ -17,7 +17,17 @@ export interface Palette {
   secondary: string;
 }
 
+const MAX_AMBIENT_CACHE = 128;
 const cache = new Map<string, Palette>();
+
+function cacheSet(url: string, palette: Palette): void {
+  cache.delete(url);
+  if (cache.size >= MAX_AMBIENT_CACHE) {
+    const oldest = cache.keys().next().value;
+    if (oldest) cache.delete(oldest);
+  }
+  cache.set(url, palette);
+}
 
 /* Neutral fallback: no hue of its own, so an unread sleeve stays black.
    Fixed constants rather than reading --ambient-* back off the document —
@@ -48,13 +58,14 @@ export async function setAmbientFromArtwork(url: string | undefined | null): Pro
   }
   const cached = cache.get(url);
   if (cached) {
+    cacheSet(url, cached);
     applyPalette(cached);
     return cached;
   }
 
   const palette = await extractPalette(url);
   if (palette) {
-    cache.set(url, palette);
+    cacheSet(url, palette);
     applyPalette(palette);
     return palette;
   }
@@ -72,6 +83,8 @@ export async function setAmbientFromArtwork(url: string | undefined | null): Pro
  * ACAO, so their bytes come over IPC and are decoded from a same-origin blob
  * URL instead. Either way the canvas stays untainted and getImageData works.
  */
+import { resolveOfflineArtworkUrl } from "./offlineAudioVault";
+
 const NO_CORS_HOST = /^https:\/\/i\d?\.ytimg\.com\//i;
 
 export async function loadArtworkImage(
@@ -79,8 +92,14 @@ export async function loadArtworkImage(
 ): Promise<{ image: HTMLImageElement; cleanup: () => void } | null> {
   let src = url;
   let revoke: string | null = null;
+  const cachedLocal =
+    url.startsWith("blob:") || url.startsWith("data:")
+      ? url
+      : await resolveOfflineArtworkUrl(url).catch(() => null);
   const local = url.startsWith("localart://");
-  if (local || NO_CORS_HOST.test(url)) {
+  if (cachedLocal) {
+    src = cachedLocal;
+  } else if (local || NO_CORS_HOST.test(url)) {
     try {
       const bytes = (await (local ? window.bytune?.localArtBytes(url) : window.bytune?.remoteArtBytes(url))) as unknown;
       const u8 =
@@ -109,8 +128,10 @@ export async function loadArtworkImage(
   };
   try {
     const image = new Image();
-    // Blob URLs are same-origin — no CORS needed; remote art keeps it.
-    if (!revoke) image.crossOrigin = "anonymous";
+    // Blob/data URLs are same-origin — no CORS needed; remote art keeps it.
+    if (!revoke && !src.startsWith("blob:") && !src.startsWith("data:")) {
+      image.crossOrigin = "anonymous";
+    }
     await new Promise<void>((resolve, reject) => {
       image.onload = () => resolve();
       image.onerror = () => reject(new Error("artwork load failed"));

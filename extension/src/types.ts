@@ -1,8 +1,8 @@
 // Event contract types matching crates/island-contract
 
-export type Source = "claude" | "chatgpt" | "gemini";
+export type Source = "claude" | "chatgpt" | "gemini" | "gmail";
 export type Surface = "web";
-export type Kind = "done" | "needs_input";
+export type Kind = "done" | "finished" | "needs_input";
 
 export interface BrowserTabTarget {
   type: "browserTab";
@@ -95,6 +95,7 @@ export interface ExtensionSettings {
     claude: boolean;
     chatgpt: boolean;
     gemini: boolean;
+    gmail: boolean;
   };
 }
 
@@ -107,5 +108,6 @@ export const DEFAULT_SETTINGS: ExtensionSettings = {
     claude: true,
     chatgpt: true,
     gemini: true,
+    gmail: true,
   },
 };

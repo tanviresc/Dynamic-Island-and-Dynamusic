@@ -11,7 +11,7 @@ import { X } from "lucide-react";
 import { LyricsView } from "./SyncedLyrics";
 import { usePlayer } from "../stores/player";
 import { useUI } from "../stores/ui";
-import { useArtworkPalette } from "../lib/palette";
+import { AmbientCrossfadeBackdrop } from "./AmbientCrossfadeBackdrop";
 import { useLyricsOffset } from "../lib/lyricsOffset";
 import { getCachedLyrics, saveCachedLyrics } from "../lib/lyricsCache";
 import { LyricsTiming } from "./LyricsTiming";
@@ -117,20 +117,12 @@ export function LyricsCenter() {
   // The listener's own timing: this song's nudge and this device's setting.
   const offset = useLyricsOffset(track?.id);
 
-  const palette = useArtworkPalette(track?.thumb ?? null);
-
   return (
-    <div
-      className="group relative flex-1 min-h-0 rounded-2xl overflow-hidden animate-fade-in"
-      style={{ background: `rgb(${palette.background})` }}
-    >
-      {/* Subtle artwork-coloured blobs over the palette floor. */}
-      <div
-        className="absolute -inset-[10%] pointer-events-none"
-        style={{
-          background: `radial-gradient(46% 40% at 24% 18%, rgb(${palette.accent} / 0.16), transparent 70%),
-                       radial-gradient(42% 38% at 78% 82%, rgb(${palette.wash} / 0.22), transparent 68%)`,
-        }}
+    <div className="group relative flex-1 min-h-0 rounded-2xl overflow-hidden animate-fade-in">
+      <AmbientCrossfadeBackdrop
+        trackKey={track?.id ?? null}
+        thumb={track?.thumb ?? null}
+        intensity="lyrics"
       />
 
       <button
@@ -143,7 +135,7 @@ export function LyricsCenter() {
       </button>
       {track && <LyricsTiming trackId={track.id} className="absolute top-4 right-16 z-10" />}
 
-      <div className="relative h-full flex flex-col px-10 pt-14 pb-6">
+      <div className="relative h-full flex flex-col px-4 sm:px-8 lg:px-10 pt-12 sm:pt-14 pb-6">
         {track ? (
           /* Keyed by track: a new song remounts the view, so the scroll
              position resets to the top instead of staying where the previous

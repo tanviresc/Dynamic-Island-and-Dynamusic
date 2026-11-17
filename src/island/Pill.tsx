@@ -12,8 +12,6 @@ export interface PillProps {
   text: string;
   category?: string;
   onClick?: () => void;
-  onHoverEnter?: () => void;
-  onHoverLeave?: () => void;
   isReducedMotion?: boolean;
 }
 
@@ -46,8 +44,6 @@ export const Pill: React.FC<PillProps> = ({
   text,
   category,
   onClick,
-  onHoverEnter,
-  onHoverLeave,
   isReducedMotion = false,
 }) => {
   const needsInput = kind === "needs_input" || kind === "error";
@@ -58,6 +54,7 @@ export const Pill: React.FC<PillProps> = ({
     text,
     category: displayCategory,
     hasIcon: true,
+    needsInput,
   });
 
   const motionPreset = isReducedMotion ? reducedMotion : standardMotion;
@@ -66,37 +63,35 @@ export const Pill: React.FC<PillProps> = ({
   return (
     <motion.div
       onClick={onClick}
-      onMouseEnter={onHoverEnter}
-      onMouseLeave={onHoverLeave}
-      className="island-interactive"
+      className={`island-interactive ${isReducedMotion ? "island-reduced-motion" : ""}`}
       initial={{
-        scaleX: 0.45,
-        scaleY: 0.65,
-        y: -8,
+        width: 24,
+        height: 24,
+        paddingLeft: 0,
+        paddingRight: 0,
+        borderRadius: 12,
         opacity: 0,
-        clipPath: "inset(0% 18% 0% 18% round 24px)",
       }}
       animate={{
-        scaleX: 1,
-        scaleY: 1,
-        y: 0,
+        width: geometry.width,
+        height: geometry.height,
+        paddingLeft: 12,
+        paddingRight: 12,
+        borderRadius: geometry.borderRadius,
         opacity: 1,
-        clipPath: `inset(0% 0% 0% 0% round ${geometry.borderRadius}px)`,
       }}
       exit={{
-        scaleX: 0.55,
-        scaleY: 0.72,
-        y: -6,
+        width: 24,
+        height: 24,
+        paddingLeft: 0,
+        paddingRight: 0,
+        borderRadius: 12,
         opacity: 0,
         transition: motionPreset.disappear.layout as any,
       }}
       transition={motionPreset.appear.layout as any}
       style={{
-        width: geometry.width,
-        height: geometry.height,
-        borderRadius: geometry.borderRadius,
-        transformOrigin: "50% 0%",
-        willChange: "transform, opacity, clip-path",
+        willChange: "width, height, padding, opacity, border-radius",
         backgroundColor: "#000000",
         border: "1px solid rgba(255, 255, 255, 0.85)",
         boxShadow: `0 0 14px 2px rgba(255, 255, 255, 0.35), 0 0 28px 6px ${glowColor}, inset 0 1px 1px 0 rgba(255, 255, 255, 0.55)`,
@@ -104,14 +99,14 @@ export const Pill: React.FC<PillProps> = ({
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        padding: "0 10px",
         overflow: "hidden",
         position: "relative",
+        pointerEvents: "auto",
       }}
     >
       <motion.div
-        initial={{ opacity: 0, scale: 0.96 }}
-        animate={{ opacity: 1, scale: 1 }}
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
         exit={{ opacity: 0, transition: motionPreset.disappear.content.opacity as any }}
         transition={{
           duration: motionPreset.appear.content.opacity.duration,
@@ -146,7 +141,6 @@ export const Pill: React.FC<PillProps> = ({
               flexShrink: 0,
               boxShadow: "0 0 6px rgba(255, 69, 58, 0.75)",
             }}
-            title={kind === "error" ? "Error" : "Needs Input"}
           >
             !
           </div>

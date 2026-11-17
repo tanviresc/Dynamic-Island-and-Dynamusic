@@ -980,8 +980,8 @@ export async function getLyrics(meta: LyricsMeta): Promise<LyricsResult | null> 
       album,
       duration,
     },
-    // BitChord's default: the highest-priority source with timed lyrics wins, word or line timing.
-    { prioritizeWordSync: false },
+    // Prefer precise word/syllable-timed sources when available over coarse line cues.
+    { prioritizeWordSync: true },
     { ytMusicPlain, ytTranscript: fetchYouTubeTranscriptCues }
   );
   return rememberLyrics(

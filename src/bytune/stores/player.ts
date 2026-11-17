@@ -223,6 +223,8 @@ export interface PlayerState {
   repeat: RepeatMode;
   /** bumped whenever the engine should hard-seek to `position` */
   seekNonce: number;
+  /** bumped ONLY on explicit track selection or track advance so secondary store updates never restart playback */
+  selectionNonce: number;
   error: string | null;
   /** The queue ran out and AutoPlay is fetching what plays next (not persisted). */
   awaitingAutoplay: boolean;
@@ -314,6 +316,7 @@ export const usePlayer = create<PlayerState>()(
       shuffle: false,
       repeat: "off",
       seekNonce: 0,
+      selectionNonce: 0,
       error: null,
       awaitingAutoplay: false,
       contextId: 0,
@@ -356,6 +359,7 @@ export const usePlayer = create<PlayerState>()(
           playing: true,
           playbackStatus: "loading",
           position: 0,
+          selectionNonce: s.selectionNonce + 1,
           error: null,
           awaitingAutoplay: false,
           contextId: s.contextId + 1,
@@ -385,7 +389,7 @@ export const usePlayer = create<PlayerState>()(
             priorityCount: nextPriority.length,
             autoplayCount: s.autoplayTracks.length,
           });
-          set({ ...nextFields, playing: true, playbackStatus: "loading", position: 0, error: null, awaitingAutoplay: false });
+          set({ ...nextFields, playing: true, playbackStatus: "loading", position: 0, selectionNonce: s.selectionNonce + 1, error: null, awaitingAutoplay: false });
           return;
         }
 
@@ -407,7 +411,7 @@ export const usePlayer = create<PlayerState>()(
             priorityCount: s.priorityQueue.length,
             autoplayCount: s.autoplayTracks.length,
           });
-          set({ ...nextFields, playing: true, playbackStatus: "loading", position: 0, error: null, awaitingAutoplay: false });
+          set({ ...nextFields, playing: true, playbackStatus: "loading", position: 0, selectionNonce: s.selectionNonce + 1, error: null, awaitingAutoplay: false });
           return;
         }
 
@@ -431,7 +435,7 @@ export const usePlayer = create<PlayerState>()(
             priorityCount: s.priorityQueue.length,
             autoplayCount: remainingAuto.length,
           });
-          set({ ...nextFields, playing: true, playbackStatus: "loading", position: 0, error: null, awaitingAutoplay: false });
+          set({ ...nextFields, playing: true, playbackStatus: "loading", position: 0, selectionNonce: s.selectionNonce + 1, error: null, awaitingAutoplay: false });
           return;
         }
 
@@ -455,6 +459,7 @@ export const usePlayer = create<PlayerState>()(
           playing: true,
           playbackStatus: "loading",
           position: 0,
+          selectionNonce: s.selectionNonce + 1,
           error: null,
           awaitingAutoplay: false,
           contextId: s.contextId + 1,
@@ -490,7 +495,7 @@ export const usePlayer = create<PlayerState>()(
             priorityCount: s.priorityQueue.length,
             autoplayCount: s.autoplayTracks.length,
           });
-          set({ ...nextFields, playing: true, playbackStatus: "loading", position: 0, error: null, awaitingAutoplay: false });
+          set({ ...nextFields, playing: true, playbackStatus: "loading", position: 0, selectionNonce: s.selectionNonce + 1, error: null, awaitingAutoplay: false });
           return;
         }
 
@@ -514,7 +519,7 @@ export const usePlayer = create<PlayerState>()(
             priorityCount: remainingPriority.length,
             autoplayCount: s.autoplayTracks.length,
           });
-          set({ ...nextFields, playing: true, playbackStatus: "loading", position: 0, error: null, awaitingAutoplay: false });
+          set({ ...nextFields, playing: true, playbackStatus: "loading", position: 0, selectionNonce: s.selectionNonce + 1, error: null, awaitingAutoplay: false });
           return;
         }
 
@@ -540,7 +545,7 @@ export const usePlayer = create<PlayerState>()(
             priorityCount: s.priorityQueue.length,
             autoplayCount: s.autoplayTracks.length,
           });
-          set({ ...nextFields, playing: true, playbackStatus: "loading", position: 0, error: null, awaitingAutoplay: false });
+          set({ ...nextFields, playing: true, playbackStatus: "loading", position: 0, selectionNonce: s.selectionNonce + 1, error: null, awaitingAutoplay: false });
           return;
         }
 
@@ -564,7 +569,7 @@ export const usePlayer = create<PlayerState>()(
             priorityCount: s.priorityQueue.length,
             autoplayCount: remainingAuto.length,
           });
-          set({ ...nextFields, playing: true, playbackStatus: "loading", position: 0, error: null, awaitingAutoplay: false });
+          set({ ...nextFields, playing: true, playbackStatus: "loading", position: 0, selectionNonce: s.selectionNonce + 1, error: null, awaitingAutoplay: false });
         }
       },
 
@@ -630,7 +635,7 @@ export const usePlayer = create<PlayerState>()(
             priorityCount: rest.length,
             autoplayCount: remainingAuto.length,
           });
-          set({ ...nextFields, playing: true, playbackStatus: "loading", position: 0, error: null, awaitingAutoplay: false });
+          set({ ...nextFields, playing: true, playbackStatus: "loading", position: 0, selectionNonce: s.selectionNonce + 1, error: null, awaitingAutoplay: false });
           return toAdd.length;
         }
 
@@ -955,6 +960,7 @@ export const usePlayer = create<PlayerState>()(
             ...nextFields,
             playing: true,
             position: 0,
+            selectionNonce: s.selectionNonce + 1,
             error: null,
             awaitingAutoplay: false,
           });
@@ -1033,7 +1039,7 @@ export const usePlayer = create<PlayerState>()(
             priorityCount: remainingPriority.length,
             autoplayCount: s.autoplayTracks.length,
           });
-          set({ ...nextFields, playing: true, playbackStatus: "loading", position: 0, error: null, awaitingAutoplay: false });
+          set({ ...nextFields, playing: true, playbackStatus: "loading", position: 0, selectionNonce: s.selectionNonce + 1, error: null, awaitingAutoplay: false });
           return;
         }
 
@@ -1055,7 +1061,7 @@ export const usePlayer = create<PlayerState>()(
             priorityCount: 0,
             autoplayCount: s.autoplayTracks.length,
           });
-          set({ ...nextFields, playing: true, playbackStatus: "loading", position: 0, error: null, awaitingAutoplay: false });
+          set({ ...nextFields, playing: true, playbackStatus: "loading", position: 0, selectionNonce: s.selectionNonce + 1, error: null, awaitingAutoplay: false });
           return;
         }
 
@@ -1077,7 +1083,7 @@ export const usePlayer = create<PlayerState>()(
             priorityCount: 0,
             autoplayCount: remainingAuto.length,
           });
-          set({ ...nextFields, playing: true, playbackStatus: "loading", position: 0, error: null, awaitingAutoplay: false });
+          set({ ...nextFields, playing: true, playbackStatus: "loading", position: 0, selectionNonce: s.selectionNonce + 1, error: null, awaitingAutoplay: false });
           return;
         }
 
@@ -1098,7 +1104,7 @@ export const usePlayer = create<PlayerState>()(
             priorityCount: 0,
             autoplayCount: 0,
           });
-          set({ ...nextFields, playing: true, playbackStatus: "loading", position: 0, error: null, awaitingAutoplay: false });
+          set({ ...nextFields, playing: true, playbackStatus: "loading", position: 0, selectionNonce: s.selectionNonce + 1, error: null, awaitingAutoplay: false });
           return;
         }
 
@@ -1131,7 +1137,7 @@ export const usePlayer = create<PlayerState>()(
             priorityCount: 0,
             autoplayCount: 0,
           });
-          set({ ...nextFields, playing: true, playbackStatus: "loading", position: 0, error: null, awaitingAutoplay: false });
+          set({ ...nextFields, playing: true, playbackStatus: "loading", position: 0, selectionNonce: s.selectionNonce + 1, error: null, awaitingAutoplay: false });
         } else {
           set({ playing: false, playbackStatus: "idle", position: 0 });
         }
@@ -1179,7 +1185,7 @@ export const usePlayer = create<PlayerState>()(
             priorityCount: nextPriority.length,
             autoplayCount: s.autoplayTracks.length,
           });
-          set({ ...nextFields, playing: true, playbackStatus: "loading", position: 0, error: null, awaitingAutoplay: false });
+          set({ ...nextFields, playing: true, playbackStatus: "loading", position: 0, selectionNonce: s.selectionNonce + 1, error: null, awaitingAutoplay: false });
           return;
         }
         set({ position: 0, seekNonce: s.seekNonce + 1 });

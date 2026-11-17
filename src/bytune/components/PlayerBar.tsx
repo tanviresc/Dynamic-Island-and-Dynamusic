@@ -318,9 +318,9 @@ export function PlayerBar() {
   const VolIcon = muted || volume === 0 ? SpVolumeOff : SpVolumeHigh;
 
   return (
-    <footer className="shrink-0 z-30 bg-black px-2">
+    <footer className="relative shrink-0 z-30 bg-black px-2">
       <div
-        className="h-[88px] grid grid-cols-[3fr_4fr_3fr] items-center"
+        className="h-[88px] grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] md:grid-cols-[3fr_4fr_3fr] items-center gap-2 sm:gap-3"
         role="contentinfo"
         aria-label="Now playing bar"
       >
@@ -386,12 +386,14 @@ export function PlayerBar() {
         </div>
 
         {/* Centre — [shuffle prev] play [next repeat], disc dead centre. */}
-        <div className="flex h-14 flex-col justify-center gap-2">
-          <div className="flex w-full items-center gap-4">
-            <div className="flex flex-1 items-center justify-end gap-2">
-              <TransportButton onClick={toggleShuffle} active={shuffle} title={shuffle ? "Disable Shuffle" : "Enable Shuffle"}>
-                <SpShuffle />
-              </TransportButton>
+        <div className="flex h-14 min-w-[176px] sm:min-w-[240px] md:min-w-0 flex-col justify-center gap-2">
+          <div className="flex w-full items-center gap-2 sm:gap-4">
+            <div className="flex flex-1 items-center justify-end gap-1.5 sm:gap-2">
+              <span className="hidden sm:inline-flex">
+                <TransportButton onClick={toggleShuffle} active={shuffle} title={shuffle ? "Disable Shuffle" : "Enable Shuffle"}>
+                  <SpShuffle />
+                </TransportButton>
+              </span>
               <TransportButton onClick={() => prev()} title="Previous">
                 <SpPrev />
               </TransportButton>
@@ -410,25 +412,29 @@ export function PlayerBar() {
                 <SpPlay />
               )}
             </button>
-            <div className="flex flex-1 items-center gap-2">
+            <div className="flex flex-1 items-center gap-1.5 sm:gap-2">
               <TransportButton onClick={() => next(true)} title="Next">
                 <SpNext />
               </TransportButton>
-              <TransportButton
-                onClick={cycleRepeat}
-                active={repeat !== "off"}
-                title={repeat === "off" ? "Enable repeat" : repeat === "all" ? "Disable repeat" : "Enable repeat one"}
-              >
-                {repeat === "one" ? <SpRepeatOne /> : <SpRepeat />}
-              </TransportButton>
+              <span className="hidden sm:inline-flex">
+                <TransportButton
+                  onClick={cycleRepeat}
+                  active={repeat !== "off"}
+                  title={repeat === "off" ? "Enable repeat" : repeat === "all" ? "Disable repeat" : "Enable repeat one"}
+                >
+                  {repeat === "one" ? <SpRepeatOne /> : <SpRepeat />}
+                </TransportButton>
+              </span>
             </div>
           </div>
           <SeekBar thin />
         </div>
 
         {/* Right — lyrics, queue, volume, miniplayer, fullscreen. */}
-        <div className="flex items-center justify-end">
-          <SleepTimerButton />
+        <div className="flex items-center justify-end min-w-0 gap-0.5 sm:gap-1">
+          <span className="hidden md:inline-flex">
+            <SleepTimerButton />
+          </span>
           <BarButton onClick={toggleLyrics} title="Lyrics" active={lyricsCenter}>
             <SpLyrics />
           </BarButton>
@@ -436,18 +442,26 @@ export function PlayerBar() {
             <SpQueue />
           </BarButton>
           {/* In a room the button stays lit, as the sleep timer's moon does while it runs. */}
-          <BarButton onClick={toggleRoom} title={roomCode ? `Room ${roomCode}` : "Room"} active={rightPanel === "room" || !!roomCode}>
-            <Users size={16} strokeWidth={2} />
-          </BarButton>
-          {!hideVolumeBar && <VolumeControl VolIcon={VolIcon} />}
-          <BarButton
-            onClick={toggleMiniPlayer}
-            active={pipOpen}
-            title={pipOpen ? "Close Miniplayer" : "Open Miniplayer"}
-            className="ml-2"
-          >
-            <SpMiniplayer />
-          </BarButton>
+          <span className="hidden md:inline-flex">
+            <BarButton onClick={toggleRoom} title={roomCode ? `Room ${roomCode}` : "Room"} active={rightPanel === "room" || !!roomCode}>
+              <Users size={16} strokeWidth={2} />
+            </BarButton>
+          </span>
+          {!hideVolumeBar && (
+            <span className="hidden md:inline-flex">
+              <VolumeControl VolIcon={VolIcon} />
+            </span>
+          )}
+          <span className="hidden sm:inline-flex">
+            <BarButton
+              onClick={toggleMiniPlayer}
+              active={pipOpen}
+              title={pipOpen ? "Close Miniplayer" : "Open Miniplayer"}
+              className="sm:ml-1"
+            >
+              <SpMiniplayer />
+            </BarButton>
+          </span>
           <BarButton
             onClick={toggleNowPlaying}
             title={nowPlayingOpen ? "Exit Full screen" : "Enter Full screen"}

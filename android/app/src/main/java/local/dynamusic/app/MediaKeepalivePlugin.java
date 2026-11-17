@@ -38,11 +38,13 @@ public class MediaKeepalivePlugin extends Plugin implements MediaPlaybackService
 
     private final ExecutorService executor = Executors.newFixedThreadPool(2);
     private final ExecutorService resolverExecutor = Executors.newFixedThreadPool(8);
-    private final MobileStreamProxy streamProxy = new MobileStreamProxy();
+    private final MobileStreamProxy streamProxy = MobileStreamProxy.getShared();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private BroadcastReceiver mediaControlReceiver;
     private MediaPlaybackService boundService;
     private boolean serviceBound = false;
+    private String pendingQueueJson = "";
+    private String pendingRepeatMode = "off";
 
     private final ServiceConnection serviceConn = new ServiceConnection() {
         @Override
@@ -50,6 +52,9 @@ public class MediaKeepalivePlugin extends Plugin implements MediaPlaybackService
             if (service instanceof MediaPlaybackService.LocalBinder) {
                 boundService = ((MediaPlaybackService.LocalBinder) service).getService();
                 boundService.setEventSink(MediaKeepalivePlugin.this);
+                if (!pendingQueueJson.isEmpty()) {
+                    boundService.setUpcomingQueueNative(pendingQueueJson, pendingRepeatMode);
+                }
             }
         }
 
@@ -141,10 +146,12 @@ public class MediaKeepalivePlugin extends Plugin implements MediaPlaybackService
             String status,
             double positionSec,
             double durationSec,
-            String errorMsg) {
+            String errorMsg,
+            String requestId) {
         JSObject data = new JSObject();
         data.put("type", type);
         data.put("trackId", trackId != null ? trackId : "");
+        data.put("requestId", requestId != null ? requestId : "");
         data.put("playing", playing);
         data.put("buffering", buffering);
         data.put("status", status != null ? status : "idle");
@@ -181,6 +188,7 @@ public class MediaKeepalivePlugin extends Plugin implements MediaPlaybackService
     @PluginMethod
     public void nativeLoad(PluginCall call) {
         String trackId = call.getString("trackId", "");
+        String requestId = call.getString("requestId", "");
         String url = call.getString("url", "");
         String title = call.getString("title", "Dynamusic");
         String artist = call.getString("artist", "");
@@ -194,9 +202,38 @@ public class MediaKeepalivePlugin extends Plugin implements MediaPlaybackService
         double volume = call.getDouble("volume", 1.0) != null ? call.getDouble("volume", 1.0) : 1.0;
         double speed = call.getDouble("speed", 1.0) != null ? call.getDouble("speed", 1.0) : 1.0;
 
+        if (boundService != null) {
+            mainHandler.post(() -> {
+                if (boundService != null) {
+                    boundService.setVolumeNative((float) volume);
+                    boundService.setSpeedNative((float) speed);
+                    boundService.updateMetadataNative(
+                            trackId,
+                            title,
+                            artist,
+                            album,
+                            thumb,
+                            autoplay,
+                            shuffle,
+                            liked,
+                            duration,
+                            position);
+                    boundService.loadTrackNative(
+                            trackId != null ? trackId : "",
+                            url != null ? url : "",
+                            autoplay,
+                            position,
+                            requestId != null ? requestId : "");
+                }
+            });
+            call.resolve();
+            return;
+        }
+
         Intent intent = new Intent(getContext(), MediaPlaybackService.class);
         intent.setAction(MediaPlaybackService.ACTION_LOAD);
         intent.putExtra(MediaPlaybackService.EXTRA_TRACK_ID, trackId != null ? trackId : "");
+        intent.putExtra(MediaPlaybackService.EXTRA_REQUEST_ID, requestId != null ? requestId : "");
         intent.putExtra(MediaPlaybackService.EXTRA_STREAM_URL, url != null ? url : "");
         intent.putExtra(MediaPlaybackService.EXTRA_TITLE, title != null ? title : "Dynamusic");
         intent.putExtra(MediaPlaybackService.EXTRA_ARTIST, artist != null ? artist : "");
@@ -211,6 +248,31 @@ public class MediaKeepalivePlugin extends Plugin implements MediaPlaybackService
         intent.putExtra(MediaPlaybackService.EXTRA_SPEED, speed);
 
         startServiceIntentSafe(intent);
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void nativeStopAndReset(PluginCall call) {
+        String requestId = call.getString("requestId", "");
+        mainHandler.post(() -> {
+            if (boundService != null) {
+                boundService.stopAndResetNative(requestId != null ? requestId : "");
+            }
+        });
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void syncQueue(PluginCall call) {
+        String queueJson = call.getString("queueJson", "[]");
+        String repeatMode = call.getString("repeat", "off");
+        pendingQueueJson = queueJson != null ? queueJson : "[]";
+        pendingRepeatMode = repeatMode != null ? repeatMode : "off";
+        mainHandler.post(() -> {
+            if (boundService != null) {
+                boundService.setUpcomingQueueNative(pendingQueueJson, pendingRepeatMode);
+            }
+        });
         call.resolve();
     }
 
@@ -322,14 +384,38 @@ public class MediaKeepalivePlugin extends Plugin implements MediaPlaybackService
         Double position = call.getDouble("position", 0.0);
         Context ctx = getContext();
 
+        if (!playing && (title == null || title.isEmpty())) {
+            try {
+                ctx.stopService(new Intent(ctx, MediaPlaybackService.class));
+            } catch (Exception ignored) {}
+            call.resolve();
+            return;
+        }
+
+        if (boundService != null) {
+            final double durVal = duration != null ? duration : 0.0;
+            final double posVal = position != null ? position : 0.0;
+            mainHandler.post(() -> {
+                if (boundService != null) {
+                    boundService.updateMetadataNative(
+                            trackId,
+                            title,
+                            artist,
+                            album,
+                            thumb,
+                            playing,
+                            shuffle,
+                            liked,
+                            durVal,
+                            posVal);
+                }
+            });
+            call.resolve();
+            return;
+        }
+
         try {
             Intent intent = new Intent(ctx, MediaPlaybackService.class);
-            if (!playing && (title == null || title.isEmpty())) {
-                ctx.stopService(intent);
-                call.resolve();
-                return;
-            }
-
             intent.setAction(MediaPlaybackService.ACTION_UPDATE);
             intent.putExtra(MediaPlaybackService.EXTRA_TRACK_ID, trackId != null ? trackId : "");
             intent.putExtra(MediaPlaybackService.EXTRA_TITLE, title);
@@ -418,6 +504,149 @@ public class MediaKeepalivePlugin extends Plugin implements MediaPlaybackService
             out.put("exists", false);
         }
         call.resolve(out);
+    }
+
+    private File getOfflineArtDir() {
+        File dir = new File(getContext().getFilesDir(), "offline_artwork");
+        if (!dir.exists()) {
+            dir.mkdirs();
+        }
+        return dir;
+    }
+
+    private File findExistingOfflineArt(String safeId) {
+        File dir = getOfflineArtDir();
+        File[] files = dir.listFiles();
+        if (files == null) return null;
+        String prefix = safeId + ".";
+        for (File f : files) {
+            if (f.isFile() && f.getName().startsWith(prefix) && f.length() > 64) {
+                return f;
+            }
+        }
+        return null;
+    }
+
+    @PluginMethod
+    public void getOfflineArtDataUrl(PluginCall call) {
+        String id = call.getString("id", "");
+        String safe = safeTrackFileBase(id);
+        if (safe.isEmpty()) {
+            JSObject out = new JSObject();
+            out.put("exists", false);
+            call.resolve(out);
+            return;
+        }
+        executor.execute(() -> {
+            File found = findExistingOfflineArt(safe);
+            JSObject out = new JSObject();
+            if (found != null) {
+                try (java.io.FileInputStream fis = new java.io.FileInputStream(found)) {
+                    byte[] bytes = new byte[(int) Math.min(found.length(), 2 * 1024 * 1024)];
+                    int read = fis.read(bytes);
+                    byte[] exact = read == bytes.length ? bytes : java.util.Arrays.copyOf(bytes, Math.max(0, read));
+                    String mime = found.getName().endsWith(".png")
+                            ? "image/png"
+                            : found.getName().endsWith(".webp") ? "image/webp" : "image/jpeg";
+                    String b64 = Base64.encodeToString(exact, Base64.NO_WRAP);
+                    out.put("exists", true);
+                    out.put("dataUrl", "data:" + mime + ";base64," + b64);
+                    call.resolve(out);
+                    return;
+                } catch (Exception ignored) {}
+            }
+            out.put("exists", false);
+            call.resolve(out);
+        });
+    }
+
+    @PluginMethod
+    public void saveOfflineArt(PluginCall call) {
+        String id = call.getString("id", "");
+        String rawUrl = call.getString("url", "");
+        String base64 = call.getString("base64", "");
+        String reqMime = call.getString("mime", "");
+        String safe = safeTrackFileBase(id);
+        if (safe.isEmpty()) {
+            call.reject("Missing id");
+            return;
+        }
+        executor.execute(() -> {
+            HttpURLConnection conn = null;
+            File tmp = null;
+            try {
+                byte[] bytes = null;
+                String mime = (reqMime != null && !reqMime.isEmpty()) ? reqMime : "image/jpeg";
+                if (base64 != null && !base64.isEmpty()) {
+                    bytes = Base64.decode(base64, Base64.DEFAULT);
+                } else if (rawUrl != null && (rawUrl.startsWith("https://") || rawUrl.startsWith("http://"))) {
+                    conn = (HttpURLConnection) new URL(rawUrl).openConnection();
+                    conn.setInstanceFollowRedirects(true);
+                    conn.setConnectTimeout(3500);
+                    conn.setReadTimeout(3500);
+                    conn.setRequestProperty("User-Agent", DESKTOP_UA);
+                    int code = conn.getResponseCode();
+                    if (code < 200 || code >= 300) {
+                        call.reject("HTTP " + code);
+                        return;
+                    }
+                    String ct = conn.getContentType();
+                    if (ct != null && !ct.isEmpty()) mime = ct.split(";")[0].trim();
+                    ByteArrayOutputStream bos = new ByteArrayOutputStream();
+                    byte[] buf = new byte[8192];
+                    int n;
+                    int total = 0;
+                    try (InputStream in = conn.getInputStream()) {
+                        while ((n = in.read(buf)) != -1) {
+                            total += n;
+                            if (total > 2 * 1024 * 1024) break;
+                            bos.write(buf, 0, n);
+                        }
+                    }
+                    bytes = bos.toByteArray();
+                } else {
+                    call.reject("Missing url or base64");
+                    return;
+                }
+                if (bytes == null || bytes.length < 64) {
+                    call.reject("Invalid artwork bytes");
+                    return;
+                }
+                String ext = mime.contains("png") ? ".png" : mime.contains("webp") ? ".webp" : ".jpg";
+                File dir = getOfflineArtDir();
+                tmp = new File(dir, safe + ext + ".part");
+                try (FileOutputStream fos = new FileOutputStream(tmp)) {
+                    fos.write(bytes);
+                }
+                File existing = findExistingOfflineArt(safe);
+                if (existing != null && !existing.equals(tmp)) existing.delete();
+                File target = new File(dir, safe + ext);
+                if (!tmp.renameTo(target)) {
+                    call.reject("Failed to commit artwork file");
+                    return;
+                }
+                JSObject out = new JSObject();
+                out.put("exists", true);
+                out.put("size", bytes.length);
+                call.resolve(out);
+            } catch (Exception e) {
+                call.reject(e.getMessage() != null ? e.getMessage() : "Save artwork failed", e);
+            } finally {
+                if (tmp != null && tmp.exists()) tmp.delete();
+                if (conn != null) conn.disconnect();
+            }
+        });
+    }
+
+    @PluginMethod
+    public void deleteOfflineArt(PluginCall call) {
+        String id = call.getString("id", "");
+        String safe = safeTrackFileBase(id);
+        if (!safe.isEmpty()) {
+            File found = findExistingOfflineArt(safe);
+            if (found != null) found.delete();
+        }
+        call.resolve();
     }
 
     @PluginMethod

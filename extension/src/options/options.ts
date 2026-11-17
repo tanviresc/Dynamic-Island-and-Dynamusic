@@ -5,6 +5,7 @@ const tokenInput = document.getElementById("tokenInput") as HTMLInputElement;
 const siteClaude = document.getElementById("siteClaude") as HTMLInputElement;
 const siteChatgpt = document.getElementById("siteChatgpt") as HTMLInputElement;
 const siteGemini = document.getElementById("siteGemini") as HTMLInputElement;
+const siteGmail = document.getElementById("siteGmail") as HTMLInputElement;
 const showChatTitles = document.getElementById("showChatTitles") as HTMLInputElement;
 const probeMode = document.getElementById("probeMode") as HTMLInputElement;
 
@@ -41,6 +42,7 @@ function loadSettings() {
       siteClaude.checked = items.sites?.claude ?? true;
       siteChatgpt.checked = items.sites?.chatgpt ?? true;
       siteGemini.checked = items.sites?.gemini ?? true;
+      siteGmail.checked = items.sites?.gmail ?? true;
       showChatTitles.checked = items.showChatTitles ?? true;
       probeMode.checked = items.probeMode ?? false;
 
@@ -59,6 +61,7 @@ function saveSettings() {
       claude: siteClaude.checked,
       chatgpt: siteChatgpt.checked,
       gemini: siteGemini.checked,
+      gmail: siteGmail.checked,
     },
   };
 

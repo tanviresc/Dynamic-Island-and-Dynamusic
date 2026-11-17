@@ -290,8 +290,8 @@ function describeFeed(
   const lately = artistsWithIds(profile.lately);
   const anchors = [...lately, ...top.filter((a) => !lately.some((l) => l.key === a.key))];
 
-  /* ---- jump back in — the tiles, straight from history ---- */
-  if (profile.recentlyPlayed.length >= 4) {
+  /* ---- jump back in — frequency + listen weight over rolling 2-day window ---- */
+  if (profile.jumpBackIn.length >= 4 || profile.recentlyPlayed.length >= 4) {
     const lastAt = profile.artists.reduce((m, a) => Math.max(m, a.lastPlayedAt ?? 0), 0);
     const hoursSince = lastAt ? (now - lastAt) / 3_600_000 : Infinity;
     list.push({
@@ -304,7 +304,7 @@ function describeFeed(
         layout: "tiles",
         priority: 0,
         // "Not interested" means off Home, the tiles included.
-        items: ctx.profile.recentlyPlayed
+        items: (ctx.profile.jumpBackIn.length ? ctx.profile.jumpBackIn : ctx.profile.recentlyPlayed)
           .filter((t) => !ctx.hidden.has(t.id))
           .slice(0, 6)
           .map((track) => ({ style: "track", track })),

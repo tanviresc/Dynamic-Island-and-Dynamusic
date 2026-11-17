@@ -16,6 +16,7 @@ import { DEFAULT_SETTINGS, ExtensionSettings, Source } from "../types";
   let mutationObserver: MutationObserver | null = null;
   let pollInterval: ReturnType<typeof setInterval> | null = null;
   let pageMessageListener: ((ev: MessageEvent) => void) | null = null;
+  let visibilityListener: (() => void) | null = null;
 
   function loadSettingsAndStart() {
     if (typeof chrome === "undefined" || !chrome.storage?.local) {
@@ -70,6 +71,7 @@ import { DEFAULT_SETTINGS, ExtensionSettings, Source } from "../types";
     // 2. Detector Engine
     detectorEngine = new DetectorEngine({
       config,
+      isDocumentHidden: () => document.hidden,
       callbacks: {
         onDone: (detail) => {
           const title = `${config.displayName} finished`;
@@ -137,7 +139,12 @@ import { DEFAULT_SETTINGS, ExtensionSettings, Source } from "../types";
     };
     window.addEventListener("message", pageMessageListener);
 
-    // 4. Fallback polling tick (500 ms)
+    // 4. Fallback polling tick (500 ms) & visibility sync
+    visibilityListener = () => {
+      detectorEngine?.evaluate();
+    };
+    document.addEventListener("visibilitychange", visibilityListener);
+
     pollInterval = setInterval(() => {
       detectorEngine?.evaluate();
     }, 500);
@@ -188,6 +195,10 @@ import { DEFAULT_SETTINGS, ExtensionSettings, Source } from "../types";
   }
 
   function teardown() {
+    if (visibilityListener) {
+      document.removeEventListener("visibilitychange", visibilityListener);
+      visibilityListener = null;
+    }
     if (pageMessageListener) {
       window.removeEventListener("message", pageMessageListener);
       pageMessageListener = null;

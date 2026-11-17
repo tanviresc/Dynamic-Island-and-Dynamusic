@@ -143,3 +143,4 @@ export function handleAndroidBackButton(): BackPressOutcome {
     minimizeApp: minimizeNativeApp,
   });
 }
+

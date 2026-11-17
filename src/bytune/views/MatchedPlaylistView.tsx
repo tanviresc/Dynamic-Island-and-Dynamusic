@@ -7,7 +7,7 @@
  * Dynamusic playlist. One of the connected account's playlists is named from the library at once and fills
  * in as Spotify answers; an import (a Spotify link, a CSV, a pasted list) is here already.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Download, ExternalLink, Heart, ListMusic, ListPlus, MoreHorizontal, Play, Plus, RotateCw, Shuffle } from "lucide-react";
 import { Artwork, EqBars, ErrorState, ExplicitBadge, ListSkeleton } from "../components/primitives";
 import { CollectionHero, HERO_PLAY } from "../components/CollectionHero";
@@ -22,7 +22,8 @@ import { downloadAll } from "../lib/downloads";
 import { fmtTime, plural, shortTitle } from "../lib/format";
 import { pendingImport } from "../lib/importSongs";
 import { ipcMessage, spotifyUrl, useSpotify } from "../lib/spotify";
-import { trackMenuItems } from "../lib/trackActions";
+import { queueTrackPriorityWithToast, trackMenuItems } from "../lib/trackActions";
+import { useSwipeGesture } from "../lib/useSwipeGesture";
 import { useSongMatches, type MatchState } from "../lib/useSongMatches";
 import { useLibrary } from "../stores/library";
 import { usePlayer } from "../stores/player";
@@ -59,6 +60,12 @@ function MatchRow({
   const drag = useDrag({ track: track ?? NO_TRACK });
   const current = !!track && currentId === track.id;
   const thumb = song.thumb || track?.thumb || "";
+  const badgeRef = useRef<HTMLDivElement | null>(null);
+  const swipe = useSwipeGesture({
+    onSwipeRight: track ? () => queueTrackPriorityWithToast(track) : undefined,
+    rightBadgeRef: badgeRef,
+    disabled: !track,
+  });
   const openMenu = (x: number, y: number): void => {
     if (track) useUI.getState().openContextMenu(x, y, trackMenuItems(track));
   };
@@ -66,21 +73,42 @@ function MatchRow({
     !state || state.state === "matching" ? "Finding…" : state.state === "missing" ? "Not on YouTube Music" : state.state === "failed" ? "Couldn't check" : null;
   const dim = state?.state === "missing" || state?.state === "failed";
   return (
-    <div
-      {...(track ? drag.props : {})}
-      onMouseEnter={(e) => onHover(e.currentTarget, track ? thumb : null)}
-      onClick={track ? onPlay : undefined}
-      onContextMenu={(e) => {
-        e.preventDefault();
-        openMenu(e.clientX, e.clientY);
-      }}
-      title={track && (track.title !== song.title || track.artist !== song.artist) ? `Plays “${track.title}” by ${track.artist}` : undefined}
-      className={`tl-row fit-host group flex items-center gap-3.5 h-[64px] px-3 rounded-lg select-none ${
-        track ? "cursor-pointer" : "cursor-default"
-      } ${current ? "bg-ink-hi/[0.06]" : track ? "hover:bg-ink-hi/[0.04]" : ""} ${dim ? "opacity-45" : ""} ${drag.dragging ? "opacity-40" : ""}`}
-    >
+    <div className="relative overflow-hidden md:rounded-lg">
+      {track && (
+        <div
+          ref={badgeRef}
+          style={{ opacity: 0 }}
+          aria-hidden="true"
+          className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 inline-flex items-center gap-1.5 rounded-full bg-emerald-500/20 border border-emerald-400/40 px-2.5 py-1 text-[11.5px] font-semibold text-emerald-300"
+        >
+          <ListPlus className="w-3.5 h-3.5" />
+          Priority Queue
+        </div>
+      )}
+      <div
+        {...(track ? drag.props : {})}
+        {...(track ? swipe.handlers : {})}
+        onMouseEnter={(e) => onHover(e.currentTarget, track ? thumb : null)}
+        onClick={
+          track
+            ? () => {
+                if (swipe.consumeDidSwipe()) return;
+                onPlay();
+              }
+            : undefined
+        }
+        onContextMenu={(e) => {
+          e.preventDefault();
+          openMenu(e.clientX, e.clientY);
+        }}
+        style={track ? { touchAction: "pan-y" } : undefined}
+        title={track && (track.title !== song.title || track.artist !== song.artist) ? `Plays “${track.title}” by ${track.artist}` : undefined}
+        className={`tl-row fit-host group relative flex items-center gap-3 md:gap-3.5 min-h-[68px] py-2 md:py-0 md:h-[64px] px-4 md:px-3 md:rounded-lg select-none ${
+          track ? "cursor-pointer" : "cursor-default"
+        } ${current ? "bg-ink-hi/[0.06]" : track ? "hover:bg-ink-hi/[0.04] active:bg-ink-hi/[0.08]" : ""} ${dim ? "opacity-45" : ""} ${drag.dragging ? "opacity-40" : ""}`}
+      >
       {current && <PlayingLight thumb={thumb} />}
-      <div className="w-7 shrink-0 grid place-items-center text-[13px] text-ink-faint tabular-nums">
+      <div className="hidden md:grid w-7 shrink-0 place-items-center text-[13px] text-ink-faint tabular-nums">
         {current && playing ? (
           <EqBars />
         ) : (
@@ -103,17 +131,28 @@ function MatchRow({
           </>
         )}
       </div>
-      <Artwork src={thumb} className="w-[52px] h-[52px] rounded-lg shrink-0" iconClassName="w-4 h-4" alt="" />
+      <Artwork src={thumb} className="w-12 h-12 md:w-[52px] md:h-[52px] rounded-lg shrink-0" iconClassName="w-4 h-4" alt="" />
       <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-1.5 text-[16px] font-semibold tracking-[-0.2px] text-ink-hi">
+        <div className="flex items-center gap-1.5 min-w-0 text-[15.5px] md:text-[16px] font-semibold tracking-[-0.2px] text-ink-hi">
           {song.explicit && <ExplicitBadge />}
-          <FitText text={shortTitle(song.title)} full={song.title} />
+          <span className="truncate md:hidden">{shortTitle(song.title)}</span>
+          <span className="hidden md:block min-w-0 flex-1">
+            <FitText text={shortTitle(song.title)} full={song.title} />
+          </span>
         </div>
-        <FitText text={song.artist || "Unknown artist"} className="text-[14px] text-ink-dim mt-0.5" />
+        <div className="md:hidden flex items-center gap-1.5 min-w-0 text-[13px] text-ink-dim mt-0.5">
+          <span className="truncate">{song.artist || "Unknown artist"}</span>
+          {track && track.duration > 0 && (
+            <span className="shrink-0 text-ink-faint tabular-nums">· {fmtTime(track.duration)}</span>
+          )}
+        </div>
+        <div className="hidden md:block">
+          <FitText text={song.artist || "Unknown artist"} className="text-[14px] text-ink-dim mt-0.5" />
+        </div>
       </div>
       {track ? (
         <>
-          <div className="w-[88px] shrink-0 flex items-center justify-end gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+          <div className="w-auto md:w-[88px] shrink-0 flex items-center justify-end gap-0.5 opacity-100 md:opacity-0 md:group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
             <button
               onClick={(e) => {
                 e.stopPropagation();
@@ -121,11 +160,11 @@ function MatchRow({
               }}
               title={liked ? "Remove from Liked" : "Add to Liked"}
               aria-label={liked ? "Remove from Liked" : "Add to Liked"}
-              className="p-1.5 rounded-md text-ink-faint hover:text-ink-hi hover:bg-ink-hi/[0.07] transition-colors"
+              className="p-2 md:p-1.5 rounded-full md:rounded-md text-ink-faint hover:text-ink-hi hover:bg-ink-hi/[0.07] transition-colors"
             >
               <Heart key={liked ? "liked" : "unliked"} className={`w-4 h-4 animate-icon-pop ${liked ? "fill-ink-hi text-ink-hi" : ""}`} />
             </button>
-            <span className="opacity-80">
+            <span className="hidden md:inline-flex opacity-80">
               <DownloadBadge id={track.id} />
             </span>
             <button
@@ -135,16 +174,17 @@ function MatchRow({
               }}
               title="More options"
               aria-label={`More options for ${song.title}`}
-              className="p-1.5 rounded-md text-ink-faint hover:text-ink-hi hover:bg-ink-hi/[0.07] transition-colors"
+              className="p-2 md:p-1.5 rounded-full md:rounded-md text-ink-faint hover:text-ink-hi hover:bg-ink-hi/[0.07] transition-colors"
             >
-              <MoreHorizontal className="w-4 h-4" />
+              <MoreHorizontal className="w-5 h-5 md:w-4 md:h-4" />
             </button>
           </div>
-          <div className="w-11 shrink-0 text-right text-xs text-ink-faint tabular-nums">{track.duration > 0 ? fmtTime(track.duration) : "—"}</div>
+          <div className="hidden md:block w-11 shrink-0 text-right text-xs text-ink-faint tabular-nums">{track.duration > 0 ? fmtTime(track.duration) : "—"}</div>
         </>
       ) : (
         <div className="shrink-0 text-[13px] text-ink-faint">{status}</div>
       )}
+      </div>
     </div>
   );
 }
@@ -344,7 +384,7 @@ export function MatchedPlaylistView({ spotifyId, importId = "" }: { spotifyId: s
         </button>
       </CollectionHero>
 
-      <div className="pt-6">
+      <div className="pt-4 md:pt-6 -mx-3 md:mx-0">
         {loading ? (
           <ListSkeleton rows={7} />
         ) : songs.length ? (
@@ -353,7 +393,7 @@ export function MatchedPlaylistView({ spotifyId, importId = "" }: { spotifyId: s
             {songs.map((song, i) => (
               <div key={`${song.spotifyId ?? song.title}-${i}`}>
                 <MatchRow song={song} state={states[i]} index={i} onPlay={() => usePlayer.getState().playQueue(matched, position[i])} onHover={rowLight.hover} />
-                {i < songs.length - 1 && <div className="h-px bg-ink-hi/[0.05] ml-[112px] mr-3" />}
+                {i < songs.length - 1 && <div className="h-px bg-ink-hi/[0.05] mx-4 md:ml-[112px] md:mr-3" />}
               </div>
             ))}
           </div>

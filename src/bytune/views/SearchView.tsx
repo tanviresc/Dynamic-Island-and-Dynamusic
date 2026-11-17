@@ -11,10 +11,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Disc3, LayoutGrid, ListMusic, ListPlus, ListStart, Mic, MoreVertical, Music2, Play, Search as SearchIcon, SearchX, User, X, type LucideIcon } from "lucide-react";
 import { Artwork, EqBars, ErrorState, ExplicitBadge, IconBtn, ListSkeleton, Pills } from "../components/primitives";
-import { browseMenuItems, trackMenuItems } from "../lib/trackActions";
+import { browseMenuItems, queueTrackPriorityWithToast, trackMenuItems } from "../lib/trackActions";
 import { playAlbum } from "../lib/album";
 import { playPlaylist } from "../lib/playlist";
 import { useDrag } from "../lib/dnd";
+import { useSwipeGesture } from "../lib/useSwipeGesture";
 import { fmtTime, shortTitle } from "../lib/format";
 import { FitText } from "../components/FitText";
 import { isMac } from "../lib/platform";
@@ -68,22 +69,42 @@ function SongSearchRow({ song, onPlay }: { song: Track; onPlay: () => void }) {
   const openContextMenu = useUI((s) => s.openContextMenu);
   const drag = useDrag({ track: song });
   const state = useTrackPlayback(song.id);
+  const badgeRef = useRef<HTMLDivElement | null>(null);
+  const swipe = useSwipeGesture({
+    onSwipeRight: () => queueTrackPriorityWithToast(song),
+    rightBadgeRef: badgeRef,
+  });
   const openMenu = (x: number, y: number): void => {
     openContextMenu(x, y, trackMenuItems(song));
   };
   return (
-    <div
-      {...tintHoverHandlers(song.thumb)}
-      {...drag.props}
-      onClick={onPlay}
-      onContextMenu={(e) => {
-        e.preventDefault();
-        openMenu(e.clientX, e.clientY);
-      }}
-      className={`fit-host group flex items-center gap-3.5 h-[64px] px-3 rounded-lg cursor-pointer select-none ${
-        state ? "bg-ink-hi/[0.08]" : "hover:bg-ink-hi/[0.05]"
-      } ${drag.dragging ? "opacity-40" : ""}`}
-    >
+    <div className="relative overflow-hidden rounded-lg">
+      <div
+        ref={badgeRef}
+        style={{ opacity: 0 }}
+        aria-hidden="true"
+        className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 inline-flex items-center gap-1.5 rounded-full bg-emerald-500/20 border border-emerald-400/40 px-2.5 py-1 text-[11.5px] font-semibold text-emerald-300"
+      >
+        <ListPlus className="w-3.5 h-3.5" />
+        Priority Queue
+      </div>
+      <div
+        {...tintHoverHandlers(song.thumb)}
+        {...drag.props}
+        {...swipe.handlers}
+        onClick={() => {
+          if (swipe.consumeDidSwipe()) return;
+          onPlay();
+        }}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          openMenu(e.clientX, e.clientY);
+        }}
+        style={{ touchAction: "pan-y" }}
+        className={`fit-host group relative flex items-center gap-3 md:gap-3.5 min-h-[68px] py-2 md:py-0 md:h-[64px] px-3 rounded-lg cursor-pointer select-none ${
+          state ? "bg-ink-hi/[0.08]" : "hover:bg-ink-hi/[0.05] active:bg-ink-hi/[0.08]"
+        } ${drag.dragging ? "opacity-40" : ""}`}
+      >
       <span className="relative shrink-0">
         <Artwork src={song.thumb} className="w-[52px] h-[52px] rounded-lg" iconClassName="w-4 h-4" alt="" />
         {state === "playing" && (
@@ -136,6 +157,7 @@ function SongSearchRow({ song, onPlay }: { song: Track; onPlay: () => void }) {
       >
         <MoreVertical className="w-4 h-4" />
       </button>
+      </div>
     </div>
   );
 }
@@ -279,21 +301,41 @@ function TopResultCard({ song, onPlay }: { song: Track; onPlay: () => void }) {
   const openContextMenu = useUI((s) => s.openContextMenu);
   const navigate = useUI((s) => s.navigate);
   const drag = useDrag({ track: song });
+  const badgeRef = useRef<HTMLDivElement | null>(null);
+  const swipe = useSwipeGesture({
+    onSwipeRight: () => queueTrackPriorityWithToast(song),
+    rightBadgeRef: badgeRef,
+  });
   return (
     <section className="animate-slide-up">
       <h2 className="section-title text-[21px] mb-4">Top result</h2>
-      <div
-        {...tintHoverHandlers(song.thumb)}
-        {...drag.props}
-        onClick={onPlay}
-        onContextMenu={(e) => {
-          e.preventDefault();
-          openContextMenu(e.clientX, e.clientY, trackMenuItems(song));
-        }}
-        className={`fit-host group flex items-center gap-4 p-4 rounded-xl bg-ink-hi/[0.04] hover:bg-ink-hi/[0.07] transition-colors cursor-pointer select-none ${
-          drag.dragging ? "opacity-40" : ""
-        }`}
-      >
+      <div className="relative overflow-hidden rounded-xl">
+        <div
+          ref={badgeRef}
+          style={{ opacity: 0 }}
+          aria-hidden="true"
+          className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 inline-flex items-center gap-1.5 rounded-full bg-emerald-500/20 border border-emerald-400/40 px-3 py-1 text-[12px] font-semibold text-emerald-300"
+        >
+          <ListPlus className="w-3.5 h-3.5" />
+          Priority Queue
+        </div>
+        <div
+          {...tintHoverHandlers(song.thumb)}
+          {...drag.props}
+          {...swipe.handlers}
+          onClick={() => {
+            if (swipe.consumeDidSwipe()) return;
+            onPlay();
+          }}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            openContextMenu(e.clientX, e.clientY, trackMenuItems(song));
+          }}
+          style={{ touchAction: "pan-y" }}
+          className={`fit-host group relative flex items-center gap-4 p-4 rounded-xl bg-ink-hi/[0.04] hover:bg-ink-hi/[0.07] transition-colors cursor-pointer select-none ${
+            drag.dragging ? "opacity-40" : ""
+          }`}
+        >
         <Artwork src={song.thumb} className="w-[72px] h-[72px] rounded-[10px] shrink-0" iconClassName="w-6 h-6" alt="" />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5 font-display text-[20px] font-bold tracking-[-0.02em] text-ink-hi">
@@ -313,6 +355,7 @@ function TopResultCard({ song, onPlay }: { song: Track; onPlay: () => void }) {
         >
           <MoreVertical className="w-5 h-5" />
         </button>
+        </div>
       </div>
       <div className="flex items-center gap-2.5 mt-3">
         <button

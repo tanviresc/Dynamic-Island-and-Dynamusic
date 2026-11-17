@@ -113,6 +113,58 @@ export function heavyRotation(
     .map(({ track, listens, score }) => ({ track, listens, score }));
 }
 
+const JUMP_VOTE: Record<ListenOutcome, number> = { done: 1.0, part: 0.65, skip: -0.75 };
+
+/**
+ * Jump back in: rank tracks by rolling 2-day listening frequency weighted by
+ * listen completion and gentle recency decay, backfilling remaining slots from
+ * recent history when fewer than `limit` tracks were heard in the 2-day window.
+ */
+export function jumpBackInTracks(
+  entries: readonly JournalEntry[],
+  recentlyPlayed: readonly Track[],
+  now: number,
+  opts: { windowMs?: number; limit?: number; hidden?: ReadonlySet<string> } = {}
+): Track[] {
+  const { windowMs = 2 * DAY_MS, limit = 6, hidden } = opts;
+  const byId = new Map<string, { track: Track; plays: number; weight: number; lastAt: number }>();
+
+  for (const e of entries) {
+    const age = now - e.at;
+    if (age < 0 || age > windowMs) continue;
+    if (hidden?.has(e.track.id) || e.track.episode) continue;
+    const depth = 0.4 + 0.6 * Math.min(1, Math.max(0, e.heard) / 90);
+    const recency = fade(age, 1.5 * DAY_MS);
+    const delta = JUMP_VOTE[e.out] * depth * recency;
+
+    const cur = byId.get(e.track.id) ?? { track: e.track, plays: 0, weight: 0, lastAt: 0 };
+    if (e.out !== "skip") cur.plays += 1;
+    cur.weight += delta;
+    if (e.at >= cur.lastAt) {
+      cur.lastAt = e.at;
+      cur.track = e.track;
+    }
+    byId.set(e.track.id, cur);
+  }
+
+  const ranked = [...byId.values()]
+    .filter((item) => item.plays > 0 && item.weight > 0)
+    .sort((a, b) => b.weight - a.weight || b.plays - a.plays || b.lastAt - a.lastAt)
+    .slice(0, limit)
+    .map((item) => item.track);
+
+  if (ranked.length < limit) {
+    const picked = new Set(ranked.map((t) => t.id));
+    for (const t of recentlyPlayed) {
+      if (ranked.length >= limit) break;
+      if (picked.has(t.id) || hidden?.has(t.id) || t.episode) continue;
+      picked.add(t.id);
+      ranked.push(t);
+    }
+  }
+  return ranked;
+}
+
 /** A count that fades: `n` as of `at`, read at `now`. */
 export function fadedCount(entry: { n: number; at: number } | undefined, now: number, halfLifeMs: number): number {
   return entry ? entry.n * fade(now - entry.at, halfLifeMs) : 0;

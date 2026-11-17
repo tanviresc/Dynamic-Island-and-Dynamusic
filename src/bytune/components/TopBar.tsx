@@ -64,7 +64,7 @@ function BrandHeader() {
       <img
         src={brandText}
         alt="Dynamusic"
-        className="h-[19px] w-auto block"
+        className="hidden lg:block h-[19px] w-auto"
       />
     </div>
   );
@@ -383,8 +383,8 @@ export function TopBar() {
        so its content centres in the full 68px — equal space above and below. */
     <div
       data-tauri-drag-region
-      className={`app-drag relative h-[68px] shrink-0 flex items-center gap-3 chrome-glass z-20 ${
-        isMac ? "pl-[84px]" : "pl-3"
+      className={`app-drag relative h-[68px] shrink-0 flex items-center justify-between gap-2 sm:gap-3 chrome-glass z-20 ${
+        isMac ? "pl-[84px]" : "pl-2 sm:pl-3"
       }`}
     >
       {/* Left cluster — brand flush to the edge, then a hairline divider so the
@@ -429,22 +429,20 @@ export function TopBar() {
           onClick={refreshCurrentView}
           title="Refresh"
           aria-label="Refresh"
-          className="app-no-drag w-9 h-9 grid place-items-center rounded-full text-ink-hi/60 hover:text-ink-hi hover:bg-ink-hi/[0.08] transition-colors"
+          className="app-no-drag hidden sm:grid w-9 h-9 place-items-center rounded-full text-ink-hi/60 hover:text-ink-hi hover:bg-ink-hi/[0.08] transition-colors"
         >
           <RefreshCw className={`w-4 h-4 ${feedRefreshing ? "animate-spin" : ""}`} />
         </button>
       </div>
 
-      {/* Centre cluster — home button beside the search field, Spotify-style:
-          pinned to the true window centre (not balanced between the side
-          clusters), centred on the bar's vertical midline. */}
-      <div className="absolute left-1/2 top-0 h-full -translate-x-1/2 flex items-center gap-3">
+      {/* Centre cluster — flex-1 responsive centering so nav/right buttons never overlap at narrow split-screen widths. */}
+      <div className="flex-1 min-w-0 h-full flex items-center justify-center gap-2 sm:gap-3 px-1">
         <button
           onClick={goHome}
           title="Home"
           aria-label="Home"
           aria-current={view.name === "home" ? "page" : undefined}
-          className={`app-no-drag w-12 h-12 shrink-0 grid place-items-center rounded-full transition-colors ${
+          className={`app-no-drag w-10 h-10 sm:w-12 sm:h-12 shrink-0 grid place-items-center rounded-full transition-colors ${
             view.name === "home"
               ? "bg-elevated text-ink-hi"
               : "bg-panel text-ink-hi/75 hover:text-ink-hi hover:bg-ink-hi/[0.06]"
@@ -452,8 +450,8 @@ export function TopBar() {
         >
           <Home className="w-5 h-5" />
         </button>
-        <div ref={searchClusterRef} className="app-no-drag relative w-[min(474px,36vw)]">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-6 h-6 text-ink-hi/55 pointer-events-none" />
+        <div ref={searchClusterRef} className="app-no-drag relative flex-1 min-w-0 max-w-[474px]">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 sm:w-6 sm:h-6 text-ink-hi/55 pointer-events-none" />
           <input
             id="global-search"
             ref={inputRef}
@@ -481,8 +479,8 @@ export function TopBar() {
               setActiveIdx(-1);
             }}
             onKeyDown={onSearchKeyDown}
-            className={`w-full h-12 pl-12 rounded-full bg-panel border border-transparent text-[16px] text-ink-hi placeholder:text-ink-hi/45 outline-none hover:bg-ink-hi/[0.06] focus:border-ink-hi/25 focus:bg-ink-hi/[0.06] transition-all duration-150 ${
-              query.trim() !== "" ? "pr-[104px]" : "pr-[72px]"
+            className={`w-full h-10 sm:h-12 pl-10 sm:pl-12 rounded-full bg-panel border border-transparent text-[14px] sm:text-[16px] text-ink-hi placeholder:text-ink-hi/45 outline-none hover:bg-ink-hi/[0.06] focus:border-ink-hi/25 focus:bg-ink-hi/[0.06] transition-all duration-150 ${
+              query.trim() !== "" ? "pr-[88px] sm:pr-[104px]" : "pr-[60px] sm:pr-[72px]"
             }`}
           />
           {/* Type-ahead dropdown — the typed query, text completions (the
@@ -687,8 +685,8 @@ export function TopBar() {
       {/* Right cluster — user badge, then (Windows only) the renderer-drawn
           caption buttons flush to the window edge. macOS uses the native
           traffic lights, so nothing is drawn here. */}
-      <div className="ml-auto h-full flex items-center gap-1 shrink-0">
-        <div className="app-no-drag flex items-center gap-1">
+      <div className="h-full flex items-center gap-1 shrink-0">
+        <div className="app-no-drag hidden md:flex items-center gap-1">
           <UpdateChip />
           <StreakChip />
         </div>

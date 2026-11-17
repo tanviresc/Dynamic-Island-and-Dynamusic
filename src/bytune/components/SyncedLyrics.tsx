@@ -15,34 +15,19 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "reac
 import { createPortal } from "react-dom";
 import { RefreshCw, Search } from "lucide-react";
 import { getPlaybackPosition } from "../lib/audio";
-import { getPlaybackClock, subscribePlaybackClock } from "../lib/playbackClock";
-import { visibleLyricLines } from "../lib/lyricsLines";
+import { getPlaybackClock, setPlaybackClock, subscribePlaybackClock } from "../lib/playbackClock";
+import { visibleLyricLines, cleanMobileLyricLines } from "../lib/lyricsLines";
 import { cleanTrackQuery } from "../lib/mobileStandaloneFallback";
 import { romanize } from "../lib/romanize";
 import { LYRICS_LOADING_LINES, pickLyricsLine } from "../lib/lyricsPhrases";
 import { usePlayer } from "../stores/player";
 import { useSettings } from "../stores/settings";
 import { getInterpolatedPcPosition, useMobileMode } from "../stores/mobileMode";
+import { ACTIVE_LINE_LEAD_SEC, LYRICS_LINE_CHUNK_SIZE, buildLineWordModel, computeActiveLyricIndex, easeMelodyProgress } from "../lib/wordTiming";
 import type { LyricsResult, SyncedLyricWord, Track } from "../types";
 
-/** How long the lyrics take to glide to the next line. */
-const GLIDE_MS = 600;
-
-function computeActiveLyricIndex(
-  lines: Array<{ time: number }> | null,
-  position: number,
-  offset: number,
-): number {
-  if (!lines || lines.length === 0) return -1;
-  const lyricPos = position - offset;
-  let idx = -1;
-  for (let i = 0; i < lines.length; i++) {
-    if (lines[i].time <= lyricPos + 0.35) idx = i;
-    else break;
-  }
-  if (idx === -1 && position >= 0) return 0;
-  return idx;
-}
+/** How long the GPU transform glide takes to ease to the next lyric line. */
+const GLIDE_MS = 540;
 
 interface LyricsViewProps {
   lyrics: LyricsResult | null;
@@ -81,80 +66,77 @@ function subLineClass(variant: LyricsVariant): string {
 function lineSizeClass(variant: LyricsVariant): string {
   switch (variant) {
     case "hero":
-      return "font-display text-[clamp(28px,3.4vw,54px)] leading-[1.22] tracking-[-0.03em] font-extrabold";
+      return "font-display text-[clamp(24px,3.4vw,54px)] leading-[1.22] tracking-[-0.03em] font-extrabold break-words";
     case "large":
-      return "font-display text-[40px] leading-[1.25] tracking-[-0.03em] font-extrabold";
+      return "font-display text-[clamp(24px,3.4vw,40px)] leading-[1.25] tracking-[-0.03em] font-extrabold break-words";
     default:
-      return "font-display text-[24px] leading-[1.4] tracking-[-0.02em] font-extrabold";
+      return "font-display text-[22px] sm:text-[24px] leading-[1.4] tracking-[-0.02em] font-extrabold break-words";
   }
 }
 
-/**
- * Word sweep spans, sanitised into the line's own time window.
- *
- * Providers emit backing-vocal words that start *before* the line activates
- * (they'd light the moment the line does and stay lit for its whole duration)
- * and degenerate zero-length spans (they'd pop fully lit at their start).
- * Both are repaired here: spans that are sane get clamped into the line
- * window, anything else falls back to an even distribution across it.
- */
-function resolveWordSpans(
-  words: SyncedLyricWord[],
-  t0: number,
-  t1: number,
-): Array<{ start: number; end: number }> {
-  const n = words.length || 1;
-  const sane =
-    words.length > 0 &&
-    words.every((w) => w.end > w.start && w.start >= t0 - 0.25 && w.end <= t1 + 0.5);
-  if (sane) {
-    return words.map((w) => ({
-      start: Math.max(t0, w.start),
-      end: Math.min(t1, Math.max(w.start + 0.04, w.end)),
-    }));
-  }
-  return words.map((_, i) => ({
-    start: t0 + ((t1 - t0) * i) / n,
-    end: t0 + ((t1 - t0) * (i + 1)) / n,
-  }));
-}
-
-/** Karaoke sweep across one line's words; re-renders at ~30fps independently of LyricsView. */
+/** Karaoke sweep across one line's words locked smoothly to vocal phrasing. */
 function WordLine({
   words,
   spans,
+  spaced = true,
   variant,
   glow,
   offset,
   isPlaying,
   isPcRemote = false,
+  isMobileDevice = false,
 }: {
   words: SyncedLyricWord[];
   spans: Array<{ start: number; end: number }>;
+  spaced?: boolean;
   variant: LyricsVariant;
   glow: boolean;
   offset: number;
   isPlaying: boolean;
   isPcRemote?: boolean;
+  isMobileDevice?: boolean;
 }) {
   const [, force] = useState(0);
   useEffect(() => {
-    // The sweep only moves while audio is playing; parked at pause, the line
-    // holds its last state instead of burning frames re-rendering. Cap to ~30fps
-    // to keep WebView2 CPU/GPU paint smooth during word sweeps.
+    // Pause rAF when paused or backgrounded so idle/minimized windows burn zero CPU.
     if (!isPlaying) return;
     let raf = 0;
     let lastTick = 0;
+    // 60fps on desktop (~16ms) and crisp ~30fps step on mobile APK with smooth CSS interpolation.
+    const frameIntervalMs = isMobileDevice ? 28 : 16;
+    const stop = (): void => {
+      if (raf) {
+        window.cancelAnimationFrame(raf);
+        raf = 0;
+      }
+    };
     const tick = (now: number): void => {
-      if (now - lastTick >= 32) {
+      if (document.hidden) {
+        raf = 0;
+        return;
+      }
+      if (now - lastTick >= frameIntervalMs) {
         lastTick = now;
         force((n) => (n + 1) % 1000000);
       }
       raf = window.requestAnimationFrame(tick);
     };
-    raf = window.requestAnimationFrame(tick);
-    return () => window.cancelAnimationFrame(raf);
-  }, [isPlaying]);
+    const onVisibility = (): void => {
+      if (document.hidden) {
+        stop();
+      } else if (!raf) {
+        raf = window.requestAnimationFrame(tick);
+      }
+    };
+    if (!document.hidden) {
+      raf = window.requestAnimationFrame(tick);
+    }
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      stop();
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [isPlaying, isMobileDevice]);
 
   const rawPos = isPcRemote
     ? getInterpolatedPcPosition(useMobileMode.getState().pcState)
@@ -162,7 +144,7 @@ function WordLine({
         const liveClock = getPlaybackPosition();
         return liveClock > 0 ? liveClock : getPlaybackClock().position;
       })();
-  const pos = rawPos - offset;
+  const pos = rawPos - offset + 0.08;
   return (
     <span
       className={`${lineSizeClass(variant)} text-white`}
@@ -170,24 +152,39 @@ function WordLine({
     >
       {words.map((w, i) => {
         const span = spans[i] ?? { start: w.start, end: w.end };
-        const p =
+        const rawP =
           span.end > span.start
             ? Math.min(1, Math.max(0, (pos - span.start) / (span.end - span.start)))
             : pos >= span.start
               ? 1
               : 0;
+        const p = easeMelodyProgress(rawP);
         const pct = Math.round(p * 100);
+        const singingNow = rawP > 0 && rawP < 1;
         return (
           <span
             key={i}
-            style={{
-              backgroundImage: `linear-gradient(90deg, #ffffff ${pct}%, rgba(255,255,255,0.48) ${pct}%)`,
-              WebkitBackgroundClip: "text",
-              backgroundClip: "text",
-              WebkitTextFillColor: "transparent",
-            }}
+            style={
+              isMobileDevice
+                ? {
+                    backgroundImage: "linear-gradient(90deg, #ffffff 50%, rgba(255,255,255,0.46) 50%)",
+                    backgroundSize: "200% 100%",
+                    backgroundPosition: `${100 - pct}% 0`,
+                    transition: isPlaying && singingNow ? "background-position 40ms linear" : undefined,
+                    WebkitBackgroundClip: "text",
+                    backgroundClip: "text",
+                    WebkitTextFillColor: "transparent",
+                  }
+                : {
+                    backgroundImage: `linear-gradient(90deg, #ffffff ${pct}%, rgba(255,255,255,0.46) ${pct}%)`,
+                    WebkitBackgroundClip: "text",
+                    backgroundClip: "text",
+                    WebkitTextFillColor: "transparent",
+                    filter: singingNow ? "drop-shadow(0 0 12px rgba(255,255,255,0.6))" : undefined,
+                  }
+            }
           >
-            {i > 0 ? " " : ""}
+            {spaced && i > 0 ? " " : ""}
             {w.text}
           </span>
         );
@@ -196,10 +193,9 @@ function WordLine({
   );
 }
 
-/** Distance-from-active → the depth treatment: opacity, blur, scale.
- * Blur follows the "Blur unfocused lyrics" switch (and yields to the global
- * reduced-blur setting); the opacity/scale falloff always stays so the
- * active line still reads first. */
+/** Distance-from-active → the depth treatment: opacity, dynamic blur (up to 4px), scale.
+ * Active line (dist === 0) stays razor-sharp and prominent while surrounding past and
+ * upcoming lines softly recede with smooth opacity and blur transitions. */
 function depthStyle(
   dist: number,
   past: boolean,
@@ -207,17 +203,17 @@ function depthStyle(
   centered = false,
 ): { className: string; style: React.CSSProperties } {
   const d = Math.min(Math.abs(dist), 4);
-  // Active line is solid #ffffff; non-active past/upcoming lines stay translucent so the singing line pops
-  const opacity = (centered ? [1, 0.28, 0.21, 0.16, 0.12][d] : [1, 0.62, 0.42, 0.32, 0.24][d]) * (past && d > 0 ? 0.85 : 1);
-  const blurPx = blur ? [0, 0.5, 1.0, 1.4, 1.8][d] : 0;
+  const opacity = (centered ? [1, 0.34, 0.24, 0.17, 0.12][d] : [1, 0.56, 0.38, 0.28, 0.20][d]) * (past && d > 0 ? 0.85 : 1);
+  const blurPx = blur ? [0, 1.5, 2.6, 3.4, 4.0][d] : 0;
   const scale = [1.04, 0.98, 0.96, 0.94, 0.92][d];
   return {
-    className: "transition-all duration-300 ease-out",
+    className: "transition-[opacity,transform,filter] duration-500 ease-out",
     style: {
       opacity,
-      filter: d === 0 || blurPx === 0 ? undefined : `blur(${blurPx}px)`,
-      transform: `scale(${scale})`,
+      filter: d === 0 || blurPx === 0 ? "none" : `blur(${blurPx}px)`,
+      transform: `translateZ(0) scale(${scale})`,
       transformOrigin: centered ? "center center" : "left center",
+      willChange: d <= 2 ? "transform, opacity, filter" : undefined,
     },
   };
 }
@@ -269,15 +265,24 @@ export function LyricsView({
   const reduceMotion = useSettings((s) => s.reduceAnimation);
   const reduceBlur = useSettings((s) => s.reduceDynamicBlur);
   const blurLines = blurOn && !reduceBlur;
-  const glowLines = blurOn && !reduceMotion && !reduceBlur;
+  const glowLines = blurOn && !reduceMotion && !reduceBlur && !isMobileDevice;
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const listRef = useRef<HTMLDivElement | null>(null);
   const activeRef = useRef<HTMLButtonElement | null>(null);
-  const glide = useRef(0);
-  /** The glide in flight heads here; an anchor-only move retargets it. */
-  const glideTo = useRef<number | null>(null);
+  const translateYRef = useRef(0);
   const lastIndex = useRef(-1);
-  /** The active line changed and no frame has moved the list for it yet. */
-  const lineMoved = useRef(false);
+  const [manualScroll, setManualScroll] = useState(false);
+
+  useEffect(() => {
+    setManualScroll(false);
+    translateYRef.current = 0;
+    lastIndex.current = -1;
+    if (containerRef.current) containerRef.current.scrollTop = 0;
+    if (listRef.current) {
+      listRef.current.style.transition = "none";
+      listRef.current.style.transform = "translate3d(0, 0px, 0)";
+    }
+  }, [trackKey]);
 
   // BitChord mobile's LyricsLoadingLine: the lookup's stand-in is one of the
   // loading phrases — no spinner — picked once per track and held there.
@@ -285,7 +290,10 @@ export function LyricsView({
 
   const synced = lyrics?.synced ?? null;
 
-  const lines = useMemo(() => (synced ? visibleLyricLines(synced) : null), [synced]);
+  const lines = useMemo(
+    () => (synced ? cleanMobileLyricLines(visibleLyricLines(synced), isMobileDevice, track?.artist) : null),
+    [synced, isMobileDevice, track?.artist]
+  );
 
   // Static text for the plain (unsynced) treatment: the provider's plain
   // lyrics when they exist, otherwise the synced lines' own words joined in
@@ -331,71 +339,134 @@ export function LyricsView({
   }, [isPcRemote, lines, offset, pcState?.playing, pcState?.position, pcState?.serverTimestamp, pcState?.track?.id]);
 
   const activeIndex = isPcRemote ? remoteActiveIndex : localActiveIndex;
+  const playbackSpeed = useSettings((s) => s.playbackSpeed || 1);
 
-  // Keep the active line on its anchor. Runs on lyrics load too — at mount
-  // the layout isn't measured yet, so the first attempt needs a frame first.
-  // `anchor` is the fraction of the container height where the live line's
-  // centre comes to rest: 0.5 = centred (default), the fullscreen player
-  // passes the album cover's measured centre so the line sits beside it.
-  // The move is a glide: an ease-out over GLIDE_MS, restarted from wherever it
-  // is when the next line comes. A long jump (a seek, lyrics opening
-  // mid-song) lands at once, as does every move under Reduce motion.
-  // When only the anchor moved (fullscreen's cover growing or re-centring,
-  // re-measured every frame), the line follows at once instead of easing in
-  // behind the cover; a glide already under way just takes the new target.
+  // Lazy-mount lyric lines in small chunks (LYRICS_LINE_CHUNK_SIZE = 20) so long
+  // enhanced-LRC tracks never block main-thread layout on start or track switch.
+  const totalLines = lines?.length ?? 0;
+  const [renderedLinesCount, setRenderedLinesCount] = useState(() =>
+    Math.min(totalLines, Math.max(LYRICS_LINE_CHUNK_SIZE, activeIndex + LYRICS_LINE_CHUNK_SIZE))
+  );
   useEffect(() => {
-    if (activeIndex < 0) return;
-    if (activeIndex !== lastIndex.current) {
-      lastIndex.current = activeIndex;
-      lineMoved.current = true;
-    }
+    const needed = Math.min(totalLines, Math.max(LYRICS_LINE_CHUNK_SIZE, activeIndex + LYRICS_LINE_CHUNK_SIZE));
+    setRenderedLinesCount((prev) => (prev >= needed ? prev : needed));
+  }, [activeIndex, totalLines]);
+  useEffect(() => {
+    setRenderedLinesCount(Math.min(totalLines, LYRICS_LINE_CHUNK_SIZE));
+  }, [trackKey, totalLines]);
+  useEffect(() => {
+    if (renderedLinesCount >= totalLines) return;
+    const timer = window.setTimeout(() => {
+      setRenderedLinesCount((prev) => Math.min(totalLines, prev + LYRICS_LINE_CHUNK_SIZE));
+    }, 80);
+    return () => window.clearTimeout(timer);
+  }, [renderedLinesCount, totalLines]);
+
+  // Wake up on the exact next lyric boundary instead of waiting up to ~300ms for HTML5 `timeupdate`,
+  // keeping zero background polling timers while switching lines right on beat.
+  useEffect(() => {
+    if (isPcRemote || !playing || !syncedOn || !lines || lines.length === 0) return;
+    const nextIdx = activeIndex + 1;
+    if (nextIdx < 0 || nextIdx >= lines.length) return;
+    const targetSec = lines[nextIdx].time;
+    const livePos = getPlaybackPosition();
+    const curPos = livePos > 0 ? livePos : getPlaybackClock().position;
+    const secUntil = targetSec - (curPos - offset + ACTIVE_LINE_LEAD_SEC);
+    const delayMs = Math.max(8, Math.round((secUntil / playbackSpeed) * 1000) + 6);
+    if (delayMs > 60_000) return;
+    const timer = window.setTimeout(() => {
+      const fresh = getPlaybackPosition();
+      if (fresh > 0) setPlaybackClock(fresh);
+    }, delayMs);
+    return () => window.clearTimeout(timer);
+  }, [activeIndex, isPcRemote, lines, offset, playbackSpeed, playing, syncedOn]);
+
+  // Keep the active line anchored at 60fps via GPU-composited `translate3d`
+  // transforms instead of mutating `scrollTop` inside a per-frame JS loop.
+  useEffect(() => {
+    if (activeIndex < 0 || manualScroll) return;
+    const prevIdx = lastIndex.current;
+    const lineChanged = activeIndex !== prevIdx;
+    lastIndex.current = activeIndex;
+
     const raf = window.requestAnimationFrame(() => {
       const container = containerRef.current;
+      const list = listRef.current;
       const el = activeRef.current;
-      if (!container || !el) return;
-      // The line's centre in the scroller's content, measured against the
-      // scroller itself: offsetTop would count from the list instead while
-      // the list has a layer of its own (fullscreen's .fs-moving), skipping
-      // the head spacer.
-      const r = el.getBoundingClientRect();
-      const mid = container.scrollTop + r.top - container.getBoundingClientRect().top + r.height / 2;
-      const target = Math.max(0, mid - container.clientHeight * anchor);
-      if (!lineMoved.current) {
-        if (glideTo.current != null) glideTo.current = target;
-        else container.scrollTop = target;
-        return;
+      if (!container || !list || !el) return;
+
+      if (container.scrollTop !== 0) {
+        const handoffY = -container.scrollTop;
+        container.scrollTop = 0;
+        translateYRef.current = handoffY;
+        list.style.transition = "none";
+        list.style.transform = `translate3d(0, ${handoffY}px, 0)`;
+        void list.offsetHeight;
       }
-      lineMoved.current = false;
-      const from = container.scrollTop;
-      window.cancelAnimationFrame(glide.current);
-      glideTo.current = null;
+
+      const cRect = container.getBoundingClientRect();
+      const eRect = el.getBoundingClientRect();
+      const naturalMid = eRect.top - cRect.top - translateYRef.current + eRect.height / 2;
+      const targetY = Math.round(Math.min(0, container.clientHeight * anchor - naturalMid));
+
       const still =
+        reduceMotion ||
         document.documentElement.classList.contains("reduce-motion") ||
         window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-      if (still || Math.abs(target - from) > container.clientHeight * 1.5) {
-        container.scrollTop = target;
-        return;
-      }
-      glideTo.current = target;
-      const start = performance.now();
-      const step = (now: number): void => {
-        const t = Math.min(1, (now - start) / GLIDE_MS);
-        const to = glideTo.current ?? target;
-        container.scrollTop = from + (to - from) * (1 - (1 - t) ** 4);
-        if (t < 1) glide.current = window.requestAnimationFrame(step);
-        else glideTo.current = null;
-      };
-      glide.current = window.requestAnimationFrame(step);
+      const jump = Math.abs(targetY - translateYRef.current);
+      const instant = still || !lineChanged || prevIdx < 0 || jump > container.clientHeight * 1.4;
+
+      list.style.transition = instant
+        ? "none"
+        : `transform ${GLIDE_MS}ms cubic-bezier(0.22, 1, 0.36, 1)`;
+      translateYRef.current = targetY;
+      list.style.transform = `translate3d(0, ${targetY}px, 0)`;
     });
     return () => window.cancelAnimationFrame(raf);
-  }, [activeIndex, synced, anchor]);
+  }, [activeIndex, synced, anchor, manualScroll, reduceMotion]);
+
   const stopGlide = (): void => {
-    window.cancelAnimationFrame(glide.current);
-    glideTo.current = null;
+    setRenderedLinesCount(totalLines);
+    if (manualScroll) return;
+    const container = containerRef.current;
+    const list = listRef.current;
+    const currentY = translateYRef.current;
+    if (list) {
+      list.style.transition = "none";
+      list.style.transform = "translate3d(0, 0px, 0)";
+    }
+    translateYRef.current = 0;
+    if (container && currentY < 0) {
+      container.scrollTop = Math.max(0, -currentY);
+    }
+    setManualScroll(true);
   };
-  useEffect(() => () => window.cancelAnimationFrame(glide.current), []);
+
+  const resumeAutoFollow = (): void => {
+    setManualScroll(false);
+  };
 
   if (loading) {
+    if (isMobileDevice) {
+      return (
+        <div
+          className="flex-1 w-full flex items-center justify-center text-center px-6 py-12"
+          style={{ textAlign: "center" }}
+        >
+          <span
+            className={`font-display font-extrabold text-ink-hi/60 animate-pulse text-center ${
+              hero
+                ? "text-[28px] tracking-[-0.02em]"
+                : large
+                  ? "text-[26px] tracking-[-0.02em]"
+                  : "text-[18px]"
+            }`}
+          >
+            Getting the words
+          </span>
+        </div>
+      );
+    }
     // Words, not a spinner — mobile's LyricsLoadingLine, dimmed like an
     // unsung line.
     return (
@@ -537,9 +608,9 @@ export function LyricsView({
       >
         <div
           ref={containerRef}
-          // Scrolling by hand stops a glide instead of fighting it.
+          // Scrolling by hand switches seamlessly from GPU transform glide to native scroll.
           onWheel={stopGlide}
-          onPointerDown={stopGlide}
+          onTouchMove={stopGlide}
           className="absolute inset-0 overflow-y-auto scroll-host px-6 py-0"
           style={{
             // Lines melt into the dark at the panel edges instead of stopping hard.
@@ -548,8 +619,11 @@ export function LyricsView({
           }}
         >
         <div aria-hidden="true" style={{ height: topSpacer, flexShrink: 0 }} />
-        <div className={`lyrics-lines ${hero ? "space-y-7" : large ? "space-y-5" : "space-y-4"}`}>
-          {(lines ?? []).map((line, i) => {
+        <div
+          ref={listRef}
+          className={`lyrics-lines will-change-transform ${hero ? "space-y-7" : large ? "space-y-5" : "space-y-4"}`}
+        >
+          {(lines ?? []).slice(0, renderedLinesCount).map((line, i) => {
             const active = i === activeIndex;
             const dist = i - activeIndex;
             const depth = depthStyle(dist, i < activeIndex, blurLines, isMobileDevice);
@@ -579,21 +653,10 @@ export function LyricsView({
               );
             }
 
-            const wordSynced = active && (line.words?.length ?? 0) > 0;
-
-            // The sweep window is the line's own slice of the song: from its
-            // start to the next line (or the last word's end, whichever is
-            // sooner). Word spans are sanitised against it before rendering.
-            let spans: Array<{ start: number; end: number }> = [];
-            if (wordSynced && line.words) {
-              const ws = line.words;
-              const nextTime = lines?.[i + 1]?.time;
-              let t1 = nextTime ?? line.time + 4;
-              const lastEnd = ws[ws.length - 1].end;
-              if (lastEnd > line.time) t1 = Math.min(t1, Math.max(lastEnd, line.time + 1));
-              if (t1 <= line.time) t1 = line.time + 3;
-              spans = resolveWordSpans(ws, line.time, t1);
-            }
+            const wordModel = active && line.text.trim().length > 0
+              ? buildLineWordModel(line, lines?.[i + 1]?.time)
+              : null;
+            const wordSynced = Boolean(wordModel && wordModel.words.length > 0);
 
             // Background vocals and a romanized reading follow as quieter lines.
             const roman = romanOn ? (line.roman ?? romanize(line.text)) : null;
@@ -601,9 +664,12 @@ export function LyricsView({
               <button
                 key={`${line.time}-${i}`}
                 ref={i === activeIndex ? activeRef : undefined}
-                onClick={() => seek(Math.max(0, line.time + offset - 0.15))}
+                onClick={() => {
+                  resumeAutoFollow();
+                  seek(Math.max(0, line.time + offset - 0.15));
+                }}
                 title="Jump here"
-                className={`group relative block w-full transition-all duration-300 ${
+                className={`group relative block w-full transition-[opacity,transform,filter] duration-500 ease-out ${
                   isMobileDevice ? "text-center origin-center" : "text-left origin-left"
                 } ${
                   active
@@ -614,24 +680,25 @@ export function LyricsView({
                   active
                     ? {
                         opacity: 1,
-                        transform: "scale(1.04)",
+                        filter: "none",
+                        transform: "translateZ(0) scale(1.04)",
                         transformOrigin: isMobileDevice ? "center center" : "left center",
-                        filter: glowLines
-                          ? "drop-shadow(0 0 24px rgba(255,255,255,0.45))"
-                          : undefined,
+                        willChange: "transform, opacity",
                       }
                     : depth.style
                 }
               >
-                {wordSynced ? (
+                {wordSynced && wordModel ? (
                   <WordLine
-                    words={line.words!}
-                    spans={spans}
+                    words={wordModel.words}
+                    spans={wordModel.spans}
+                    spaced={wordModel.spaced}
                     variant={variant}
                     glow={glowLines}
                     offset={offset}
                     isPlaying={playing}
                     isPcRemote={isPcRemote}
+                    isMobileDevice={isMobileDevice}
                   />
                 ) : (
                   <span
@@ -668,6 +735,15 @@ export function LyricsView({
         </div>
         <div aria-hidden="true" style={{ height: bottomSpacer, flexShrink: 0 }} />
         </div>
+        {manualScroll && (
+          <button
+            type="button"
+            onClick={resumeAutoFollow}
+            className="absolute bottom-4 right-8 z-10 px-3 py-1.5 rounded-full bg-white/15 hover:bg-white/25 backdrop-blur-md text-[12px] font-semibold text-white shadow-lg transition-colors"
+          >
+            Sync lyrics
+          </button>
+        )}
       </div>
     );
   }

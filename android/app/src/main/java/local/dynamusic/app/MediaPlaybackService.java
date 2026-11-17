@@ -41,13 +41,21 @@ import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
 import androidx.media3.datasource.DefaultDataSource;
 import androidx.media3.datasource.DefaultHttpDataSource;
+import androidx.media3.exoplayer.DefaultLoadControl;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
+import java.io.File;
+import java.io.FileInputStream;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
+import org.json.JSONArray;
+import org.json.JSONObject;
 
 /**
  * Single authoritative Android media playback engine owning ExoPlayer,
@@ -97,6 +105,7 @@ public class MediaPlaybackService extends Service {
     public static final String EXTRA_BUFFERING = "buffering";
     public static final String EXTRA_STATUS = "status";
     public static final String EXTRA_ERROR = "error";
+    public static final String EXTRA_REQUEST_ID = "request_id";
 
     private static final String CUSTOM_SHUFFLE = "dynamusic_shuffle";
     private static final String CUSTOM_LIKE = "dynamusic_like";
@@ -106,8 +115,32 @@ public class MediaPlaybackService extends Service {
 
     public interface ServiceEventSink {
         void onServicePlayerEvent(String type, String trackId, boolean playing, boolean buffering,
-                                  String status, double positionSec, double durationSec, String errorMsg);
+                                  String status, double positionSec, double durationSec, String errorMsg,
+                                  String requestId);
         void onServiceControlAction(String action, double seekSec, String trackId);
+    }
+
+    static final class QueuedTrack {
+        final String id;
+        final String title;
+        final String artist;
+        final String album;
+        final double duration;
+        final String thumb;
+        final boolean liked;
+        final String offlineUri;
+
+        QueuedTrack(String id, String title, String artist, String album, double duration,
+                    String thumb, boolean liked, String offlineUri) {
+            this.id = id != null ? id : "";
+            this.title = (title != null && !title.isEmpty()) ? title : "Dynamusic";
+            this.artist = artist != null ? artist : "";
+            this.album = (album != null && !album.isEmpty()) ? album : "Dynamusic";
+            this.duration = duration;
+            this.thumb = thumb != null ? thumb : "";
+            this.liked = liked;
+            this.offlineUri = offlineUri != null ? offlineUri : "";
+        }
     }
 
     public final class LocalBinder extends Binder {
@@ -136,6 +169,8 @@ public class MediaPlaybackService extends Service {
     private boolean noisyReceiverRegistered = false;
     private boolean pausedForTransientFocus = false;
     private boolean duckedForTransientFocus = false;
+    private volatile String nativePrebufferInFlightId = "";
+    private final Runnable endedLockReleaseTask = this::releaseWakeAndWifiLocks;
 
     private ExoPlayer activePlayer;
     private ExoPlayer standbyPlayer;
@@ -144,11 +179,13 @@ public class MediaPlaybackService extends Service {
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final ExecutorService artExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService queueResolverExecutor = Executors.newSingleThreadExecutor();
     private final LruCache<String, ArtEntry> artCache = new LruCache<>(24);
 
     private volatile ServiceEventSink eventSink;
 
     private String curTrackId = "";
+    private String curRequestId = "";
     private String curStreamUrl = "";
     private String curTitle = "Dynamusic";
     private String curArtist = "";
@@ -159,12 +196,16 @@ public class MediaPlaybackService extends Service {
     private String curStatus = "idle";
     private boolean curShuffle = false;
     private boolean curLiked = false;
+    private String curRepeatMode = "off";
     private double curDurationSec = 0;
     private double curPositionSec = 0;
     private float curVolume = 1.0f;
     private float curSpeed = 1.0f;
     private volatile String pendingArtUrl = "";
     private boolean foregroundStarted = false;
+    private final List<QueuedTrack> upcomingQueue = new ArrayList<>();
+    private final AtomicInteger nativeAdvanceSeq = new AtomicInteger(0);
+    private boolean retriedEndedStream = false;
 
     private final Runnable progressTicker = new Runnable() {
         @Override
@@ -212,11 +253,11 @@ public class MediaPlaybackService extends Service {
             pauseNative();
             dispatchMediaControl("pause");
         } else if (focusChange == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) {
-            boolean wasPlaying = activePlayer != null && activePlayer.getPlayWhenReady();
-            pausedForTransientFocus = wasPlaying;
+            boolean wasPlaying = curPlaying || (activePlayer != null && activePlayer.getPlayWhenReady());
             if (wasPlaying) {
-                pauseNative();
-                dispatchMediaControl("pause");
+                pausedForTransientFocus = true;
+                pauseForAudioFocus();
+                dispatchMediaControl("interrupted_pause");
             }
         } else if (focusChange == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK) {
             duckedForTransientFocus = true;
@@ -230,7 +271,7 @@ public class MediaPlaybackService extends Service {
             if (pausedForTransientFocus) {
                 pausedForTransientFocus = false;
                 playNative();
-                dispatchMediaControl("play");
+                dispatchMediaControl("interrupted_resume");
             }
         }
     };
@@ -238,25 +279,111 @@ public class MediaPlaybackService extends Service {
     private final Player.Listener playerListener = new Player.Listener() {
         @Override
         public void onPlaybackStateChanged(int playbackState) {
-            syncStateFromPlayer(playbackState);
             if (playbackState == Player.STATE_ENDED) {
+                long playerDurMs = C.TIME_UNSET;
+                long playerPosMs = 0L;
                 if (activePlayer != null) {
-                    long durMs = activePlayer.getDuration();
-                    long posMs = activePlayer.getCurrentPosition();
-                    if (durMs != C.TIME_UNSET && durMs > 0) {
-                        curDurationSec = durMs / 1000.0;
+                    playerDurMs = activePlayer.getDuration();
+                    playerPosMs = Math.max(0L, activePlayer.getCurrentPosition());
+                    if (playerDurMs != C.TIME_UNSET && playerDurMs > 0) {
+                        curDurationSec = playerDurMs / 1000.0;
                     }
-                    curPositionSec = Math.max(curPositionSec, Math.max(0L, posMs) / 1000.0);
+                    curPositionSec = Math.max(curPositionSec, playerPosMs / 1000.0);
                 }
+                mainHandler.removeCallbacks(progressTicker);
+
+                double playerDurSec = (playerDurMs != C.TIME_UNSET && playerDurMs > 0) ? (playerDurMs / 1000.0) : 0.0;
+                double actualDurSec = playerDurSec > 0.0 ? playerDurSec : curDurationSec;
+                boolean isLocalFile = !curStreamUrl.startsWith("http");
+                boolean playedNearEnd = playerDurSec > 1.5 && curPositionSec >= playerDurSec - 3.0;
+                boolean localEnded = isLocalFile && curPositionSec >= Math.max(1.0, actualDurSec - 2.5);
+                boolean genuineEnd = playedNearEnd || localEnded;
+
+                if (!genuineEnd) {
+                    // Premature EOF or truncated HTTP stream — NEVER auto-skip to the next song.
+                    // Recover cleanly in place with a rotated client/mirror if possible, else report error.
+                    if (!retriedEndedStream && curStreamUrl.startsWith("http") && !curTrackId.isEmpty()) {
+                        retriedEndedStream = true;
+                        final String retryTrackId = curTrackId;
+                        final String retryTitle = curTitle;
+                        final String retryArtist = curArtist;
+                        final String retryReqId = curRequestId;
+                        final double resumePos = curPositionSec;
+                        curBuffering = true;
+                        curStatus = "loading";
+                        postUpdatedNotification();
+                        emitPlayerEvent("state", null);
+                        queueResolverExecutor.execute(() -> {
+                            try {
+                                MobileStreamProxy proxy = MobileStreamProxy.getShared();
+                                proxy.ensureStarted();
+                                MobileStreamProxy.ResolvedStream resolved =
+                                        proxy.resolve(retryTrackId, true, "", retryTitle, retryArtist);
+                                final String freshUrl = resolved != null ? resolved.proxyUrl : "";
+                                mainHandler.post(() -> {
+                                    if (!retryTrackId.equals(curTrackId) || !retryReqId.equals(curRequestId)) return;
+                                    if (!freshUrl.isEmpty()) {
+                                        loadTrackNative(retryTrackId, freshUrl, true, resumePos, retryReqId);
+                                    } else {
+                                        curPlaying = false;
+                                        curBuffering = false;
+                                        curStatus = "error";
+                                        releaseWakeAndWifiLocks();
+                                        unregisterNoisyReceiver();
+                                        postUpdatedNotification();
+                                        emitPlayerEvent("error", "Stream ended prematurely");
+                                    }
+                                });
+                            } catch (Exception e) {
+                                mainHandler.post(() -> {
+                                    if (!retryTrackId.equals(curTrackId) || !retryReqId.equals(curRequestId)) return;
+                                    curPlaying = false;
+                                    curBuffering = false;
+                                    curStatus = "error";
+                                    releaseWakeAndWifiLocks();
+                                    unregisterNoisyReceiver();
+                                    postUpdatedNotification();
+                                    emitPlayerEvent("error", e.getMessage() != null ? e.getMessage() : "Stream ended prematurely");
+                                });
+                            }
+                        });
+                        return;
+                    }
+                    curPlaying = false;
+                    curBuffering = false;
+                    curStatus = "error";
+                    releaseWakeAndWifiLocks();
+                    unregisterNoisyReceiver();
+                    postUpdatedNotification();
+                    emitPlayerEvent("error", "Stream ended prematurely");
+                    return;
+                }
+
+                // Genuine completion: handle Repeat One & Next Track natively in Java so locked/backgrounded
+                // playback advances immediately without waiting for throttled WebView JS timers.
+                if ("one".equals(curRepeatMode) && hasLoadedTrack()) {
+                    seekNative(0.0);
+                    playNative();
+                    emitPlayerEvent("nativeRepeatOne", null);
+                    return;
+                }
+                if (!upcomingQueue.isEmpty()) {
+                    advanceToNextNative(false);
+                    return;
+                }
+
                 curPlaying = false;
                 curBuffering = false;
                 curStatus = "paused";
-                releaseWakeAndWifiLocks();
+                // Keep WakeLock/WifiLock briefly while WebView handles "ended" fallback under Doze.
+                mainHandler.removeCallbacks(endedLockReleaseTask);
+                mainHandler.postDelayed(endedLockReleaseTask, 15_000L);
                 unregisterNoisyReceiver();
-                mainHandler.removeCallbacks(progressTicker);
                 postUpdatedNotification();
                 emitPlayerEvent("ended", null);
+                return;
             }
+            syncStateFromPlayer(playbackState);
         }
 
         @Override
@@ -293,15 +420,25 @@ public class MediaPlaybackService extends Service {
         this.eventSink = sink;
     }
 
-    private ExoPlayer createConfiguredPlayer() {
+    private ExoPlayer createConfiguredPlayer(boolean isStandby) {
         DefaultHttpDataSource.Factory httpFactory = new DefaultHttpDataSource.Factory()
                 .setUserAgent(DESKTOP_UA)
                 .setAllowCrossProtocolRedirects(true)
-                .setConnectTimeoutMs(8000)
-                .setReadTimeoutMs(12000);
+                .setConnectTimeoutMs(10000)
+                .setReadTimeoutMs(15000);
         DefaultDataSource.Factory dataSourceFactory = new DefaultDataSource.Factory(this, httpFactory);
+        DefaultLoadControl loadControl = isStandby
+                ? new DefaultLoadControl.Builder()
+                        .setBufferDurationsMs(4000, 8000, 500, 1000)
+                        .setPrioritizeTimeOverSizeThresholds(true)
+                        .build()
+                : new DefaultLoadControl.Builder()
+                        .setBufferDurationsMs(15000, 30000, 600, 1500)
+                        .setPrioritizeTimeOverSizeThresholds(true)
+                        .build();
         ExoPlayer player = new ExoPlayer.Builder(this)
                 .setMediaSourceFactory(new DefaultMediaSourceFactory(dataSourceFactory))
+                .setLoadControl(loadControl)
                 .build();
         androidx.media3.common.AudioAttributes attrs = new androidx.media3.common.AudioAttributes.Builder()
                 .setUsage(C.USAGE_MEDIA)
@@ -337,7 +474,7 @@ public class MediaPlaybackService extends Service {
         }
         audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
 
-        activePlayer = createConfiguredPlayer();
+        activePlayer = createConfiguredPlayer(false);
         activePlayer.addListener(playerListener);
 
         mediaSession = new MediaSessionCompat(this, "DynamusicSession");
@@ -358,7 +495,7 @@ public class MediaPlaybackService extends Service {
 
             @Override
             public void onSkipToNext() {
-                dispatchMediaControl("next");
+                dispatchNextWithNativeFallback();
             }
 
             @Override
@@ -381,8 +518,12 @@ public class MediaPlaybackService extends Service {
             @Override
             public void onCustomAction(String action, Bundle extras) {
                 if (CUSTOM_SHUFFLE.equals(action)) {
+                    curShuffle = !curShuffle;
+                    postUpdatedNotification();
                     dispatchMediaControl("shuffle");
                 } else if (CUSTOM_LIKE.equals(action)) {
+                    curLiked = !curLiked;
+                    postUpdatedNotification();
                     dispatchMediaControl("like");
                 }
             }
@@ -403,6 +544,8 @@ public class MediaPlaybackService extends Service {
             return START_NOT_STICKY;
         }
         if (ACTION_BTN_SHUFFLE.equals(action)) {
+            curShuffle = !curShuffle;
+            postUpdatedNotification();
             dispatchMediaControl("shuffle");
             return START_STICKY;
         }
@@ -423,10 +566,12 @@ public class MediaPlaybackService extends Service {
             return START_STICKY;
         }
         if (ACTION_BTN_NEXT.equals(action)) {
-            dispatchMediaControl("next");
+            dispatchNextWithNativeFallback();
             return START_STICKY;
         }
         if (ACTION_BTN_LIKE.equals(action)) {
+            curLiked = !curLiked;
+            postUpdatedNotification();
             dispatchMediaControl("like");
             return START_STICKY;
         }
@@ -436,11 +581,13 @@ public class MediaPlaybackService extends Service {
             String streamUrl = intent.getStringExtra(EXTRA_STREAM_URL);
             boolean autoplay = intent.getBooleanExtra(EXTRA_AUTOPLAY, true);
             double startPos = intent.getDoubleExtra(EXTRA_POSITION, 0.0);
+            String reqId = intent.getStringExtra(EXTRA_REQUEST_ID);
             loadTrackNative(
                     curTrackId,
                     streamUrl != null ? streamUrl : "",
                     autoplay,
-                    startPos);
+                    startPos,
+                    reqId != null ? reqId : "");
             ensureForeground();
             return START_STICKY;
         }
@@ -537,13 +684,228 @@ public class MediaPlaybackService extends Service {
         }
     }
 
-    void loadTrackNative(String trackId, String streamUrl, boolean autoplay, double startPosSec) {
-        if (trackId != null) curTrackId = trackId;
+    void setUpcomingQueueNative(String queueJson, String repeatMode) {
+        if (repeatMode != null && !repeatMode.isEmpty()) {
+            curRepeatMode = repeatMode;
+        }
+        upcomingQueue.clear();
+        if (queueJson == null || queueJson.isEmpty()) return;
+        try {
+            JSONArray arr = new JSONArray(queueJson);
+            for (int i = 0; i < arr.length(); i++) {
+                JSONObject o = arr.optJSONObject(i);
+                if (o == null) continue;
+                String id = o.optString("id", "");
+                if (id.isEmpty()) continue;
+                upcomingQueue.add(new QueuedTrack(
+                        id,
+                        o.optString("title", "Dynamusic"),
+                        o.optString("artist", ""),
+                        o.optString("album", "Dynamusic"),
+                        o.optDouble("duration", 0.0),
+                        o.optString("thumb", ""),
+                        o.optBoolean("liked", false),
+                        o.optString("offlineUri", "")));
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    void updateMetadataNative(
+            String trackId,
+            String title,
+            String artist,
+            String album,
+            String thumb,
+            boolean playing,
+            boolean shuffle,
+            boolean liked,
+            double duration,
+            double position) {
+        if (trackId != null && !trackId.isEmpty()) curTrackId = trackId;
+        curTitle = (title != null && !title.isEmpty()) ? title : "Dynamusic";
+        curArtist = artist != null ? artist : "";
+        curAlbum = (album != null && !album.isEmpty()) ? album : "Dynamusic";
+        curThumb = thumb != null ? thumb : "";
+        curShuffle = shuffle;
+        curLiked = liked;
+        if (duration > 0) curDurationSec = duration;
+        if (!hasLoadedTrack() && position >= 0) curPositionSec = position;
+        if (!curThumb.isEmpty()) {
+            ArtEntry art = artCache.get(curThumb);
+            if (art == null && !curThumb.equals(pendingArtUrl)) {
+                fetchArtworkAsync(curThumb);
+            }
+        }
+        ensureForeground();
+        postUpdatedNotification();
+    }
+
+    void stopAndResetNative(String requestId) {
+        nativeAdvanceSeq.incrementAndGet();
+        if (requestId != null && !requestId.isEmpty()) {
+            curRequestId = requestId;
+        }
+        mainHandler.removeCallbacks(progressTicker);
+        if (activePlayer != null) {
+            activePlayer.setPlayWhenReady(false);
+            activePlayer.stop();
+            activePlayer.clearMediaItems();
+        }
+        curStreamUrl = "";
+        curPositionSec = 0;
+        curPlaying = false;
+        curBuffering = false;
+        curStatus = "idle";
+        releaseWakeAndWifiLocks();
+        unregisterNoisyReceiver();
+        emitPlayerEvent("state", null);
+    }
+
+    private void dispatchNextWithNativeFallback() {
+        final String beforeReq = curRequestId;
+        final String beforeId = curTrackId;
+        dispatchMediaControl("next");
+        if (!upcomingQueue.isEmpty()) {
+            mainHandler.postDelayed(() -> {
+                if (beforeId.equals(curTrackId) && beforeReq.equals(curRequestId) && !upcomingQueue.isEmpty()) {
+                    advanceToNextNative(true);
+                }
+            }, 420L);
+        }
+    }
+
+    private String findOfflineAudioUri(String trackId) {
+        if (trackId == null || trackId.isEmpty()) return null;
+        String safe = trackId.replaceAll("[^A-Za-z0-9_-]", "_");
+        if (safe.isEmpty()) return null;
+        File dir = new File(getFilesDir(), "offline_vault");
+        File[] files = dir.listFiles();
+        if (files == null) return null;
+        String prefix = safe + ".";
+        for (File f : files) {
+            if (f.isFile() && f.getName().startsWith(prefix) && f.length() > 4096) {
+                return Uri.fromFile(f).toString();
+            }
+        }
+        return null;
+    }
+
+    private void advanceToNextNative(boolean manualSkip) {
+        if (upcomingQueue.isEmpty()) return;
+        QueuedTrack next = upcomingQueue.remove(0);
+        if ("all".equals(curRepeatMode) && next != null && !next.id.isEmpty()) {
+            upcomingQueue.add(next);
+        }
+        final int advGen = nativeAdvanceSeq.incrementAndGet();
+        final String newReqId = "nat_" + advGen;
+        curTrackId = next.id;
+        curRequestId = newReqId;
+        curTitle = next.title;
+        curArtist = next.artist;
+        curAlbum = next.album;
+        curThumb = next.thumb;
+        curLiked = next.liked;
+        curDurationSec = next.duration > 0 ? next.duration : 0;
+        curPositionSec = 0;
+        curPlaying = true;
+        curBuffering = true;
+        curStatus = "loading";
+
+        if (!curThumb.isEmpty()) {
+            ArtEntry art = artCache.get(curThumb);
+            if (art == null && !curThumb.equals(pendingArtUrl)) {
+                fetchArtworkAsync(curThumb);
+            }
+        }
+        ensureForeground();
+        postUpdatedNotification();
+
+        // Fast path 1: standbyPlayer already pre-buffered this exact track!
+        if (standbyPlayer != null && next.id.equals(standbyTrackId) && !standbyUrl.isEmpty()) {
+            emitPlayerEvent("nativeTrackAdvanced", null);
+            loadTrackNative(next.id, standbyUrl, true, 0.0, newReqId);
+            return;
+        }
+
+        // Fast path 2: local offline file already exists!
+        String offline = !next.offlineUri.isEmpty() ? next.offlineUri : findOfflineAudioUri(next.id);
+        if (offline != null && !offline.isEmpty()) {
+            emitPlayerEvent("nativeTrackAdvanced", null);
+            loadTrackNative(next.id, offline, true, 0.0, newReqId);
+            return;
+        }
+
+        // Stop old audio immediately while resolving next stream on background executor
+        if (activePlayer != null) {
+            activePlayer.setPlayWhenReady(false);
+            activePlayer.stop();
+            activePlayer.clearMediaItems();
+        }
+        curStreamUrl = "";
+        emitPlayerEvent("nativeTrackAdvanced", null);
+
+        // Background native stream resolution while WakeLock + WifiLock stay held.
+        acquireLocksAndFocus();
+        queueResolverExecutor.execute(() -> {
+            try {
+                MobileStreamProxy proxy = MobileStreamProxy.getShared();
+                proxy.ensureStarted();
+                MobileStreamProxy.ResolvedStream resolved =
+                        proxy.resolve(next.id, false, "", next.title, next.artist);
+                final String url = resolved != null ? resolved.proxyUrl : "";
+                mainHandler.post(() -> {
+                    if (advGen != nativeAdvanceSeq.get() || !newReqId.equals(curRequestId)) return;
+                    if (!url.isEmpty()) {
+                        loadTrackNative(next.id, url, true, 0.0, newReqId);
+                    } else {
+                        // Never cascade-skip down the entire queue on a failed resolution
+                        curPlaying = false;
+                        curBuffering = false;
+                        curStatus = "error";
+                        releaseWakeAndWifiLocks();
+                        unregisterNoisyReceiver();
+                        postUpdatedNotification();
+                        emitPlayerEvent("error", "Stream unavailable");
+                    }
+                });
+            } catch (Exception e) {
+                mainHandler.post(() -> {
+                    if (advGen != nativeAdvanceSeq.get() || !newReqId.equals(curRequestId)) return;
+                    curPlaying = false;
+                    curBuffering = false;
+                    curStatus = "error";
+                    releaseWakeAndWifiLocks();
+                    unregisterNoisyReceiver();
+                    postUpdatedNotification();
+                    emitPlayerEvent("error", e.getMessage() != null ? e.getMessage() : "Stream resolution failed");
+                });
+            }
+        });
+    }
+
+    void loadTrackNative(
+            String trackId,
+            String streamUrl,
+            boolean autoplay,
+            double startPosSec,
+            String requestId) {
+        nativeAdvanceSeq.incrementAndGet();
+        if (trackId != null) {
+            if (!trackId.equals(curTrackId)) {
+                curDurationSec = 0.0;
+            }
+            curTrackId = trackId;
+        }
+        if (requestId != null && !requestId.isEmpty()) {
+            curRequestId = requestId;
+        }
+        retriedEndedStream = false;
         curStreamUrl = streamUrl != null ? streamUrl : "";
         curPositionSec = Math.max(0.0, startPosSec);
 
         if (activePlayer == null) {
-            activePlayer = createConfiguredPlayer();
+            activePlayer = createConfiguredPlayer(false);
             activePlayer.addListener(playerListener);
         }
 
@@ -551,6 +913,7 @@ public class MediaPlaybackService extends Service {
         mainHandler.removeCallbacks(progressTicker);
 
         if (curStreamUrl.isEmpty()) {
+            activePlayer.setPlayWhenReady(false);
             activePlayer.stop();
             activePlayer.clearMediaItems();
             curPlaying = false;
@@ -563,7 +926,10 @@ public class MediaPlaybackService extends Service {
             return;
         }
 
-        if (standbyPlayer != null && curStreamUrl.equals(standbyUrl) && !standbyUrl.isEmpty()) {
+        boolean standbyMatches = standbyPlayer != null
+                && !standbyUrl.isEmpty()
+                && (curStreamUrl.equals(standbyUrl) || (!curTrackId.isEmpty() && curTrackId.equals(standbyTrackId)));
+        if (standbyMatches) {
             // Instant promotion of pre-buffered standby deck
             activePlayer.removeListener(playerListener);
             activePlayer.stop();
@@ -590,12 +956,14 @@ public class MediaPlaybackService extends Service {
             if (autoplay) {
                 mainHandler.post(progressTicker);
             }
+            ensureForeground();
             postUpdatedNotification();
             emitPlayerEvent("state", null);
             return;
         }
 
         releaseStandbyPlayer();
+        activePlayer.setPlayWhenReady(false);
         activePlayer.stop();
         activePlayer.clearMediaItems();
 
@@ -620,8 +988,51 @@ public class MediaPlaybackService extends Service {
         if (autoplay) {
             mainHandler.post(progressTicker);
         }
+        ensureForeground();
         postUpdatedNotification();
         emitPlayerEvent("state", null);
+        scheduleNativeLookaheadPrebuffer();
+    }
+
+    private void scheduleNativeLookaheadPrebuffer() {
+        if (!curPlaying || upcomingQueue.isEmpty()) return;
+        final QueuedTrack next = upcomingQueue.get(0);
+        if (next == null || next.id.isEmpty()) return;
+        if (next.id.equals(standbyTrackId) && !standbyUrl.isEmpty()) return;
+        if (next.id.equals(nativePrebufferInFlightId)) return;
+
+        String offline = !next.offlineUri.isEmpty() ? next.offlineUri : findOfflineAudioUri(next.id);
+        if (offline != null && !offline.isEmpty()) {
+            prebufferTrackNative(next.id, offline);
+            return;
+        }
+
+        nativePrebufferInFlightId = next.id;
+        final String expectingCurId = curTrackId;
+        queueResolverExecutor.execute(() -> {
+            try {
+                MobileStreamProxy proxy = MobileStreamProxy.getShared();
+                proxy.ensureStarted();
+                MobileStreamProxy.ResolvedStream resolved =
+                        proxy.resolve(next.id, false, "", next.title, next.artist);
+                final String url = resolved != null ? resolved.proxyUrl : "";
+                mainHandler.post(() -> {
+                    if (next.id.equals(nativePrebufferInFlightId)) {
+                        nativePrebufferInFlightId = "";
+                    }
+                    if (!url.isEmpty() && expectingCurId.equals(curTrackId)
+                            && !upcomingQueue.isEmpty() && next.id.equals(upcomingQueue.get(0).id)) {
+                        prebufferTrackNative(next.id, url);
+                    }
+                });
+            } catch (Exception ignored) {
+                mainHandler.post(() -> {
+                    if (next.id.equals(nativePrebufferInFlightId)) {
+                        nativePrebufferInFlightId = "";
+                    }
+                });
+            }
+        });
     }
 
     void prebufferTrackNative(String trackId, String streamUrl) {
@@ -629,7 +1040,7 @@ public class MediaPlaybackService extends Service {
         releaseStandbyPlayer();
         standbyTrackId = trackId != null ? trackId : "";
         standbyUrl = streamUrl;
-        standbyPlayer = createConfiguredPlayer();
+        standbyPlayer = createConfiguredPlayer(true);
         standbyPlayer.setPlayWhenReady(false);
         standbyPlayer.setMediaItem(MediaItem.fromUri(Uri.parse(streamUrl)));
         standbyPlayer.prepare();
@@ -660,8 +1071,7 @@ public class MediaPlaybackService extends Service {
         syncStateFromPlayer(activePlayer.getPlaybackState());
     }
 
-    void pauseNative() {
-        pausedForTransientFocus = false;
+    private void pauseForAudioFocus() {
         if (activePlayer != null) {
             activePlayer.setPlayWhenReady(false);
         }
@@ -669,6 +1079,11 @@ public class MediaPlaybackService extends Service {
         releaseWakeAndWifiLocks();
         unregisterNoisyReceiver();
         syncStateFromPlayer(activePlayer != null ? activePlayer.getPlaybackState() : Player.STATE_IDLE);
+    }
+
+    void pauseNative() {
+        pausedForTransientFocus = false;
+        pauseForAudioFocus();
     }
 
     void seekNative(double seconds) {
@@ -747,9 +1162,14 @@ public class MediaPlaybackService extends Service {
             acquireLocksAndFocus();
             mainHandler.removeCallbacks(progressTicker);
             mainHandler.post(progressTicker);
+            if (playbackState == Player.STATE_READY) {
+                scheduleNativeLookaheadPrebuffer();
+            }
         } else {
             mainHandler.removeCallbacks(progressTicker);
-            releaseWakeAndWifiLocks();
+            if (!pausedForTransientFocus) {
+                releaseWakeAndWifiLocks();
+            }
             unregisterNoisyReceiver();
         }
 
@@ -813,6 +1233,7 @@ public class MediaPlaybackService extends Service {
             mediaSession = null;
         }
         artExecutor.shutdownNow();
+        queueResolverExecutor.shutdownNow();
         super.onDestroy();
     }
 
@@ -859,13 +1280,15 @@ public class MediaPlaybackService extends Service {
                     curStatus,
                     curPositionSec,
                     curDurationSec,
-                    errorMsg);
+                    errorMsg,
+                    curRequestId);
             return;
         }
         Intent i = new Intent(ACTION_PLAYER_EVENT);
         i.setPackage(getPackageName());
         i.putExtra(EXTRA_EVENT_TYPE, type);
         i.putExtra(EXTRA_TRACK_ID, curTrackId);
+        i.putExtra(EXTRA_REQUEST_ID, curRequestId);
         i.putExtra(EXTRA_PLAYING, curPlaying);
         i.putExtra(EXTRA_BUFFERING, curBuffering);
         i.putExtra(EXTRA_STATUS, curStatus);
@@ -876,6 +1299,7 @@ public class MediaPlaybackService extends Service {
     }
 
     private void acquireLocksAndFocus() {
+        mainHandler.removeCallbacks(endedLockReleaseTask);
         if (wakeLock != null && !wakeLock.isHeld()) {
             wakeLock.acquire(4 * 60 * 60 * 1000L);
         }
@@ -937,6 +1361,8 @@ public class MediaPlaybackService extends Service {
                             .build();
                     audioFocusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
                             .setAudioAttributes(attrs)
+                            .setWillPauseWhenDucked(false)
+                            .setAcceptsDelayedFocusGain(true)
                             .setOnAudioFocusChangeListener(focusListener)
                             .build();
                 }
@@ -1095,8 +1521,12 @@ public class MediaPlaybackService extends Service {
 
     private void fetchArtworkAsync(String thumbUrl) {
         pendingArtUrl = thumbUrl;
+        final String trackIdSnap = curTrackId;
         artExecutor.execute(() -> {
-            Bitmap bmp = loadScaledBitmap(thumbUrl);
+            Bitmap bmp = loadLocalOfflineArt(trackIdSnap);
+            if (bmp == null) {
+                bmp = loadScaledBitmap(thumbUrl);
+            }
             if (bmp == null) return;
             int accent = extractRichDarkAccent(bmp);
             artCache.put(thumbUrl, new ArtEntry(bmp, accent));
@@ -1108,8 +1538,45 @@ public class MediaPlaybackService extends Service {
         });
     }
 
+    private Bitmap loadLocalOfflineArt(String trackId) {
+        if (trackId == null || trackId.isEmpty()) return null;
+        String safe = trackId.replaceAll("[^A-Za-z0-9_-]", "_");
+        if (safe.isEmpty()) return null;
+        File dir = new File(getFilesDir(), "offline_artwork");
+        File[] files = dir.listFiles();
+        if (files == null) return null;
+        String prefix = safe + ".";
+        for (File f : files) {
+            if (f.isFile() && f.getName().startsWith(prefix) && f.length() > 64) {
+                try (FileInputStream fis = new FileInputStream(f)) {
+                    byte[] bytes = new byte[(int) Math.min(f.length(), 2 * 1024 * 1024)];
+                    int read = fis.read(bytes);
+                    if (read > 0) {
+                        return decodeScaledBytes(read == bytes.length ? bytes : java.util.Arrays.copyOf(bytes, read));
+                    }
+                } catch (Exception ignored) {}
+            }
+        }
+        return null;
+    }
+
     private static Bitmap loadScaledBitmap(String urlStr) {
         if (urlStr == null || urlStr.isEmpty()) return null;
+        if (urlStr.startsWith("file://")) {
+            try {
+                File f = new File(Uri.parse(urlStr).getPath());
+                if (f.isFile() && f.length() > 64) {
+                    try (FileInputStream fis = new FileInputStream(f)) {
+                        byte[] bytes = new byte[(int) Math.min(f.length(), 2 * 1024 * 1024)];
+                        int read = fis.read(bytes);
+                        if (read > 0) {
+                            return decodeScaledBytes(read == bytes.length ? bytes : java.util.Arrays.copyOf(bytes, read));
+                        }
+                    }
+                }
+            } catch (Exception ignored) {}
+            return null;
+        }
         if (urlStr.startsWith("data:image/")) {
             try {
                 int comma = urlStr.indexOf(',');

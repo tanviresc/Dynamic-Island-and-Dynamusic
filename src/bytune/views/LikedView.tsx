@@ -157,7 +157,7 @@ export function LikedView() {
         </button>
       </CollectionHero>
 
-      <div className="mt-6">
+      <div className="mt-6 -mx-3 md:mx-0">
         {liked.length ? (
           <TrackList tracks={liked} from="__liked__" showAlbum />
         ) : (

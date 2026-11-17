@@ -4,7 +4,7 @@ import { useLibrary } from "../stores/library";
 import { usePlayer } from "../stores/player";
 import { useMobileMode } from "../stores/mobileMode";
 import { tintHoverHandlers, useUI, type MenuItem } from "../stores/ui";
-import { trackMenuItems } from "../lib/trackActions";
+import { queueTrackPriorityWithToast, trackMenuItems } from "../lib/trackActions";
 import { useDrag } from "../lib/dnd";
 import { useSwipeGesture } from "../lib/useSwipeGesture";
 import { fmtTime, shortTitle } from "../lib/format";
@@ -58,15 +58,11 @@ function TrackRow({ track, index, isCurrent, isPlaying, onPlay, menuFor, showAlb
   const drag = useDrag({ track });
   const tint = tintHoverHandlers(track.thumb);
 
+  const badgeRef = useRef<HTMLDivElement | null>(null);
   const swipe = useSwipeGesture({
-    onSwipeRight: isCurrent ? () => usePlayer.getState().next(true) : undefined,
-    onSwipeLeft: isCurrent
-      ? () => usePlayer.getState().prev()
-      : () => {
-          const added = usePlayer.getState().addToQueue(track);
-          const name = shortTitle(track.title);
-          useUI.getState().toast(added ? `Added "${name}" to queue` : `"${name}" is already in your queue`);
-        },
+    onSwipeRight: isCurrent ? () => usePlayer.getState().next(true) : () => queueTrackPriorityWithToast(track),
+    onSwipeLeft: isCurrent ? () => usePlayer.getState().prev() : () => queueTrackPriorityWithToast(track),
+    rightBadgeRef: isCurrent ? undefined : badgeRef,
   });
 
   const openMenu = (x: number, y: number): void => {
@@ -74,33 +70,44 @@ function TrackRow({ track, index, isCurrent, isPlaying, onPlay, menuFor, showAlb
   };
 
   return (
-    <div
-      role="row"
-      {...drag.props}
-      {...swipe.handlers}
-      onMouseEnter={(e) => {
-        tint.onMouseEnter();
-        onHover(e.currentTarget, track.thumb);
-      }}
-      onMouseLeave={tint.onMouseLeave}
-      onClick={() => {
-        if (swipe.consumeDidSwipe()) return;
-        onPlay(index);
-      }}
-      onContextMenu={(e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        openMenu(e.clientX, e.clientY);
-      }}
-      style={{
-        touchAction: "pan-y",
-        transform: swipe.offsetX ? `translate3d(${swipe.offsetX}px, 0, 0)` : undefined,
-        transition: swipe.dragging ? "none" : "transform 200ms cubic-bezier(0.22, 1, 0.36, 1)",
-      }}
-      className={`tl-row fit-host group relative flex items-center gap-2.5 md:gap-3.5 h-[60px] w-full max-w-full overflow-hidden px-2 md:px-3 rounded-lg cursor-pointer select-none ${
-        isCurrent ? "bg-ink-hi/[0.06]" : "hover:bg-ink-hi/[0.04]"
-      } ${drag.dragging ? "opacity-40" : ""}`}
-    >
+    <div role="row" className="relative overflow-hidden md:rounded-lg">
+      {!isCurrent && (
+        <div
+          ref={badgeRef}
+          style={{ opacity: 0 }}
+          aria-hidden="true"
+          className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 inline-flex items-center gap-1.5 rounded-full bg-emerald-500/20 border border-emerald-400/40 px-2.5 py-1 text-[11.5px] font-semibold text-emerald-300"
+        >
+          <ListPlus className="w-3.5 h-3.5" />
+          Priority Queue
+        </div>
+      )}
+      <div
+        {...drag.props}
+        {...swipe.handlers}
+        onMouseEnter={(e) => {
+          tint.onMouseEnter();
+          onHover(e.currentTarget, track.thumb);
+        }}
+        onMouseLeave={tint.onMouseLeave}
+        onClick={() => {
+          if (swipe.consumeDidSwipe()) return;
+          onPlay(index);
+        }}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          openMenu(e.clientX, e.clientY);
+        }}
+        style={{
+          touchAction: "pan-y",
+          transform: swipe.offsetX ? `translate3d(${swipe.offsetX}px, 0, 0)` : undefined,
+          transition: swipe.dragging ? "none" : "transform 200ms cubic-bezier(0.22, 1, 0.36, 1)",
+        }}
+        className={`tl-row fit-host group relative flex items-center gap-3 md:gap-3.5 min-h-[68px] py-2 md:py-0 md:h-[60px] w-full max-w-full overflow-hidden px-4 md:px-3 md:rounded-lg cursor-pointer select-none ${
+          isCurrent ? "bg-ink-hi/[0.06]" : "hover:bg-ink-hi/[0.04] active:bg-ink-hi/[0.08]"
+        } ${drag.dragging ? "opacity-40" : ""}`}
+      >
       {!isCurrent && swipe.offsetX < -14 && (
         <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 z-20 inline-flex items-center gap-1 rounded-full bg-emerald-500/20 border border-emerald-400/40 px-2 py-0.5 text-[11px] font-semibold text-emerald-300">
           <ListPlus className="w-3 h-3" />
@@ -138,7 +145,7 @@ function TrackRow({ track, index, isCurrent, isPlaying, onPlay, menuFor, showAlb
 
       <Artwork
         src={track.thumb}
-        className="w-11 h-11 md:w-[52px] md:h-[52px] rounded-lg shrink-0"
+        className="w-12 h-12 md:w-[52px] md:h-[52px] rounded-lg shrink-0"
         iconClassName="w-4 h-4"
         alt=""
       />
@@ -148,14 +155,19 @@ function TrackRow({ track, index, isCurrent, isPlaying, onPlay, menuFor, showAlb
           basis is 0, it would collapse to zero width before anything else gives.
           The floor keeps the title visible; the album column shrinks instead. */}
       <div className="flex-1 min-w-0 overflow-hidden">
-        <div className="flex items-center gap-1.5 min-w-0 text-[15px] md:text-[16px] font-semibold tracking-[-0.2px] text-ink-hi">
+        <div className="flex items-center gap-1.5 min-w-0 text-[15.5px] md:text-[16px] font-semibold tracking-[-0.2px] text-ink-hi">
           {track.explicit && <ExplicitBadge />}
           <span className="truncate md:hidden">{shortTitle(track.title)}</span>
           <span className="hidden md:block min-w-0 flex-1">
             <FitText text={shortTitle(track.title)} full={track.title} />
           </span>
         </div>
-        <div className="md:hidden truncate text-[13px] text-ink-dim mt-0.5">{track.artist}</div>
+        <div className="md:hidden flex items-center gap-1.5 min-w-0 text-[13px] text-ink-dim mt-0.5">
+          <span className="truncate">{track.artist}</span>
+          {track.duration > 0 && (
+            <span className="shrink-0 text-ink-faint tabular-nums">· {fmtTime(track.duration)}</span>
+          )}
+        </div>
         <div className="hidden md:block">
           <FitText text={track.artist} className="text-[14px] text-ink-dim mt-0.5" />
         </div>
@@ -187,11 +199,11 @@ function TrackRow({ track, index, isCurrent, isPlaying, onPlay, menuFor, showAlb
           }}
           title={liked ? "Remove from Liked" : "Add to Liked"}
           aria-label={liked ? "Remove from Liked" : "Add to Liked"}
-          className="p-1.5 rounded-md text-ink-faint hover:text-ink-hi hover:bg-ink-hi/[0.07] transition-colors"
+          className="p-2 md:p-1.5 rounded-full md:rounded-md text-ink-faint hover:text-ink-hi hover:bg-ink-hi/[0.07] transition-colors"
         >
           <Heart key={liked ? "liked" : "unliked"} className={`w-4 h-4 animate-icon-pop ${liked ? "fill-ink-hi text-ink-hi" : ""}`} />
         </button>
-        <span className="opacity-80">
+        <span className="hidden md:inline-flex opacity-80">
           <DownloadBadge id={track.id} />
         </span>
         <button
@@ -201,14 +213,15 @@ function TrackRow({ track, index, isCurrent, isPlaying, onPlay, menuFor, showAlb
           }}
           title="More options"
           aria-label="More options"
-          className="p-1.5 rounded-md text-ink-faint hover:text-ink-hi hover:bg-ink-hi/[0.07] transition-colors"
+          className="p-2 md:p-1.5 rounded-full md:rounded-md text-ink-faint hover:text-ink-hi hover:bg-ink-hi/[0.07] transition-colors"
         >
-          <MoreHorizontal className="w-4 h-4" />
+          <MoreHorizontal className="w-5 h-5 md:w-4 md:h-4" />
         </button>
       </div>
 
-      <div className="w-9 md:w-11 shrink-0 text-right text-[11px] md:text-xs text-ink-faint tabular-nums">
+      <div className="hidden md:block w-11 shrink-0 text-right text-xs text-ink-faint tabular-nums">
         {track.duration > 0 ? fmtTime(track.duration) : "—"}
+      </div>
       </div>
     </div>
   );

@@ -59,6 +59,7 @@ import {
   mobileSyncRestoreNow,
   mobileSyncStatus,
   readMobileStore,
+  readMobileStoreAsync,
   resetMobileDataStores,
   setMobileAuthEventSink,
   writeMobileStore,
@@ -118,12 +119,65 @@ function isTauriRuntime(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 
+function isCapacitorRuntime(): boolean {
+  if (typeof window === "undefined" || isTauriRuntime()) return false;
+  const cap = (window as unknown as { Capacitor?: { isNativePlatform?: () => boolean } }).Capacitor;
+  return Boolean(cap?.isNativePlatform?.()) || window.location?.protocol === "capacitor:";
+}
+
 function isUnpairedNativeMobile(): boolean {
   if (typeof window === "undefined" || isTauriRuntime()) return false;
   const host = window.location?.hostname || "";
-  const cap = (window as unknown as { Capacitor?: { isNativePlatform?: () => boolean } }).Capacitor;
-  const isCap = Boolean(cap?.isNativePlatform?.()) || window.location?.protocol === "capacitor:";
-  return (isCap || host === "localhost") && getBackendHost() === "127.0.0.1";
+  return (isCapacitorRuntime() || host === "localhost") && getBackendHost() === "127.0.0.1";
+}
+
+const STREAM_PROXY_TTL_MS = 4 * 60 * 60 * 1000;
+const STREAM_DIRECT_TTL_MS = 20 * 60 * 1000;
+const MAX_STREAM_CACHE_ENTRIES = 64;
+const streamUrlCache = new Map<string, { url: string; expiresAt: number }>();
+
+function streamCacheKey(id: string, quality?: string): string {
+  return `${id}::${quality ?? ""}`;
+}
+
+export function getCachedStreamUrl(id: string, quality?: string): string | null {
+  const key = streamCacheKey(id, quality);
+  const entry = streamUrlCache.get(key);
+  if (!entry) return null;
+  if (Date.now() >= entry.expiresAt) {
+    streamUrlCache.delete(key);
+    return null;
+  }
+  streamUrlCache.delete(key);
+  streamUrlCache.set(key, entry);
+  return entry.url;
+}
+
+export function setCachedStreamUrl(id: string, quality: string | undefined, url: string, expiresAt?: number): void {
+  const isLocalProxy = url.startsWith("http://127.0.0.1:") || url.startsWith("blob:") || url.startsWith("file://");
+  const ttl = isLocalProxy ? STREAM_PROXY_TTL_MS : STREAM_DIRECT_TTL_MS;
+  const key = streamCacheKey(id, quality);
+  streamUrlCache.delete(key);
+  streamUrlCache.set(key, {
+    url,
+    expiresAt: expiresAt ?? Date.now() + ttl,
+  });
+  while (streamUrlCache.size > MAX_STREAM_CACHE_ENTRIES) {
+    const oldest = streamUrlCache.keys().next().value;
+    if (!oldest) break;
+    streamUrlCache.delete(oldest);
+  }
+}
+
+export function invalidateStreamUrlCache(id?: string): void {
+  if (!id) {
+    streamUrlCache.clear();
+    return;
+  }
+  const prefix = `${id}::`;
+  for (const key of streamUrlCache.keys()) {
+    if (key.startsWith(prefix)) streamUrlCache.delete(key);
+  }
 }
 
 async function rpcInvoke<T = any>(channel: string, ...args: unknown[]): Promise<T> {
@@ -139,6 +193,7 @@ async function rpcInvoke<T = any>(channel: string, ...args: unknown[]): Promise<
       channel === "auth:getSession" ||
       channel === "sync:status" ||
       channel === "updates:state" ||
+      channel === "stats:summary" ||
       isMediaChannel);
 
   // When running standalone in "phone" mode with PC offline, fail fast into native mobile fallback
@@ -401,7 +456,7 @@ export function initBytuneBridge(): void {
   };
 
   const api: ByTuneApi = {
-    platform: "win32",
+    platform: isCapacitorRuntime() ? "android" : "win32",
     versions: {
       app: "1.1.0",
       electron: "35.7.5",
@@ -453,13 +508,38 @@ export function initBytuneBridge(): void {
       if (offlineNow) {
         throw new Error("OFFLINE_UNAVAILABLE");
       }
+      if (forceRotate) {
+        invalidateStreamUrlCache(id);
+      } else {
+        const cached = getCachedStreamUrl(id, quality);
+        if (cached) return cached;
+      }
+      // On standalone Android phone playback, resolve directly via the phone's own native
+      // loopback proxy on the device's IP instead of waiting 3.5s on unreachable PC RPC.
+      if (isCapacitorRuntime() && !isPcRemoteMode()) {
+        const direct = await fallbackMobileStreamUrl(id, {
+          forceRotate,
+          quality,
+          title,
+          artist,
+        });
+        if (direct) {
+          setCachedStreamUrl(id, quality, direct);
+          return direct;
+        }
+        throw new Error(`Unable to resolve stream for ${id}`);
+      }
       try {
         const rawUrl = await rpcInvoke<string>("music:stream", id, forceRotate, quality, title, artist);
         const host = getBackendHost();
-        if (host !== "127.0.0.1" && typeof rawUrl === "string") {
-          return rawUrl.replace("http://127.0.0.1:", `http://${host}:`);
+        const resolved =
+          host !== "127.0.0.1" && typeof rawUrl === "string"
+            ? rawUrl.replace("http://127.0.0.1:", `http://${host}:`)
+            : rawUrl;
+        if (typeof resolved === "string" && resolved.length > 0) {
+          setCachedStreamUrl(id, quality, resolved);
         }
-        return rawUrl;
+        return resolved;
       } catch {
         const fallback = await fallbackMobileStreamUrl(id, {
           forceRotate,
@@ -467,7 +547,10 @@ export function initBytuneBridge(): void {
           title,
           artist,
         });
-        if (fallback) return fallback;
+        if (fallback) {
+          setCachedStreamUrl(id, quality, fallback);
+          return fallback;
+        }
         throw new Error(`Unable to resolve stream for ${id}`);
       }
     },
@@ -587,10 +670,10 @@ export function initBytuneBridge(): void {
     onPipNeedState: (cb: () => void): (() => void) => onBackendEvent("pip:need-state", cb),
     onPipCursorInside: (cb: (inside: boolean) => void): (() => void) => onBackendEvent("pip:cursor-inside", cb),
 
-    // Persistence (Node sidecar JSON files on desktop; isolated localStorage + Supabase sync on standalone mobile)
+    // Persistence (Node sidecar JSON files on desktop; chunked IndexedDB + Supabase sync on standalone mobile)
     readData: async (name: string) => {
       if (isUnpairedNativeMobile()) {
-        return readMobileStore(name);
+        return await readMobileStoreAsync(name);
       }
       try {
         const scope = await documentScope();
@@ -628,9 +711,9 @@ export function initBytuneBridge(): void {
           return val;
         }
       } catch {
-        /* fallback to localStorage if sidecar is unreachable */
+        /* fallback to chunked mobile store if sidecar is unreachable */
       }
-      return readMobileStore(name);
+      return !isTauriRuntime() ? await readMobileStoreAsync(name) : readMobileStore(name);
     },
     writeData: async (name: string, data: unknown) => {
       if (name === "library") {

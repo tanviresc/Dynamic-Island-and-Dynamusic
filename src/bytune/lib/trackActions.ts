@@ -17,7 +17,7 @@ import {
   ArrowUp,
 } from "lucide-react";
 import { downloadAll, startDownload } from "./downloads";
-import { plural } from "./format";
+import { plural, shortTitle } from "./format";
 import { playAlbum } from "./album";
 import { playPlaylist } from "./playlist";
 import { copyLink, youtubeAlbumLink, youtubePlaylistLink } from "./playlistShare";
@@ -27,6 +27,15 @@ import { addSongsToPlaylists, newPlaylistWith } from "./devicePlaylists";
 import { usePlayer } from "../stores/player";
 import { useUI, type MenuItem } from "../stores/ui";
 import type { BrowseItem, Track } from "../types";
+
+/** Queue one track into the FIFO Priority Queue with consistent toast feedback. */
+export function queueTrackPriorityWithToast(track: Track): void {
+  const added = usePlayer.getState().addToQueue(track);
+  const name = shortTitle(track.title);
+  useUI
+    .getState()
+    .toast(added ? `Added "${name}" to priority queue` : `"${name}" is already in priority queue`);
+}
 
 export function trackMenuItems(track: Track): MenuItem[] {
   const lib = useLibrary.getState();

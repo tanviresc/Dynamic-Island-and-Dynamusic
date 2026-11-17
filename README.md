@@ -1,8 +1,23 @@
-# Island
+# Island & Dynamusic
 
-> A sleek, unobtrusive "Dynamic Island" notification overlay for Windows 10 and 11.
+> A sleek, unobtrusive "Dynamic Island" notification overlay for Windows 10/11 paired with **Dynamusic** (desktop & Android).
 >
 > **Working Name Notice**: "Island" is the project working name. Product branding, window titles, and bundle identifiers are centralized in [`branding.json`](file:///e:/dynamic%20island/branding.json) and fully configurable.
+
+---
+
+## 📱 Mobile Users — Download & Install Android APK
+
+> **[⬇️ Download Dynamusic Android APK (`dynamusic-mobile.apk`)](https://github.com/tanviresc/Dynamic-Island-and-Dynamusic/raw/main/releases/dynamusic-mobile.apk)**
+> *(Also available directly in this repository at [`releases/dynamusic-mobile.apk`](releases/dynamusic-mobile.apk))*
+
+### Quick Install on Android
+1. Open the **[Download APK](https://github.com/tanviresc/Dynamic-Island-and-Dynamusic/raw/main/releases/dynamusic-mobile.apk)** link on your Android phone (Android 8.0+ recommended).
+2. Tap the downloaded `dynamusic-mobile.apk` file and allow **"Install unknown apps"** for your browser/file manager if prompted.
+3. Open **Dynamusic**:
+   - Play tracks directly standalone (YouTube Music, Search, Offline Liked Vault, melody-synced word lyrics, background/locked-screen ExoPlayer playback, auto-resume after calls/reels, and swipe-right **Priority Queue**), **or**
+   - Switch to **PC Remote** mode and scan the LAN QR code from Dynamusic Desktop Settings to control your PC over Wi-Fi.
+   - *(Tip: Grant Notifications permission when asked and set Battery usage to **Unrestricted** if your device aggressively kills background audio.)*
 
 ---
 
@@ -30,10 +45,8 @@ Island surfaces mission-critical updates without breaking your flow:
   - Fast startup and responsive scrolling: isolated high-frequency playback clock (`playbackClock.ts`), lazy-loaded UI bundles, and virtualized track lists.
   - Dual-layer Priority Queue vs. Playlist Context Queue (`priorityQueue` / `contextQueue`), automatic mid-song stream recovery & stall watchdog, full-length audio streaming via local Node sidecar (`0.0.0.0:47822`) with concurrent InnerTube client rotation, Piped mirror racing, DES-ECB multi-CDN fallback, 512 KB range-sliced streaming in `stream-proxy.ts`, next-track standby pre-buffering, and LRCLIB word-synced live lyrics.
   - Android & Wi-Fi Remote (`android/` + Capacitor): real-time `/ws/remote` WebSocket sync with 3s heartbeat, scannable LAN QR / IP pairing in Settings, strict Phone vs. PC remote audio isolation, and Android Foreground `MediaPlaybackService` + `WAKE_LOCK` background audio keepalive.
-  - Dynamic Island integration: Top-Edge Snap Trigger reveals the compact MusicPill for strictly 4 seconds before auto-collapsing (pausing while interacting with buttons or scrubbing).
-  - Quick interactive controls & scrubbing: live Previous, Play/Pause, Next controls and a pointer-captured draggable song timeline scrubber in both the hover preview pill and the expanded Notification History + Media panel.
-  - One-click Jump: Click the album art or title to bring the full Dynamusic window to focus.
-  - Flawless Notification Coexistence: Urgent notifications temporarily surface on the island with spring transitions, returning smoothly to Dynamusic when complete.
+  - Dynamic Island integration: Click-only status dot & expanded capsule/queue panel with zero hover triggers or distracting preview popups.
+  - Reliable locked-screen Android playback (`MediaPlaybackService` + ExoPlayer): AudioFocus auto-resume after calls/interruptions, native lookahead prebuffering for screen-off playlist progression, word-level & line-level synced lyrics with `blur(4px)` inactive focus, and swipe-right Priority Queue on search results and playlists.
 - **Activity-Based State Machine**:
   - Built with an extensible architecture where notifications and Dynamusic music activities coexist with clean state boundaries and priority resolution.
 - **Interactive Queue & Status Dot**:
@@ -230,7 +243,7 @@ E:\dynamic island\
 ├── scripts/
 │   └── check.ps1             # Universal phase gate: fmt, clippy, test, typecheck
 ├── src/                      # React UI (Island overlay, DynaMusic/ByTune player, Settings)
-│   ├── island/               # Pill, Dot, MusicPill, QueuePanel, scrubber & Motion transitions
+│   ├── island/               # Pill, Dot, QueuePanel & Motion transitions (click-only)
 │   ├── bytune/               # Full DynaMusic player UI, offline vault & mobile remote shell
 │   ├── settings/             # Settings tabs (General, Sources, Email, Security)
 │   └── shared/               # Icons, design tokens, and styling

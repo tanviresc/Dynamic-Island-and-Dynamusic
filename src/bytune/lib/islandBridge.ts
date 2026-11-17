@@ -203,7 +203,6 @@ export function initIslandBridge(): void {
   let lastTrackId = "";
   let lastPlaying: boolean | null = null;
   let lastSyncMs = 0;
-  let cachedTauriInvoke: ((cmd: string, args?: Record<string, unknown>) => Promise<unknown>) | null = null;
   let cachedQueueInputs: {
     queue: unknown;
     index: number;
@@ -216,13 +215,6 @@ export function initIslandBridge(): void {
     priorityQ: ReturnType<typeof slimTrack>[];
     qStart: number;
   } | null = null;
-
-  const getTauriInvoke = async () => {
-    if (cachedTauriInvoke) return cachedTauriInvoke;
-    const mod = await import("@tauri-apps/api/core");
-    cachedTauriInvoke = mod.invoke;
-    return cachedTauriInvoke;
-  };
 
   const syncToIsland = (force = false) => {
     const s = usePlayer.getState();
@@ -311,28 +303,6 @@ export function initIslandBridge(): void {
         }).catch(() => undefined);
       }
     }
-
-    if (!("__TAURI_INTERNALS__" in window)) return;
-
-    void getTauriInvoke()
-      .then((invoke) =>
-        invoke("update_music_state", {
-          state: track
-            ? {
-                title: track.title ?? "",
-                artist: track.artist ?? "",
-                album: track.album ?? null,
-                albumArt: track.thumb ?? null,
-                isPlaying: s.playing,
-                positionMs: Math.round((livePos || 0) * 1000),
-                durationMs: Math.round((liveDur || 0) * 1000),
-                volume: s.volume,
-                lyricsCurrentLine: null,
-              }
-            : null,
-        })
-      )
-      .catch(() => undefined);
   };
 
   usePlayer.subscribe((state, prevState) => {
@@ -441,18 +411,24 @@ export function initIslandBridge(): void {
       if (!desktopWs || desktopWs.readyState !== WebSocket.OPEN) connectDesktopWs();
     });
 
-    let lastIdleBroadcast = 0;
-    window.setInterval(() => {
-      const playing = usePlayer.getState().playing;
-      const now = Date.now();
-      if (playing) {
-        syncToIsland(true);
-        lastIdleBroadcast = now;
-      } else if (now - lastIdleBroadcast >= 5000) {
-        syncToIsland(true);
-        lastIdleBroadcast = now;
+    // Broadcast position updates only while actively playing so idle CPU stays at zero.
+    let playingTickTimer: number | null = null;
+    const syncPlayingTick = (playing: boolean) => {
+      if (playing && playingTickTimer === null) {
+        playingTickTimer = window.setInterval(() => {
+          if (usePlayer.getState().playing) syncToIsland(true);
+        }, 1500);
+      } else if (!playing && playingTickTimer !== null) {
+        window.clearInterval(playingTickTimer);
+        playingTickTimer = null;
       }
-    }, 1500);
+    };
+    syncPlayingTick(usePlayer.getState().playing);
+    usePlayer.subscribe((state, prevState) => {
+      if (state.playing !== prevState.playing) {
+        syncPlayingTick(state.playing);
+      }
+    });
   }
 
   // Initial sync

@@ -31,6 +31,15 @@ await esbuild.build({
   target: "es2022",
 });
 
+// Build Gmail content script
+await esbuild.build({
+  entryPoints: ["src/content/gmail.ts"],
+  bundle: true,
+  outfile: path.join(outdir, "gmail.js"),
+  format: "iife",
+  target: "es2022",
+});
+
 // Build MAIN-world network lifecycle hook
 await esbuild.build({
   entryPoints: ["src/content/page-hook.ts"],

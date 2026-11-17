@@ -1,17 +1,26 @@
 package local.dynamusic.app;
 
 import android.content.Intent;
+import android.graphics.Color;
 import android.net.Uri;
 import android.os.Bundle;
+import android.view.View;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import androidx.activity.OnBackPressedCallback;
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsCompat;
+import androidx.core.view.WindowInsetsControllerCompat;
 import com.getcapacitor.BridgeActivity;
 import org.json.JSONObject;
 
 public class MainActivity extends BridgeActivity {
     private static volatile String pendingOAuthUrl = null;
     private OnBackPressedCallback backCallback;
+    private volatile int lastSafeTopDp = 28;
+    private volatile int lastSafeBottomDp = 0;
 
     public static String consumePendingOAuthUrl() {
         String url = pendingOAuthUrl;
@@ -23,6 +32,7 @@ public class MainActivity extends BridgeActivity {
     public void onCreate(Bundle savedInstanceState) {
         registerPlugin(MediaKeepalivePlugin.class);
         super.onCreate(savedInstanceState);
+        configureEdgeToEdgeAndInsets();
         captureOAuthIntent(getIntent());
 
         backCallback = new OnBackPressedCallback(true) {
@@ -74,6 +84,45 @@ public class MainActivity extends BridgeActivity {
         webView.post(() -> webView.evaluateJavascript(js, null));
     }
 
+    private void configureEdgeToEdgeAndInsets() {
+        WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
+        getWindow().setStatusBarColor(Color.TRANSPARENT);
+        getWindow().setNavigationBarColor(Color.TRANSPARENT);
+        WindowInsetsControllerCompat controller =
+                WindowCompat.getInsetsController(getWindow(), getWindow().getDecorView());
+        if (controller != null) {
+            controller.setAppearanceLightStatusBars(false);
+            controller.setAppearanceLightNavigationBars(false);
+        }
+
+        View decor = getWindow().getDecorView();
+        ViewCompat.setOnApplyWindowInsetsListener(decor, (v, windowInsets) -> {
+            Insets sys = windowInsets.getInsets(
+                    WindowInsetsCompat.Type.statusBars()
+                            | WindowInsetsCompat.Type.displayCutout());
+            Insets nav = windowInsets.getInsets(WindowInsetsCompat.Type.navigationBars());
+            float density = Math.max(1f, getResources().getDisplayMetrics().density);
+            int topDp = Math.max(28, Math.round(sys.top / density));
+            int bottomDp = Math.max(0, Math.round(nav.bottom / density));
+            lastSafeTopDp = topDp;
+            lastSafeBottomDp = bottomDp;
+            applySafeAreaCssVars();
+            return windowInsets;
+        });
+        ViewCompat.requestApplyInsets(decor);
+    }
+
+    private void applySafeAreaCssVars() {
+        if (getBridge() == null || getBridge().getWebView() == null) return;
+        final WebView webView = getBridge().getWebView();
+        final String js = "try{document.documentElement.style.setProperty('--android-safe-top','"
+                + lastSafeTopDp
+                + "px');document.documentElement.style.setProperty('--android-safe-bottom','"
+                + lastSafeBottomDp
+                + "px');document.documentElement.classList.add('android-native');}catch(e){}";
+        webView.post(() -> webView.evaluateJavascript(js, null));
+    }
+
     @Override
     public void onStart() {
         super.onStart();
@@ -82,6 +131,7 @@ public class MainActivity extends BridgeActivity {
             settings.setMediaPlaybackRequiresUserGesture(false);
             settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
             settings.setDomStorageEnabled(true);
+            applySafeAreaCssVars();
             String pending = pendingOAuthUrl;
             if (pending != null) {
                 dispatchOAuthToWebView(pending);

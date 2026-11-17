@@ -4,14 +4,15 @@
  * and the "PLAYLIST • N TRACKS" metadata line, shuffle + play controls, then
  * the playlist's own numbered track rows.
  */
-import { useEffect, useState } from "react";
-import { MoreHorizontal, Play, Shuffle } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { ListPlus, MoreHorizontal, Play, Shuffle } from "lucide-react";
 import { Artwork, EqBars, ErrorState, ExplicitBadge, HeroSkeleton, ListSkeleton } from "../components/primitives";
 import { HERO_PILL, HERO_ROUND, PlaylistHero } from "../components/PlaylistHero";
-import { trackMenuItems } from "../lib/trackActions";
+import { queueTrackPriorityWithToast, trackMenuItems } from "../lib/trackActions";
 import { downloadAll } from "../lib/downloads";
 import { copyLink, youtubePlaylistLink } from "../lib/playlistShare";
 import { useDrag } from "../lib/dnd";
+import { useSwipeGesture } from "../lib/useSwipeGesture";
 import { fmtTime, shortTitle } from "../lib/format";
 import { FitText } from "../components/FitText";
 import { pageColors, useArtworkPalette } from "../lib/palette";
@@ -35,23 +36,43 @@ function PlaylistTrackRow({
   const currentId = usePlayer((s) => s.queue[s.index]?.id ?? null);
   const drag = useDrag({ track: song });
   const state = useTrackPlayback(song.id);
+  const badgeRef = useRef<HTMLDivElement | null>(null);
+  const swipe = useSwipeGesture({
+    onSwipeRight: () => queueTrackPriorityWithToast(song),
+    rightBadgeRef: badgeRef,
+  });
   const openMenu = (x: number, y: number): void => {
     openContextMenu(x, y, trackMenuItems(song));
   };
   return (
-    <div
-      {...drag.props}
-      onClick={() => playQueue(queue, index)}
-      onContextMenu={(e) => {
-        e.preventDefault();
-        openMenu(e.clientX, e.clientY);
-      }}
-      className={`fit-host group flex items-center gap-3.5 h-[64px] px-3 rounded-lg cursor-pointer select-none ${
-        currentId === song.id ? "bg-ink-hi/[0.14]" : "hover:bg-ink-hi/[0.05]"
-      } ${drag.dragging ? "opacity-40" : ""}`}
-    >
+    <div className="relative overflow-hidden md:rounded-lg">
+      <div
+        ref={badgeRef}
+        style={{ opacity: 0 }}
+        aria-hidden="true"
+        className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 inline-flex items-center gap-1.5 rounded-full bg-emerald-500/20 border border-emerald-400/40 px-2.5 py-1 text-[11.5px] font-semibold text-emerald-300"
+      >
+        <ListPlus className="w-3.5 h-3.5" />
+        Priority Queue
+      </div>
+      <div
+        {...drag.props}
+        {...swipe.handlers}
+        onClick={() => {
+          if (swipe.consumeDidSwipe()) return;
+          playQueue(queue, index);
+        }}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          openMenu(e.clientX, e.clientY);
+        }}
+        style={{ touchAction: "pan-y" }}
+        className={`fit-host group relative flex items-center gap-3.5 min-h-[68px] py-2 md:py-0 md:h-[64px] px-4 md:px-3 md:rounded-lg cursor-pointer select-none ${
+          currentId === song.id ? "bg-ink-hi/[0.12]" : "hover:bg-ink-hi/[0.05] active:bg-ink-hi/[0.08]"
+        } ${drag.dragging ? "opacity-40" : ""}`}
+      >
       {numbered ? (
-        <div className="w-7 shrink-0 grid place-items-center text-[13px] text-ink-faint tabular-nums">
+        <div className="hidden md:grid w-7 shrink-0 place-items-center text-[13px] text-ink-faint tabular-nums">
           {currentId === song.id ? (
             state === "playing" ? <EqBars /> : <span className="text-accent">▸</span>
           ) : (
@@ -70,15 +91,33 @@ function PlaylistTrackRow({
           </button>
         </div>
       ) : null}
-      <Artwork src={song.thumb} className="w-[52px] h-[52px] rounded-lg shrink-0" iconClassName="w-4 h-4" alt="" />
+      <span className="relative shrink-0">
+        <Artwork src={song.thumb} className="w-12 h-12 md:w-[52px] md:h-[52px] rounded-lg shrink-0" iconClassName="w-4 h-4" alt="" />
+        {currentId === song.id && state === "playing" && (
+          <span className="md:hidden absolute inset-0 grid place-items-center rounded-lg bg-black/50">
+            <EqBars />
+          </span>
+        )}
+      </span>
       <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-1.5 text-[16px] font-semibold tracking-[-0.2px] text-ink-hi">
+        <div className="flex items-center gap-1.5 min-w-0 text-[15.5px] md:text-[16px] font-semibold tracking-[-0.2px] text-ink-hi">
           {song.explicit && <ExplicitBadge />}
-          <FitText text={shortTitle(song.title)} full={song.title} />
+          <span className="truncate md:hidden">{shortTitle(song.title)}</span>
+          <span className="hidden md:block min-w-0 flex-1">
+            <FitText text={shortTitle(song.title)} full={song.title} />
+          </span>
         </div>
-        <FitText text={song.artist} className="text-[14px] text-ink-dim mt-0.5" />
+        <div className="md:hidden flex items-center gap-1.5 min-w-0 text-[13px] text-ink-dim mt-0.5">
+          <span className="truncate">{song.artist}</span>
+          {song.duration > 0 && (
+            <span className="shrink-0 text-ink-faint tabular-nums">· {fmtTime(song.duration)}</span>
+          )}
+        </div>
+        <div className="hidden md:block">
+          <FitText text={song.artist} className="text-[14px] text-ink-dim mt-0.5" />
+        </div>
       </div>
-      <div className="shrink-0 text-[13px] text-ink-faint tabular-nums">
+      <div className="hidden md:block shrink-0 text-[13px] text-ink-faint tabular-nums">
         {song.duration > 0 ? fmtTime(song.duration) : ""}
       </div>
       <button
@@ -88,10 +127,11 @@ function PlaylistTrackRow({
         }}
         title="More options"
         aria-label={`More options for ${song.title}`}
-        className="p-1.5 rounded-md text-ink-faint hover:text-ink-hi hover:bg-ink-hi/[0.07] transition-colors"
+        className="w-10 h-10 md:w-auto md:h-auto grid place-items-center md:p-1.5 rounded-full md:rounded-md text-ink-faint hover:text-ink-hi hover:bg-ink-hi/[0.07] transition-colors shrink-0"
       >
-        <MoreHorizontal className="w-4 h-4" />
+        <MoreHorizontal className="w-5 h-5 md:w-4 md:h-4" />
       </button>
+      </div>
     </div>
   );
 }
@@ -184,13 +224,13 @@ export function RemotePlaylistView({ playlistId }: { playlistId: string }) {
         </button>
       </PlaylistHero>
 
-      <div className="px-8 pb-12 pt-2">
+      <div className="-mx-3 md:mx-0 md:px-8 pb-12 pt-2">
         {tracks.length ? (
           <div>
             {tracks.map((song, i) => (
               <div key={`${song.id}-${i}`}>
                 <PlaylistTrackRow song={song} index={i} numbered queue={tracks} />
-                {i < tracks.length - 1 && <div className="h-px bg-ink-hi/[0.05] ml-[112px] mr-3" />}
+                {i < tracks.length - 1 && <div className="h-px bg-ink-hi/[0.05] mx-4 md:ml-[112px] md:mr-3" />}
               </div>
             ))}
           </div>

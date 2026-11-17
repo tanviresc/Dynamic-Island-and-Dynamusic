@@ -810,7 +810,7 @@ function LibraryPill() {
 
 export function Sidebar() {
   return (
-    <aside className="w-[328px] shrink-0 flex flex-col min-h-0">
+    <aside className="hidden sm:flex sm:w-[216px] md:w-[260px] xl:w-[328px] shrink-0 flex-col min-h-0">
       <LibraryPill />
     </aside>
   );

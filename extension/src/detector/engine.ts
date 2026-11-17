@@ -16,6 +16,8 @@ export interface DetectorOptions {
   querySelectorAll?: (selector: string) => Iterable<Element>;
   /** Injectable time source in ms for testability */
   now?: () => number;
+  /** Injectable document visibility check for background tab handling */
+  isDocumentHidden?: () => boolean;
 }
 
 export class DetectorEngine {
@@ -24,9 +26,12 @@ export class DetectorEngine {
   private querySelector: (selector: string) => Element | null;
   private querySelectorAll: (selector: string) => Iterable<Element>;
   private now: () => number;
+  private isDocumentHidden: () => boolean;
 
   private state: DetectorState = "idle";
   private networkGenerating = false;
+  private streamTriggered = false;
+  private ignoreStaleDomUntilSettled = false;
   private generationStartTime = 0;
   private settlingStartTime = 0;
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -48,6 +53,9 @@ export class DetectorEngine {
       ((sel: string) =>
         typeof document !== "undefined" ? document.querySelectorAll(sel) : []);
     this.now = options.now || (() => Date.now());
+    this.isDocumentHidden =
+      options.isDocumentHidden ||
+      (() => (typeof document !== "undefined" ? document.hidden : false));
   }
 
   public getState(): DetectorState {
@@ -61,6 +69,18 @@ export class DetectorEngine {
   public setNetworkGenerating(active: boolean): void {
     if (this.networkGenerating === active) return;
     this.networkGenerating = active;
+    if (active) {
+      this.streamTriggered = true;
+      this.ignoreStaleDomUntilSettled = false;
+    } else if (this.streamTriggered) {
+      this.streamTriggered = false;
+      // When the network stream finishes while the tab is hidden/backgrounded,
+      // browsers throttle React/DOM paints so the DOM Stop button can remain mounted
+      // until the user returns to the tab. Do not let stale hidden DOM block completion!
+      if (this.isDocumentHidden()) {
+        this.ignoreStaleDomUntilSettled = true;
+      }
+    }
     this.evaluate();
   }
 
@@ -69,7 +89,12 @@ export class DetectorEngine {
    * Can be invoked on MutationObserver callbacks or polling ticks.
    */
   public evaluate(): void {
-    const isGenerating = this.networkGenerating || this.checkIsGenerating();
+    const domGenerating = this.checkIsGenerating();
+    if (this.ignoreStaleDomUntilSettled && !domGenerating) {
+      this.ignoreStaleDomUntilSettled = false;
+    }
+    const effectiveDomGenerating = this.ignoreStaleDomUntilSettled ? false : domGenerating;
+    const isGenerating = this.networkGenerating || effectiveDomGenerating;
     const currentTime = this.now();
 
     // 1. Check needs_input prompts
@@ -177,9 +202,13 @@ export class DetectorEngine {
 
   private scheduleSettlingDebounce(): void {
     this.cancelSettlingDebounce();
+    const delay =
+      this.ignoreStaleDomUntilSettled && this.isDocumentHidden()
+        ? Math.min(this.config.settlingDebounceMs, 250)
+        : this.config.settlingDebounceMs;
     this.debounceTimer = setTimeout(() => {
       this.onDebounceCompleted();
-    }, this.config.settlingDebounceMs);
+    }, delay);
   }
 
   private cancelSettlingDebounce(): void {

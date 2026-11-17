@@ -7,6 +7,8 @@
  */
 import type { Track } from "../types";
 import { getBackendBaseUrl, getBackendHost, isCapacitorNative, isTauriDesktop } from "../stores/mobileMode";
+import { upgradeArtwork } from "./artwork";
+import { getCachedLyrics, saveCachedLyrics } from "./lyricsCache";
 import { fallbackMobileStreamUrl } from "./mobileStandaloneFallback";
 
 function getVaultBaseUrl(): string {
@@ -78,8 +80,10 @@ async function fetchUrlAsBlob(url: string): Promise<Blob | null> {
 
 const DB_NAME = "dynamusic-offline-vault";
 const STORE_NAME = "tracks";
-const DB_VERSION = 1;
-const MAX_MEMORY_BLOB_URLS = 32;
+const ARTWORK_STORE = "artwork";
+const DB_VERSION = 2;
+const maxMemoryBlobUrls = () => (isCapacitorNative() ? 8 : 32);
+const maxMemoryArtworkUrls = () => (isCapacitorNative() ? 32 : 96);
 const NATIVE_VAULT_IDS_KEY = "dynamusic:native_offline_ids";
 
 interface NativeOfflineFilePlugin {
@@ -91,6 +95,9 @@ interface NativeOfflineFilePlugin {
     mime?: string;
   }) => Promise<{ fileUri?: string; mime?: string; size?: number }>;
   deleteOfflineFile?: (opts: { id: string }) => Promise<void>;
+  saveOfflineArt?: (opts: { id: string; url: string }) => Promise<{ fileUri?: string; size?: number }>;
+  getOfflineArtDataUrl?: (opts: { id: string }) => Promise<{ exists?: boolean; dataUrl?: string }>;
+  deleteOfflineArt?: (opts: { id: string }) => Promise<void>;
 }
 
 function getNativeOfflinePlugin(): NativeOfflineFilePlugin | null {
@@ -136,12 +143,27 @@ interface StoredTrackAudio {
   artist?: string;
 }
 
+interface StoredArtworkRecord {
+  key: string;
+  trackId?: string;
+  rawUrl?: string;
+  blob: Blob;
+  mime: string;
+  savedAt: number;
+}
+
 let dbPromise: Promise<IDBDatabase | null> | null = null;
 const memoryBlobUrls = new Map<string, string>();
 const pinnedTrackIds = new Set<string>();
 const savedIds = new Set<string>();
 const inFlightSaves = new Map<string, Promise<boolean>>();
 const vaultListeners = new Set<() => void>();
+
+const artworkMemoryUrls = new Map<string, string>();
+const savedArtworkKeys = new Set<string>();
+const inFlightArtSaves = new Map<string, Promise<boolean>>();
+const inFlightArtReads = new Map<string, Promise<string | null>>();
+const artworkListeners = new Set<() => void>();
 
 /**
  * Pin track IDs whose blob URLs are actively loaded/playing in audio decks
@@ -159,9 +181,10 @@ export function cacheBlobUrlLru(trackId: string, url: string): void {
     memoryBlobUrls.delete(trackId);
   }
   memoryBlobUrls.set(trackId, url);
-  if (memoryBlobUrls.size <= MAX_MEMORY_BLOB_URLS) return;
+  const cap = maxMemoryBlobUrls();
+  if (memoryBlobUrls.size <= cap) return;
   for (const candidateId of Array.from(memoryBlobUrls.keys())) {
-    if (memoryBlobUrls.size <= MAX_MEMORY_BLOB_URLS) break;
+    if (memoryBlobUrls.size <= cap) break;
     if (candidateId === trackId || pinnedTrackIds.has(candidateId)) continue;
     const oldUrl = memoryBlobUrls.get(candidateId);
     memoryBlobUrls.delete(candidateId);
@@ -173,6 +196,268 @@ export function cacheBlobUrlLru(trackId: string, url: string): void {
       }
     }
   }
+}
+
+function notifyArtworkListeners(): void {
+  for (const fn of artworkListeners) {
+    try {
+      fn();
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+export function subscribeOfflineArtwork(cb: () => void): () => void {
+  artworkListeners.add(cb);
+  return () => artworkListeners.delete(cb);
+}
+
+function buildArtworkKeys(url?: string | null, trackId?: string | null): string[] {
+  const keys: string[] = [];
+  const trimmedId = trackId?.trim();
+  if (trimmedId) keys.push(`id:${trimmedId}`);
+  const trimmedUrl = url?.trim();
+  if (trimmedUrl && !trimmedUrl.startsWith("blob:") && !trimmedUrl.startsWith("data:")) {
+    const upgraded = upgradeArtwork(trimmedUrl, 600);
+    if (upgraded && !keys.includes(upgraded)) keys.push(upgraded);
+    if (!keys.includes(trimmedUrl)) keys.push(trimmedUrl);
+  }
+  return keys;
+}
+
+function cacheArtworkUrlLru(keys: string[], objectOrDataUrl: string): void {
+  for (const key of keys) {
+    if (artworkMemoryUrls.has(key)) artworkMemoryUrls.delete(key);
+    artworkMemoryUrls.set(key, objectOrDataUrl);
+  }
+  const cap = maxMemoryArtworkUrls();
+  if (artworkMemoryUrls.size <= cap) return;
+  const activeUrls = new Set(artworkMemoryUrls.values());
+  for (const candidateKey of Array.from(artworkMemoryUrls.keys())) {
+    if (artworkMemoryUrls.size <= cap) break;
+    if (keys.includes(candidateKey)) continue;
+    const evictedUrl = artworkMemoryUrls.get(candidateKey);
+    artworkMemoryUrls.delete(candidateKey);
+    if (evictedUrl && evictedUrl.startsWith("blob:") && !Array.from(artworkMemoryUrls.values()).includes(evictedUrl)) {
+      try {
+        URL.revokeObjectURL(evictedUrl);
+      } catch {
+        /* ignore */
+      }
+    }
+    void activeUrls;
+  }
+}
+
+export function peekOfflineArtworkUrl(url?: string | null, trackId?: string | null): string | null {
+  for (const key of buildArtworkKeys(url, trackId)) {
+    const hit = artworkMemoryUrls.get(key);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+export async function resolveOfflineArtworkUrl(
+  url?: string | null,
+  trackId?: string | null
+): Promise<string | null> {
+  const keys = buildArtworkKeys(url, trackId);
+  if (keys.length === 0) return null;
+
+  const mem = peekOfflineArtworkUrl(url, trackId);
+  if (mem) return mem;
+
+  const dedupeKey = keys[0];
+  const inFlight = inFlightArtReads.get(dedupeKey);
+  if (inFlight) return inFlight;
+
+  const task = (async (): Promise<string | null> => {
+    try {
+      const db = await openVaultDb();
+      if (db && db.objectStoreNames.contains(ARTWORK_STORE)) {
+        for (const key of keys) {
+          const row = await new Promise<StoredArtworkRecord | null>((resolve) => {
+            try {
+              const tx = db.transaction(ARTWORK_STORE, "readonly");
+              const req = tx.objectStore(ARTWORK_STORE).get(key);
+              req.onsuccess = () => {
+                const res = req.result as StoredArtworkRecord | undefined;
+                resolve(res?.blob && res.blob.size > 64 ? res : null);
+              };
+              req.onerror = () => resolve(null);
+            } catch {
+              resolve(null);
+            }
+          });
+          if (row) {
+            const usableBlob = row.blob.type
+              ? row.blob
+              : new Blob([row.blob], { type: row.mime || "image/jpeg" });
+            const blobUrl = URL.createObjectURL(usableBlob);
+            cacheArtworkUrlLru(keys, blobUrl);
+            for (const k of keys) savedArtworkKeys.add(k);
+            notifyArtworkListeners();
+            return blobUrl;
+          }
+        }
+      }
+
+      const trimmedId = trackId?.trim();
+      const native = getNativeOfflinePlugin();
+      if (trimmedId && native?.getOfflineArtDataUrl) {
+        const info = await native.getOfflineArtDataUrl({ id: trimmedId }).catch(() => null);
+        if (info?.exists && info.dataUrl) {
+          cacheArtworkUrlLru(keys, info.dataUrl);
+          for (const k of keys) savedArtworkKeys.add(k);
+          notifyArtworkListeners();
+          return info.dataUrl;
+        }
+      }
+
+      return null;
+    } finally {
+      inFlightArtReads.delete(dedupeKey);
+    }
+  })();
+
+  inFlightArtReads.set(dedupeKey, task);
+  return task;
+}
+
+async function fetchArtworkBlob(url: string): Promise<Blob | null> {
+  if (!url || url.startsWith("blob:") || url.startsWith("data:")) return null;
+  const candidates = Array.from(
+    new Set([upgradeArtwork(url, 600), url].filter((u): u is string => Boolean(u && u.startsWith("http"))))
+  );
+  for (const candidate of candidates) {
+    try {
+      const res = await fetch(candidate, { signal: AbortSignal.timeout(6000) });
+      if (!res.ok) continue;
+      const blob = await res.blob();
+      if (blob && blob.size >= 128) return blob;
+    } catch {
+      /* try next candidate */
+    }
+  }
+  return null;
+}
+
+function dataUrlToBlob(dataUrl: string): Blob | null {
+  try {
+    const comma = dataUrl.indexOf(",");
+    if (comma < 0) return null;
+    const header = dataUrl.slice(0, comma);
+    const mimeMatch = /data:([^;]+)/.exec(header);
+    const mime = mimeMatch?.[1] || "image/jpeg";
+    return base64ToBlob(dataUrl.slice(comma + 1), mime);
+  } catch {
+    return null;
+  }
+}
+
+export async function saveOfflineArtwork(track: { id?: string; thumb?: string | null }): Promise<boolean> {
+  const thumb = track.thumb?.trim();
+  if (!thumb) return false;
+  const keys = buildArtworkKeys(thumb, track.id);
+  if (keys.length === 0) return false;
+
+  const idKey = track.id?.trim() ? `id:${track.id.trim()}` : null;
+  if (idKey && savedArtworkKeys.has(idKey)) return true;
+
+  const dedupeKey = idKey ?? keys[0];
+  const pending = inFlightArtSaves.get(dedupeKey);
+  if (pending) return pending;
+
+  const task = (async (): Promise<boolean> => {
+    try {
+      const upgraded = upgradeArtwork(thumb, 600) || thumb;
+      const native = getNativeOfflinePlugin();
+      const nativeSavePromise =
+        track.id?.trim() && native?.saveOfflineArt
+          ? native.saveOfflineArt({ id: track.id.trim(), url: upgraded }).catch(() => null)
+          : Promise.resolve(null);
+
+      let blob = await fetchArtworkBlob(thumb);
+      await nativeSavePromise;
+
+      if (!blob && track.id?.trim() && native?.getOfflineArtDataUrl) {
+        const nativeRes = await native.getOfflineArtDataUrl({ id: track.id.trim() }).catch(() => null);
+        if (nativeRes?.exists && nativeRes.dataUrl) {
+          blob = dataUrlToBlob(nativeRes.dataUrl);
+        }
+      }
+
+      if (!blob || blob.size < 128) return false;
+
+      const db = await openVaultDb();
+      if (db && db.objectStoreNames.contains(ARTWORK_STORE)) {
+        await new Promise<void>((resolve) => {
+          try {
+            const tx = db.transaction(ARTWORK_STORE, "readwrite");
+            const store = tx.objectStore(ARTWORK_STORE);
+            const savedAt = Date.now();
+            for (const key of keys) {
+              const rec: StoredArtworkRecord = {
+                key,
+                trackId: track.id?.trim() || undefined,
+                rawUrl: thumb,
+                blob: blob!,
+                mime: blob!.type || "image/jpeg",
+                savedAt,
+              };
+              store.put(rec);
+            }
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => resolve();
+          } catch {
+            resolve();
+          }
+        });
+      }
+
+      const blobUrl = URL.createObjectURL(blob);
+      cacheArtworkUrlLru(keys, blobUrl);
+      for (const k of keys) savedArtworkKeys.add(k);
+      notifyArtworkListeners();
+      return true;
+    } catch {
+      return false;
+    } finally {
+      inFlightArtSaves.delete(dedupeKey);
+    }
+  })();
+
+  inFlightArtSaves.set(dedupeKey, task);
+  return task;
+}
+
+export async function saveOfflineLyricsForTrack(track: Track): Promise<boolean> {
+  if (!track?.id || !track.title) return false;
+  try {
+    const existing = await getCachedLyrics(track);
+    if (existing && (existing.synced?.length || existing.plain)) return true;
+    if (typeof navigator !== "undefined" && navigator.onLine === false) return false;
+    if (typeof window === "undefined" || !window.bytune?.getLyrics) return false;
+    const res = await window.bytune.getLyrics({
+      id: track.id,
+      title: track.title,
+      artist: track.artist,
+      album: track.album,
+      duration: track.duration || undefined,
+    });
+    if (res && (res.synced?.length || res.plain)) {
+      await saveCachedLyrics(track, res);
+      return true;
+    }
+  } catch {
+    /* ignore */
+  }
+  return false;
+}
+
+export async function saveOfflineTrackExtras(track: Track): Promise<void> {
+  await Promise.allSettled([saveOfflineArtwork(track), saveOfflineLyricsForTrack(track)]);
 }
 
 function notifyListeners(): void {
@@ -216,12 +501,18 @@ function openVaultDb(): Promise<IDBDatabase | null> {
         if (!db.objectStoreNames.contains(STORE_NAME)) {
           db.createObjectStore(STORE_NAME, { keyPath: "id" });
         }
+        if (!db.objectStoreNames.contains(ARTWORK_STORE)) {
+          db.createObjectStore(ARTWORK_STORE, { keyPath: "key" });
+        }
       };
       req.onsuccess = () => {
         const db = req.result;
-        // Hydrate savedIds index on open
+        // Hydrate savedIds and artwork indices on open
         try {
-          const tx = db.transaction(STORE_NAME, "readonly");
+          const storeNames = db.objectStoreNames.contains(ARTWORK_STORE)
+            ? [STORE_NAME, ARTWORK_STORE]
+            : [STORE_NAME];
+          const tx = db.transaction(storeNames, "readonly");
           const store = tx.objectStore(STORE_NAME);
           const keysReq = store.getAllKeys();
           keysReq.onsuccess = () => {
@@ -230,6 +521,15 @@ function openVaultDb(): Promise<IDBDatabase | null> {
             }
             notifyListeners();
           };
+          if (db.objectStoreNames.contains(ARTWORK_STORE)) {
+            const artKeysReq = tx.objectStore(ARTWORK_STORE).getAllKeys();
+            artKeysReq.onsuccess = () => {
+              for (const k of artKeysReq.result) {
+                if (typeof k === "string") savedArtworkKeys.add(k);
+              }
+              notifyArtworkListeners();
+            };
+          }
         } catch {
           /* ignore */
         }
@@ -358,12 +658,16 @@ export async function saveTrackToOfflineVault(
   resolveNetworkStreamUrl?: (id: string) => Promise<string>
 ): Promise<boolean> {
   if (!track?.id || track.id.startsWith("local:")) return false;
-  if (savedIds.has(track.id)) return true;
+  if (savedIds.has(track.id)) {
+    void saveOfflineTrackExtras(track);
+    return true;
+  }
 
   const pending = inFlightSaves.get(track.id);
   if (pending) return pending;
 
   const task = (async (): Promise<boolean> => {
+    const extrasPromise = saveOfflineTrackExtras(track).catch(() => undefined);
     try {
       // On PC desktop, store directly in Node's disk offline-vault (`POST /vault/:id`)
       // rather than downloading huge binary Blobs into WebView2 JS heap & IndexedDB.
@@ -378,6 +682,7 @@ export async function saveTrackToOfflineVault(
           if (res.ok) {
             savedIds.add(track.id);
             notifyListeners();
+            await extrasPromise;
             return true;
           }
         } catch {
@@ -396,6 +701,7 @@ export async function saveTrackToOfflineVault(
             savedIds.add(track.id);
             persistNativeSavedId(track.id, true);
             notifyListeners();
+            await extrasPromise;
             return true;
           }
           const primaryUrl = resolveNetworkStreamUrl
@@ -405,6 +711,7 @@ export async function saveTrackToOfflineVault(
             savedIds.add(track.id);
             persistNativeSavedId(track.id, true);
             notifyListeners();
+            await extrasPromise;
             return true;
           }
           if (primaryUrl && (primaryUrl.startsWith("http://") || primaryUrl.startsWith("https://"))) {
@@ -413,6 +720,7 @@ export async function saveTrackToOfflineVault(
               savedIds.add(track.id);
               persistNativeSavedId(track.id, true);
               notifyListeners();
+              await extrasPromise;
               return true;
             }
           }
@@ -426,6 +734,7 @@ export async function saveTrackToOfflineVault(
               savedIds.add(track.id);
               persistNativeSavedId(track.id, true);
               notifyListeners();
+              await extrasPromise;
               return true;
             }
           }
@@ -501,6 +810,7 @@ export async function saveTrackToOfflineVault(
 
       savedIds.add(track.id);
       notifyListeners();
+      await extrasPromise;
       return true;
     } catch {
       return false;
@@ -521,9 +831,14 @@ export async function removeTrackFromOfflineVault(trackId: string): Promise<void
   }
   savedIds.delete(trackId);
   persistNativeSavedId(trackId, false);
+  const artIdKey = `id:${trackId}`;
+  savedArtworkKeys.delete(artIdKey);
+  artworkMemoryUrls.delete(artIdKey);
   notifyListeners();
+  notifyArtworkListeners();
 
   void getNativeOfflinePlugin()?.deleteOfflineFile?.({ id: trackId }).catch(() => undefined);
+  void getNativeOfflinePlugin()?.deleteOfflineArt?.({ id: trackId }).catch(() => undefined);
 
   void fetch(`${getVaultBaseUrl()}/vault/${encodeURIComponent(trackId)}`, {
     method: "DELETE",
@@ -534,8 +849,14 @@ export async function removeTrackFromOfflineVault(trackId: string): Promise<void
   if (!db) return;
   await new Promise<void>((resolve) => {
     try {
-      const tx = db.transaction(STORE_NAME, "readwrite");
+      const storeNames = db.objectStoreNames.contains(ARTWORK_STORE)
+        ? [STORE_NAME, ARTWORK_STORE]
+        : [STORE_NAME];
+      const tx = db.transaction(storeNames, "readwrite");
       tx.objectStore(STORE_NAME).delete(trackId);
+      if (db.objectStoreNames.contains(ARTWORK_STORE)) {
+        tx.objectStore(ARTWORK_STORE).delete(artIdKey);
+      }
       tx.oncomplete = () => resolve();
       tx.onerror = () => resolve();
     } catch {
@@ -544,13 +865,93 @@ export async function removeTrackFromOfflineVault(trackId: string): Promise<void
   });
 }
 
+export interface OfflineVaultPageItem {
+  id: string;
+  title?: string;
+  artist?: string;
+  mime: string;
+  savedAt: number;
+}
+
+/** Lazy cursor-based paginated listing of offline vault tracks (metadata only; avoids Blob cloning). */
+export async function getOfflineTracksPage(
+  offset = 0,
+  limit = 50
+): Promise<{ items: OfflineVaultPageItem[]; total: number; hasMore: boolean }> {
+  const safeOffset = Math.max(0, offset);
+  const safeLimit = Math.max(1, limit);
+  const allIds = Array.from(savedIds);
+  const db = await openVaultDb();
+  if (!db) {
+    const slice = allIds.slice(safeOffset, safeOffset + safeLimit).map((id) => ({
+      id,
+      mime: "audio/mp4",
+      savedAt: 0,
+    }));
+    return {
+      items: slice,
+      total: allIds.length,
+      hasMore: safeOffset + slice.length < allIds.length,
+    };
+  }
+
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction(STORE_NAME, "readonly");
+      const store = tx.objectStore(STORE_NAME);
+      const countReq = store.count();
+      let total = allIds.length;
+      countReq.onsuccess = () => {
+        total = Number(countReq.result) || allIds.length;
+      };
+      const items: OfflineVaultPageItem[] = [];
+      let advanced = false;
+      const cursorReq = store.openCursor();
+      cursorReq.onsuccess = () => {
+        const cursor = cursorReq.result;
+        if (!cursor) {
+          resolve({ items, total, hasMore: safeOffset + items.length < total });
+          return;
+        }
+        if (!advanced && safeOffset > 0) {
+          advanced = true;
+          cursor.advance(safeOffset);
+          return;
+        }
+        const row = cursor.value as StoredTrackAudio | undefined;
+        if (row?.id) {
+          items.push({
+            id: row.id,
+            title: row.title,
+            artist: row.artist,
+            mime: row.mime || "audio/mp4",
+            savedAt: row.savedAt || 0,
+          });
+        }
+        if (items.length >= safeLimit) {
+          resolve({ items, total, hasMore: safeOffset + items.length < total });
+          return;
+        }
+        cursor.continue();
+      };
+      cursorReq.onerror = () => resolve({ items: [], total: allIds.length, hasMore: false });
+    } catch {
+      resolve({ items: [], total: allIds.length, hasMore: false });
+    }
+  });
+}
+
 /**
- * Ensure all tracks in a list (such as Liked Songs) are saved inside the app's offline vault.
+ * Ensure all tracks in a list (such as Liked Songs) are saved inside the app's offline vault
+ * along with offline artwork + cached lyrics.
  */
 export async function syncLikedSongsToOfflineVault(tracks: Track[]): Promise<void> {
   if (typeof navigator !== "undefined" && navigator.onLine === false) return;
   const queue = tracks.filter((t) => Boolean(t?.id) && !t.id.startsWith("local:") && !savedIds.has(t.id));
-  if (queue.length === 0) return;
+  const extrasBackfill = tracks.filter(
+    (t) => Boolean(t?.id) && !t.id.startsWith("local:") && savedIds.has(t.id) && !savedArtworkKeys.has(`id:${t.id}`)
+  );
+
   let cursor = 0;
   const worker = async (): Promise<void> => {
     while (cursor < queue.length) {
@@ -561,7 +962,13 @@ export async function syncLikedSongsToOfflineVault(tracks: Track[]): Promise<voi
         await new Promise((r) => setTimeout(r, isTauriDesktop() ? 400 : 150));
       }
     }
+    for (const track of extrasBackfill) {
+      if (typeof navigator !== "undefined" && navigator.onLine === false) break;
+      await saveOfflineTrackExtras(track);
+    }
   };
-  await worker();
+  if (queue.length > 0 || extrasBackfill.length > 0) {
+    await worker();
+  }
 }
 

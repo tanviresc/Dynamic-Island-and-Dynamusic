@@ -50,6 +50,7 @@ impl std::fmt::Display for Surface {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
+    #[serde(alias = "finished")]
     Done,
     NeedsInput,
     Error,
@@ -159,7 +160,7 @@ impl Event {
             ) => {}
             (Source::Desktop, Surface::Desktop) => {}
             (Source::Antigravity, Surface::Ide) => {}
-            (Source::Gmail, Surface::Background) => {}
+            (Source::Gmail, Surface::Web | Surface::Background) => {}
             _ => {
                 return Err(ValidationError::InvalidSourceSurface(
                     self.source,
@@ -170,14 +171,29 @@ impl Event {
 
         // 2. Kind validation
         if self.source == Source::Gmail {
-            if self.kind != Kind::NewMail && self.kind != Kind::NeedsInput {
-                return Err(ValidationError::InvalidKindForSource(
-                    self.kind,
-                    self.source,
-                ));
-            }
-            if self.account.is_none() || self.account.as_deref().unwrap_or("").trim().is_empty() {
-                return Err(ValidationError::MissingAccount);
+            match self.surface {
+                Surface::Background => {
+                    if self.kind != Kind::NewMail && self.kind != Kind::NeedsInput {
+                        return Err(ValidationError::InvalidKindForSource(
+                            self.kind,
+                            self.source,
+                        ));
+                    }
+                    if self.account.is_none()
+                        || self.account.as_deref().unwrap_or("").trim().is_empty()
+                    {
+                        return Err(ValidationError::MissingAccount);
+                    }
+                }
+                Surface::Web
+                    if !matches!(self.kind, Kind::Done | Kind::NeedsInput | Kind::NewMail) =>
+                {
+                    return Err(ValidationError::InvalidKindForSource(
+                        self.kind,
+                        self.source,
+                    ));
+                }
+                _ => {}
             }
         } else if self.kind == Kind::NewMail {
             return Err(ValidationError::InvalidKindForSource(
@@ -447,12 +463,11 @@ mod tests {
     fn test_invalid_source_surface() {
         let json = r#"{
             "id": "c4d5e6f7-a8b9-4c0d-9e1f-2a3b4c5d6e7f",
-            "source": "gmail",
+            "source": "antigravity",
             "surface": "web",
-            "kind": "new_mail",
+            "kind": "done",
             "title": "test",
             "text": "test",
-            "account": "personal",
             "target": { "type": "browserTab", "tabId": 1, "windowId": 1 },
             "createdAt": "2026-11-13T11:50:02Z",
             "dedupeKey": "test"
@@ -466,6 +481,45 @@ mod tests {
             ev.normalize_and_validate(now),
             Err(ValidationError::InvalidSourceSurface(..))
         ));
+    }
+
+    #[test]
+    fn test_gmail_web_finished_and_needs_input() {
+        let json_finished = r#"{
+            "id": "d4d5e6f7-a8b9-4c0d-9e1f-2a3b4c5d6e7f",
+            "source": "gmail",
+            "surface": "web",
+            "kind": "finished",
+            "title": "Gmail · New mail",
+            "text": "1 unread thread in Inbox",
+            "target": { "type": "browserTab", "tabId": 12, "windowId": 3, "url": "https://mail.google.com/mail/u/0/#inbox" },
+            "createdAt": "2026-11-13T11:50:02Z",
+            "dedupeKey": "gmail:web:tab12-unread-1:done"
+        }"#;
+
+        let mut ev1: Event = serde_json::from_str(json_finished).expect("deserialize finished");
+        assert_eq!(ev1.kind, Kind::Done);
+        let now = DateTime::parse_from_rfc3339("2026-11-13T11:51:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        assert!(ev1.normalize_and_validate(now).is_ok());
+
+        let json_priority = r#"{
+            "id": "e4d5e6f7-a8b9-4c0d-9e1f-2a3b4c5d6e7f",
+            "source": "gmail",
+            "surface": "web",
+            "kind": "needs_input",
+            "title": "Gmail · Priority mail",
+            "text": "Priority thread requires attention",
+            "category": "Priority",
+            "target": { "type": "browserTab", "tabId": 12, "windowId": 3, "url": "https://mail.google.com/mail/u/0/#inbox" },
+            "createdAt": "2026-11-13T11:50:02Z",
+            "dedupeKey": "gmail:web:tab12-priority-1:needs_input"
+        }"#;
+
+        let mut ev2: Event = serde_json::from_str(json_priority).expect("deserialize needs_input");
+        assert_eq!(ev2.kind, Kind::NeedsInput);
+        assert!(ev2.normalize_and_validate(now).is_ok());
     }
 
     #[test]

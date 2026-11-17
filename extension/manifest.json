@@ -8,7 +8,8 @@
     "https://claude.ai/*",
     "https://chatgpt.com/*",
     "https://chat.openai.com/*",
-    "https://gemini.google.com/*"
+    "https://gemini.google.com/*",
+    "https://mail.google.com/*"
   ],
   "background": {
     "service_worker": "background.js",
@@ -34,6 +35,13 @@
         "https://gemini.google.com/*"
       ],
       "js": ["content.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://mail.google.com/*"
+      ],
+      "js": ["gmail.js"],
       "run_at": "document_idle"
     }
   ],

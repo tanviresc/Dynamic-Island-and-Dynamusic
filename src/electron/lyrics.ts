@@ -496,52 +496,183 @@ function toResult(source: string, lines: SyncedLyricLine[]): ProviderResult | nu
 
 /* ------------------------------ LRC parsing ----------------------------- */
 
-/** Plain LRC → line-synced lines (seconds). Word stamps `<…>` are ignored. */
-function parseLrc(lrc: string): SyncedLyricLine[] {
+export interface LrcMetadata {
+  title?: string;
+  artist?: string;
+  album?: string;
+  lengthSec?: number;
+  offsetMs: number;
+}
+
+function parseLrcLengthSec(raw: string): number | undefined {
+  const s = raw.trim();
+  const mmss = /^(\d{1,3}):(\d{2})(?:\.(\d{1,3}))?$/.exec(s);
+  if (mmss) {
+    const mins = Number(mmss[1]);
+    const secs = Number(mmss[2]);
+    if (Number.isFinite(mins) && Number.isFinite(secs) && secs < 60) {
+      return mins * 60 + secs;
+    }
+  }
+  const num = Number(s);
+  return Number.isFinite(num) && num > 0 ? num : undefined;
+}
+
+/** Extract LRC header metadata (`[ti:]`, `[ar:]`, `[al:]`, `[length:]`, `[offset:]`). */
+export function parseLrcMetadata(lrc: string): LrcMetadata {
+  const meta: LrcMetadata = { offsetMs: 0 };
+  for (const rawLine of lrc.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    const tag = /^\[([a-zA-Z]+):(.*)\]$/.exec(line);
+    if (!tag) continue;
+    const key = tag[1].toLowerCase();
+    const val = decodeEntities(tag[2].trim());
+    if (!val) continue;
+    if (key === "ti" && !meta.title) meta.title = val;
+    else if (key === "ar" && !meta.artist) meta.artist = val;
+    else if (key === "al" && !meta.album) meta.album = val;
+    else if (key === "length" && meta.lengthSec === undefined) {
+      meta.lengthSec = parseLrcLengthSec(val);
+    } else if (key === "offset") {
+      const n = Number(val);
+      if (Number.isFinite(n)) meta.offsetMs = n;
+    }
+  }
+  return meta;
+}
+
+/**
+ * Validate imported LRC tags and timing bounds against the queried track to reject
+ * mismatched or wrong-song lyrics before caching or displaying them.
+ */
+export function validateLrcForTrack(
+  raw: string,
+  q?: Pick<LyricQuery, "title" | "artist"> & { duration?: number } | null,
+  lines?: SyncedLyricLine[]
+): boolean {
+  if (!q) return true;
+  const meta = parseLrcMetadata(raw);
+
+  if (meta.lengthSec !== undefined && q.duration && q.duration > 0) {
+    if (!withinTolerance(meta.lengthSec, q.duration)) return false;
+  }
+
+  if (meta.title && q.title) {
+    if (!namesRecording(meta.title, meta.artist ?? "", { title: q.title, artist: q.artist ?? "", duration: q.duration }, { length: meta.lengthSec })) {
+      return false;
+    }
+  } else if (meta.artist && q.artist) {
+    const mine = artistNames(q.artist);
+    const theirs = artistNames(meta.artist);
+    if (mine.length && theirs.length && comparable(mine, theirs) && !shareArtist(mine, theirs)) {
+      return false;
+    }
+  }
+
+  if (lines && lines.length > 0 && q.duration && q.duration > 0) {
+    const maxAllowed = q.duration + Math.max(12, LRCRED_TOLERANCE_SEC);
+    if (lines.some((l) => l.text.trim() && l.time > maxAllowed)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+const LRC_LINE_STAMP_RE = /\[(\d{1,3}):(\d{2})[.:](\d{2,3})]/g;
+
+/** Plain LRC → line-synced lines (seconds), supporting multi-stamp lines and `[offset:]`. */
+export function parseLrc(lrc: string): SyncedLyricLine[] {
+  const offsetSec = parseLrcMetadata(lrc).offsetMs / 1000;
   const rows: { time: number; text: string }[] = [];
   for (const raw of lrc.split(/\r?\n/)) {
-    const m = /^\[(\d{1,3}):(\d{2})[.:](\d{2,3})](.*)$/.exec(raw.trim());
-    if (!m) continue;
-    const text = decodeEntities(m[4].replace(/<\d{1,3}:\d{2}[.:]\d{2,3}>/g, "").trim());
-    rows.push({ time: stampMs(m[1], m[2], m[3]) / 1000, text });
+    const trimmed = raw.trim();
+    if (!trimmed) continue;
+    LRC_LINE_STAMP_RE.lastIndex = 0;
+    const stamps: number[] = [];
+    let lastEnd = 0;
+    let m: RegExpExecArray | null;
+    while ((m = LRC_LINE_STAMP_RE.exec(trimmed)) !== null) {
+      // Only treat consecutive leading stamps (`[mm:ss.xx][mm:ss.xx]...`) as line timestamps.
+      if (trimmed.slice(lastEnd, m.index).trim() !== "") break;
+      stamps.push(Math.max(0, stampMs(m[1], m[2], m[3]) / 1000 - offsetSec));
+      lastEnd = m.index + m[0].length;
+    }
+    if (!stamps.length) continue;
+    const text = decodeEntities(
+      trimmed
+        .slice(lastEnd)
+        .replace(/<\d{1,3}:\d{2}[.:]\d{2,3}>/g, "")
+        .trim()
+    );
+    for (const time of stamps) {
+      rows.push({ time, text });
+    }
   }
   rows.sort((a, b) => a.time - b.time);
   return rows;
 }
 
-/** Word-timed rich LRC: `[mm:ss.xx]<mm:ss.xx>word …` → seconds. */
-function parseEnhancedLrc(lrc: string): SyncedLyricLine[] {
-  const rows: { time: number; words: { start: number; text: string }[]; plain: string }[] = [];
+/** Word-timed rich LRC: `[mm:ss.xx]<mm:ss.xx>word …` → seconds, honoring `[offset:]` and closing tags. */
+export function parseEnhancedLrc(lrc: string): SyncedLyricLine[] {
+  const offsetSec = parseLrcMetadata(lrc).offsetMs / 1000;
+  const rows: {
+    time: number;
+    tokens: { start: number; text: string }[];
+    plain: string;
+  }[] = [];
+
   for (const raw of lrc.split(/\r?\n/)) {
-    const m = /^\[(\d{1,3}):(\d{2})[.:](\d{2,3})](.*)$/.exec(raw.trim());
-    if (!m) continue;
-    const time = stampMs(m[1], m[2], m[3]) / 1000;
-    const rest = decodeEntities(m[4]);
-    const words = [...rest.matchAll(/<(\d{1,3}):(\d{2})[.:](\d{2,3})>([^<]*)/g)].map((w) => ({
-      start: stampMs(w[1], w[2], w[3]) / 1000,
+    const trimmed = raw.trim();
+    if (!trimmed) continue;
+    LRC_LINE_STAMP_RE.lastIndex = 0;
+    const stamps: number[] = [];
+    let lastEnd = 0;
+    let m: RegExpExecArray | null;
+    while ((m = LRC_LINE_STAMP_RE.exec(trimmed)) !== null) {
+      if (trimmed.slice(lastEnd, m.index).trim() !== "") break;
+      stamps.push(Math.max(0, stampMs(m[1], m[2], m[3]) / 1000 - offsetSec));
+      lastEnd = m.index + m[0].length;
+    }
+    if (!stamps.length) continue;
+    const rest = decodeEntities(trimmed.slice(lastEnd));
+    const rawTokens = [...rest.matchAll(/<(\d{1,3}):(\d{2})[.:](\d{2,3})>([^<]*)/g)].map((w) => ({
+      start: Math.max(0, stampMs(w[1], w[2], w[3]) / 1000 - offsetSec),
       text: w[4].trim(),
     }));
-    rows.push({ time, words, plain: rest.replace(/<\d{1,3}:\d{2}[.:]\d{2,3}>/g, "").trim() });
+    const plain = rest.replace(/<\d{1,3}:\d{2}[.:]\d{2,3}>/g, "").trim();
+    const baseTime = stamps[0];
+    for (const lineTime of stamps) {
+      const delta = lineTime - baseTime;
+      const tokens = delta === 0 ? rawTokens : rawTokens.map((t) => ({ ...t, start: Math.max(0, t.start + delta) }));
+      rows.push({ time: lineTime, tokens, plain });
+    }
   }
+
   rows.sort((a, b) => a.time - b.time);
-  if (!rows.some((r) => r.words.length > 0)) return []; // ordinary LRC, not rich
+  if (!rows.some((r) => r.tokens.some((t) => t.text))) return []; // ordinary LRC, not rich
+
   const out: SyncedLyricLine[] = [];
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
-    if (row.words.length === 0) {
+    const hasSpoken = row.tokens.some((t) => t.text.length > 0);
+    if (!hasSpoken) {
       if (row.plain) out.push({ time: row.time, text: row.plain });
       continue;
     }
-    const lineEnd = rows[i + 1]?.time ?? row.words[row.words.length - 1].start + 4;
-    const words: SyncedLyricWord[] = row.words
-      .filter((w) => w.text)
-      .map((w, wi) => ({
-        start: w.start,
-        end: row.words[wi + 1]?.start ?? lineEnd,
-        text: w.text,
-      }));
+    const lineEnd = rows[i + 1]?.time ?? row.tokens[row.tokens.length - 1].start + 4;
+    const words: SyncedLyricWord[] = [];
+    for (let wi = 0; wi < row.tokens.length; wi++) {
+      const tok = row.tokens[wi];
+      if (!tok.text) continue; // trailing empty `<mm:ss.xx>` closing tag serves as previous word's end stamp
+      const nextStart = row.tokens[wi + 1]?.start ?? lineEnd;
+      words.push({
+        start: tok.start,
+        end: Math.max(tok.start, nextStart),
+        text: tok.text,
+      });
+    }
     if (!words.length) continue;
-    for (const w of words) if (w.end < w.start) w.end = w.start;
     out.push({
       time: Math.min(row.time, words[0].start),
       text: words.map((w) => w.text).join(" "),
@@ -1520,12 +1651,19 @@ async function lrclibGet(path: string): Promise<any | null> {
   }
 }
 
-function lyricsFromLrclibRecord(rec: any): ProviderResult | null {
-  const synced = typeof rec?.syncedLyrics === "string" && rec.syncedLyrics.trim() ? parseLrc(rec.syncedLyrics) : null;
-  if (synced && synced.length >= 3) return toResult("LRCLIB", synced);
+function lyricsFromLrclibRecord(rec: any, q?: LyricQuery): ProviderResult | null {
+  if (rec?.instrumental === true) return null;
+  if (typeof rec?.syncedLyrics === "string" && rec.syncedLyrics.trim()) {
+    const enhanced = parseEnhancedLrc(rec.syncedLyrics);
+    const synced = enhanced.length ? enhanced : parseLrc(rec.syncedLyrics);
+    if (synced.length && validateLrcForTrack(rec.syncedLyrics, q, synced)) {
+      if (synced.length >= 3) return toResult("LRCLIB", synced);
+      const plainFallback = typeof rec?.plainLyrics === "string" && rec.plainLyrics.trim() ? rec.plainLyrics : null;
+      if (!plainFallback) return toResult("LRCLIB", synced);
+    }
+  }
   const plain = typeof rec?.plainLyrics === "string" && rec.plainLyrics.trim() ? rec.plainLyrics : null;
   if (plain) return { source: "LRCLIB", wordSynced: false, lines: [], plainText: plain };
-  if (synced && synced.length) return toResult("LRCLIB", synced);
   return null;
 }
 
@@ -1550,7 +1688,7 @@ async function fetchLrclib(q: LyricQuery): Promise<ProviderResult | null> {
       // Asked with the stripped title, /get answers with the plain song for a
       // version upload ("Bailando" for "Bailando (English Version)").
       const exact = rec && namesRecording(String(rec.trackName ?? ""), String(rec.artistName ?? ""), q, { length: rec.duration })
-        ? lyricsFromLrclibRecord(rec)
+        ? lyricsFromLrclibRecord(rec, q)
         : null;
       // BitChord's exactMatch takes synced lyrics only: a plain-only record can have a synced sibling the searches find.
       if (exact?.lines.length) return exact;
@@ -1577,6 +1715,7 @@ function pickLrclibSearchHit(results: any, q: LyricQuery): ProviderResult | null
   if (!Array.isArray(results)) return null;
   const synced = results.filter(
     (rec: any) =>
+      rec?.instrumental !== true &&
       typeof rec?.syncedLyrics === "string" &&
       rec.syncedLyrics.trim() &&
       namesRecording(String(rec?.trackName ?? ""), String(rec?.artistName ?? ""), q, { length: rec?.duration })
@@ -1584,14 +1723,24 @@ function pickLrclibSearchHit(results: any, q: LyricQuery): ProviderResult | null
   if (!synced.length) return null;
   const credited = artistNames(q.artist || "").length > 0;
   const seconds = Math.round(q.duration);
-  if (seconds <= 0) return credited ? lyricsFromLrclibRecord(synced[0]) : null;
+  if (seconds <= 0) {
+    if (!credited) return null;
+    for (const rec of synced) {
+      const hit = lyricsFromLrclibRecord(rec, q);
+      if (hit?.lines.length) return hit;
+    }
+    return null;
+  }
   const near = synced.filter((rec: any) => withinTolerance(rec?.duration, seconds));
   if (!credited && !near.length) return null;
-  const pool = near.length ? near : synced;
-  const best = pool.reduce((a: any, b: any) =>
-    Math.abs((b?.duration ?? 1e9) - seconds) < Math.abs((a?.duration ?? 1e9) - seconds) ? b : a
+  const pool = [...(near.length ? near : synced)].sort(
+    (a: any, b: any) => Math.abs((a?.duration ?? 1e9) - seconds) - Math.abs((b?.duration ?? 1e9) - seconds)
   );
-  return lyricsFromLrclibRecord(best);
+  for (const rec of pool) {
+    const hit = lyricsFromLrclibRecord(rec, q);
+    if (hit?.lines.length) return hit;
+  }
+  return null;
 }
 
 /* -------------------------------- lrc.red -------------------------------- */
@@ -1926,8 +2075,7 @@ async function fetchPortato(q: LyricQuery): Promise<ProviderResult | null> {
     // QQ's file names its own recording in its opening line — the only place a
     // live cut or another singer's version says what it is.
     if (openingNameFits(parsed, q) === false) continue;
-    // Still sung after the track has ended: another song's file (QQ answered "벚꽃 엔딩" with 孤星泪 by 刘德华).
-    if (q.duration > 0 && parsed.some((l) => l.text.trim() && l.time > q.duration + LRCRED_TOLERANCE_SEC)) continue;
+    if (!validateLrcForTrack(body, q, parsed)) continue;
     const found = toResult("Portato", withoutOpening(parsed));
     if (found) return found;
   }
@@ -1987,9 +2135,9 @@ async function fetchUnison(q: LyricQuery): Promise<ProviderResult | null> {
   if (String(entry.format ?? "").toLowerCase() === "ttml") return toResult("Unison", parseTtml(text));
   if (String(entry.syncType ?? "").toLowerCase() === "plain") return plain();
   const enhanced = parseEnhancedLrc(text);
-  if (enhanced.length) return toResult("Unison", enhanced);
+  if (enhanced.length && validateLrcForTrack(text, q, enhanced)) return toResult("Unison", enhanced);
   const lrc = parseLrc(text);
-  if (lrc.length) return toResult("Unison", lrc);
+  if (lrc.length && validateLrcForTrack(text, q, lrc)) return toResult("Unison", lrc);
   return plain();
 }
 
@@ -2530,10 +2678,15 @@ export interface FetchedLyrics {
 
 /** A local file's own lyrics tag, when it is timed LRC — BitChord's EmbeddedLyrics, read before any source is
  * asked. Untimed text is no answer here: the sources are asked instead. */
-export function embeddedLrc(raw: string): FetchedLyrics | null {
+export function embeddedLrc(
+  raw: string,
+  q?: (Pick<LyricQuery, "title" | "artist"> & { duration?: number }) | null
+): FetchedLyrics | null {
   const word = parseEnhancedLrc(raw);
+  const lines = word.length ? word : parseLrc(raw);
+  if (!validateLrcForTrack(raw, q, lines)) return null;
   // Credited "Lyrics from this file".
-  const r = toResult("this file", word.length ? word : parseLrc(raw));
+  const r = toResult("this file", lines);
   return r?.lines.some((l) => l.text.trim()) ? { source: r.source, wordSynced: r.wordSynced, synced: r.lines, plain: null } : null;
 }
 
